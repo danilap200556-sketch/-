@@ -22,23 +22,25 @@ jobs:
           arch: 'win64_msvc2019_64'
           modules: ''
 
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
-        id: runvcpkg
+      - name: Bootstrap vcpkg
+        shell: cmd
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git
+          call vcpkg\bootstrap-vcpkg.bat
 
       - name: Install libqrencode via vcpkg
-        run: |
-          ${{ env.VCPKG_ROOT }}\vcpkg.exe install libqrencode:x64-windows
         shell: cmd
-
-      - name: Install pkg-config
-        run: choco install pkgconfiglite -y
+        run: |
+          vcpkg\vcpkg.exe install libqrencode:x64-windows
 
       - name: Configure
-        shell: cmd
+        shell: pwsh
         run: |
-          set PKG_CONFIG_PATH=${{ env.VCPKG_ROOT }}\installed\x64-windows\lib\pkgconfig
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" `
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows
 
       - name: Build
         run: cmake --build build --config Release
@@ -62,7 +64,7 @@ jobs:
       - name: Copy libqrencode runtime DLL
         shell: pwsh
         run: |
-          Copy-Item "${{ env.VCPKG_ROOT }}\installed\x64-windows\bin\qrencode.dll" dist\ -ErrorAction SilentlyContinue
+          Copy-Item "vcpkg\installed\x64-windows\bin\qrencode.dll" dist\ -ErrorAction SilentlyContinue
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

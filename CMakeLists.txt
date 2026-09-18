@@ -8,8 +8,23 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Sql PrintSupport)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(QRENCODE REQUIRED libqrencode)
+
+# libqrencode ships pkg-config files on most platforms (Linux packages,
+# many vcpkg ports), but not reliably everywhere - fall back to a plain
+# header/library search so the build also works where no .pc file exists.
+find_package(PkgConfig)
+if(PkgConfig_FOUND)
+    pkg_check_modules(QRENCODE libqrencode)
+endif()
+
+if(NOT QRENCODE_FOUND)
+    find_path(QRENCODE_INCLUDE_DIRS qrencode.h)
+    find_library(QRENCODE_LIBRARIES NAMES qrencode libqrencode)
+    if(NOT QRENCODE_INCLUDE_DIRS OR NOT QRENCODE_LIBRARIES)
+        message(FATAL_ERROR "libqrencode not found - install it (e.g. libqrencode-dev, or vcpkg install libqrencode) "
+                             "or point CMAKE_PREFIX_PATH at it")
+    endif()
+endif()
 
 add_executable(inventory_manager
     src/main.cpp
