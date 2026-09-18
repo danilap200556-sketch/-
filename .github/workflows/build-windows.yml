@@ -65,7 +65,7 @@ jobs:
       - name: Deploy Qt dependencies (windeployqt)
         shell: cmd
         run: |
-          "${{ env.Qt6_DIR }}\bin\windeployqt.exe" dist\inventory_manager.exe
+          windeployqt.exe dist\inventory_manager.exe
 
       - name: Copy libqrencode runtime DLL
         shell: pwsh
