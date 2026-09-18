@@ -7,6 +7,13 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
+if(MSVC)
+    # Qt 6.5's qvarlengtharray.h still references the deprecated MSVC STL
+    # stdext::checked_array_iterator helpers, which newer MSVC toolsets
+    # removed from <iterator> by default. This restores them.
+    add_compile_definitions(_HAS_DEPRECATED_ITERATOR_HELPERS=1)
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Widgets Sql PrintSupport)
 
 # libqrencode ships pkg-config files on most platforms (Linux packages,
