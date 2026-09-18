@@ -47,6 +47,8 @@ add_executable(inventory_manager
     src/labelstab.cpp
     src/qrlabel.cpp
     src/formdialog.cpp
+    src/csvimport.cpp
+    src/importtab.cpp
 )
 
 target_include_directories(inventory_manager PRIVATE ${QRENCODE_INCLUDE_DIRS})

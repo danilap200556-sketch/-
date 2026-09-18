@@ -6,6 +6,7 @@ class ProductsTab;
 class WarehousesTab;
 class StockTab;
 class LabelsTab;
+class ImportTab;
 
 class MainWindow : public QMainWindow
 {
@@ -18,4 +19,5 @@ private:
     WarehousesTab *m_warehousesTab;
     StockTab *m_stockTab;
     LabelsTab *m_labelsTab;
+    ImportTab *m_importTab;
 };
