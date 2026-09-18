@@ -1,4 +1,5 @@
 #include "database.h"
+#include "logindialog.h"
 #include "mainwindow.h"
 
 #include <QApplication>
@@ -23,7 +24,11 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    MainWindow window;
+    LoginDialog login;
+    if (login.exec() != QDialog::Accepted)
+        return 0;
+
+    MainWindow window(login.username());
     window.show();
 
     return app.exec();

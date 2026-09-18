@@ -63,6 +63,13 @@ bool Database::open(const QString &path, QString *error)
             quantity INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (product_id, warehouse_id)
         ))",
+        R"(CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        ))",
         R"(CREATE TABLE IF NOT EXISTS stock_movements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,

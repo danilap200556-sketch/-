@@ -14,6 +14,8 @@ pkg_check_modules(QRENCODE REQUIRED libqrencode)
 add_executable(inventory_manager
     src/main.cpp
     src/database.cpp
+    src/authservice.cpp
+    src/logindialog.cpp
     src/mainwindow.cpp
     src/productstab.cpp
     src/productdialog.cpp

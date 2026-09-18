@@ -1,0 +1,71 @@
+name: Build Windows exe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/build-windows.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.5.3'
+          arch: 'win64_msvc2019_64'
+          modules: ''
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        id: runvcpkg
+
+      - name: Install libqrencode via vcpkg
+        run: |
+          ${{ env.VCPKG_ROOT }}\vcpkg.exe install libqrencode:x64-windows
+        shell: cmd
+
+      - name: Install pkg-config
+        run: choco install pkgconfiglite -y
+
+      - name: Configure
+        shell: cmd
+        run: |
+          set PKG_CONFIG_PATH=${{ env.VCPKG_ROOT }}\installed\x64-windows\lib\pkgconfig
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Locate build output
+        id: locate
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build -Recurse -Filter inventory_manager.exe | Select-Object -First 1
+          if (-not $exe) { throw "inventory_manager.exe not found" }
+          Write-Host "Found: $($exe.FullName)"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item $exe.FullName dist\
+          "exeDir=dist" >> $env:GITHUB_OUTPUT
+
+      - name: Deploy Qt dependencies (windeployqt)
+        shell: cmd
+        run: |
+          "${{ env.Qt6_DIR }}\bin\windeployqt.exe" dist\inventory_manager.exe
+
+      - name: Copy libqrencode runtime DLL
+        shell: pwsh
+        run: |
+          Copy-Item "${{ env.VCPKG_ROOT }}\installed\x64-windows\bin\qrencode.dll" dist\ -ErrorAction SilentlyContinue
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: inventory_manager-windows
+          path: dist\**

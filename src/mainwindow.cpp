@@ -6,10 +6,10 @@
 
 #include <QTabWidget>
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(const QString &username, QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(tr("Управление складом"));
+    setWindowTitle(tr("Управление складом — %1").arg(username));
     resize(1200, 800);
 
     auto *tabs = new QTabWidget(this);

@@ -11,7 +11,7 @@ class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    explicit MainWindow(const QString &username, QWidget *parent = nullptr);
 
 private:
     ProductsTab *m_productsTab;
