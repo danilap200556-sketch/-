@@ -15,7 +15,10 @@ class ConnectionDialog : public QDialog
 {
     Q_OBJECT
 public:
-    explicit ConnectionDialog(QWidget *parent = nullptr);
+    // prefill - если задан, поля формы берутся отсюда, а не из сохранённых
+    // настроек (нужно, чтобы при повторной попытке после неудачи не
+    // приходилось вводить всё заново).
+    explicit ConnectionDialog(QWidget *parent = nullptr, const ServerConfig *prefill = nullptr);
 
     ServerConfig config() const;
 

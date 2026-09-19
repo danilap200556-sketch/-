@@ -16,13 +16,13 @@ namespace {
 constexpr auto kTestConnectionName = "connection_test";
 }
 
-ConnectionDialog::ConnectionDialog(QWidget *parent)
+ConnectionDialog::ConnectionDialog(QWidget *parent, const ServerConfig *prefill)
     : QDialog(parent)
 {
     setWindowTitle(tr("Подключение к серверу"));
     setMinimumWidth(380);
 
-    const ServerConfig current = ServerConfig::load();
+    const ServerConfig current = prefill ? *prefill : ServerConfig::load();
 
     auto *layout = new QVBoxLayout(this);
     auto *hint = new QLabel(

@@ -23,7 +23,7 @@ int main(int argc, char *argv[])
             QMessageBox::warning(nullptr, QObject::tr("Не удалось подключиться"),
                                   QObject::tr("Не удалось подключиться к серверу:\n%1").arg(error));
         }
-        ConnectionDialog dlg;
+        ConnectionDialog dlg(nullptr, &config);
         if (dlg.exec() != QDialog::Accepted)
             return 0;
         config = dlg.config();
