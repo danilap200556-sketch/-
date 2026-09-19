@@ -52,6 +52,7 @@ int main(int argc, char **argv)
     const char *port = argc > 2 ? argv[2] : "5432";
     const char *user = argc > 3 ? argv[3] : "neondb_owner";
     const char *dbname = argc > 4 ? argv[4] : "neondb";
+    const char *password = argc > 5 ? argv[5] : NULL;
 
     printf("Проверяю %s:%s ...\n\n", host, port);
 
@@ -228,6 +229,47 @@ int main(int argc, char **argv)
         printf("PQstatus: %s\n", st == CONNECTION_OK ? "CONNECTION_OK" : "не OK");
         printf("PQerrorMessage: %s\n", PQerrorMessage(conn));
         PQfinish(conn);
+    }
+
+    /* --- Тест 3: полное подключение с паролем + один настоящий запрос,
+     * ровно как делает Database::open() в самом приложении (CREATE TABLE
+     * ...; открытие в тесте выше не выполняет ни одного запроса, поэтому
+     * не могло поймать обрыв именно на этом шаге). Пароль передаётся
+     * только через argv - никуда, кроме этого запуска, не попадает. --- */
+    if (password) {
+        char conninfo[1024];
+        snprintf(conninfo, sizeof(conninfo),
+                 "host=%s port=%s dbname=%s user=%s password=%s sslmode=require sslnegotiation=postgres connect_timeout=20",
+                 host, port, dbname, user, password);
+
+        printf("\n--- Тест через настоящий libpq (PQconnectdb, С паролем) ---\n");
+        PGconn *conn = PQconnectdb(conninfo);
+        if (PQstatus(conn) != CONNECTION_OK) {
+            printf("PQconnectdb FAILED: %s\n", PQerrorMessage(conn));
+            PQfinish(conn);
+            return 1;
+        }
+        printf("PQconnectdb OK, авторизация прошла успешно.\n");
+
+        printf("Выполняю тестовый запрос (как при первом запуске приложения)...\n");
+        PGresult *res = PQexec(conn,
+            "CREATE TABLE IF NOT EXISTS tlsdiag_probe (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY)");
+        ExecStatusType est = PQresultStatus(res);
+        printf("PQresultStatus: %d, PQerrorMessage: %s\n", est, PQerrorMessage(conn));
+        if (est == PGRES_COMMAND_OK) {
+            printf(">>> Запрос выполнен успешно! <<<\n");
+            PQclear(res);
+            res = PQexec(conn, "DROP TABLE IF EXISTS tlsdiag_probe");
+            PQclear(res);
+        } else {
+            printf(">>> ЗАПРОС НЕ ВЫПОЛНИЛСЯ - вот тут и есть настоящая причина. <<<\n");
+            PQclear(res);
+        }
+
+        printf("PQstatus после запроса: %s\n", PQstatus(conn) == CONNECTION_OK ? "CONNECTION_OK" : "ОБОРВАНО");
+        PQfinish(conn);
+    } else {
+        printf("\n(Тест 3 с паролем пропущен - запусти с 5-м аргументом = пароль, чтобы проверить и его)\n");
     }
 
     return 0;
