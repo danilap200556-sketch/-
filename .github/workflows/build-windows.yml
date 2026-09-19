@@ -38,6 +38,22 @@ jobs:
         with:
           arch: x64
 
+      - name: Build TLS diagnostic tool (tlsdiag.exe)
+        shell: cmd
+        run: |
+          mkdir dist_diag
+          cl.exe /I vcpkg\installed\x64-windows\include tools\tlsdiag.c ^
+            /link /LIBPATH:vcpkg\installed\x64-windows\lib libssl.lib libcrypto.lib ws2_32.lib ^
+            /out:dist_diag\tlsdiag.exe
+          copy vcpkg\installed\x64-windows\bin\libssl-3-x64.dll dist_diag\
+          copy vcpkg\installed\x64-windows\bin\libcrypto-3-x64.dll dist_diag\
+
+      - name: Upload TLS diagnostic tool
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlsdiag-windows
+          path: dist_diag\**
+
       - name: Configure
         shell: cmd
         run: |
