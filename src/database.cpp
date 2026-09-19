@@ -33,7 +33,11 @@ bool Database::open(const ServerConfig &config, QString *error)
         // connect_timeout - у serverless-провайдеров (Neon, Supabase) сервер может
         // "просыпаться" на первое подключение после простоя, дефолтный таймаут
         // libpq для этого маловат.
-        db.setConnectOptions("sslmode=require;connect_timeout=20");
+        // sslnegotiation=postgres - явно классический способ согласования TLS
+        // (SSLRequest, затем апгрейд до TLS). Новый режим "direct" (libpq 17+)
+        // многие коннекшн-пулеры (в т.ч. PgBouncer, на котором у Neon работает
+        // pooler-эндпоинт) ещё не понимают и обрывают соединение.
+        db.setConnectOptions("sslmode=require;sslnegotiation=postgres;connect_timeout=20");
 
     if (!db.open()) {
         if (error)
