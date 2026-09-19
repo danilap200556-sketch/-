@@ -36,6 +36,8 @@ endif()
 add_executable(inventory_manager
     src/main.cpp
     src/database.cpp
+    src/serverconfig.cpp
+    src/connectiondialog.cpp
     src/authservice.cpp
     src/logindialog.cpp
     src/mainwindow.cpp

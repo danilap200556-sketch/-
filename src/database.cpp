@@ -1,4 +1,5 @@
 #include "database.h"
+#include "serverconfig.h"
 
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -20,10 +21,17 @@ bool execOrFail(QSqlQuery &q, const QString &sql, QString *error)
 
 } // namespace
 
-bool Database::open(const QString &path, QString *error)
+bool Database::open(const ServerConfig &config, QString *error)
 {
-    QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE");
-    db.setDatabaseName(path);
+    QSqlDatabase db = QSqlDatabase::addDatabase("QPSQL");
+    db.setHostName(config.host);
+    db.setPort(config.port);
+    db.setDatabaseName(config.database);
+    db.setUserName(config.user);
+    db.setPassword(config.password);
+    if (config.useSsl)
+        db.setConnectOptions("sslmode=require");
+
     if (!db.open()) {
         if (error)
             *error = db.lastError().text();
@@ -31,26 +39,25 @@ bool Database::open(const QString &path, QString *error)
     }
 
     QSqlQuery q(db);
-    execOrFail(q, "PRAGMA foreign_keys = ON", nullptr);
 
     const QStringList ddl = {
         R"(CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             sku TEXT NOT NULL UNIQUE,
             name TEXT NOT NULL,
             description TEXT,
             photo_path TEXT,
             price REAL NOT NULL DEFAULT 0,
             custom_code TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         ))",
         R"(CREATE TABLE IF NOT EXISTS warehouses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
             address TEXT
         ))",
         R"(CREATE TABLE IF NOT EXISTS locations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             warehouse_id INTEGER NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,
             code TEXT NOT NULL,
             description TEXT,
@@ -64,21 +71,21 @@ bool Database::open(const QString &path, QString *error)
             PRIMARY KEY (product_id, warehouse_id)
         ))",
         R"(CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             username TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
             salt TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         ))",
         R"(CREATE TABLE IF NOT EXISTS stock_movements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
             warehouse_id INTEGER NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,
             related_warehouse_id INTEGER REFERENCES warehouses(id),
             type TEXT NOT NULL,
             delta INTEGER NOT NULL,
             comment TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         ))",
     };
 
@@ -153,7 +160,7 @@ bool applyMovementInternal(int productId, int warehouseId, int delta,
     QSqlQuery upsert;
     upsert.prepare(
         "INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (?, ?, ?) "
-        "ON CONFLICT(product_id, warehouse_id) DO UPDATE SET quantity = quantity + excluded.quantity");
+        "ON CONFLICT(product_id, warehouse_id) DO UPDATE SET quantity = stock.quantity + excluded.quantity");
     upsert.addBindValue(productId);
     upsert.addBindValue(warehouseId);
     upsert.addBindValue(delta);

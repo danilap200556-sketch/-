@@ -3,14 +3,18 @@
 #include <QString>
 #include <optional>
 
-// Локальное ядро учёта: товары, склады, места хранения, остатки и журнал движений.
+struct ServerConfig;
+
+// Ядро учёта: товары, склады, места хранения, остатки и журнал движений.
+// Хранится на общем сервере PostgreSQL (не локально), поэтому одна и та же
+// база доступна с любого устройства, на котором запущено приложение.
 // Один и тот же артикул может иметь остаток на нескольких складах одновременно —
 // таблица stock хранит пару (product_id, warehouse_id) -> quantity,
 // а stock_movements - полную историю приход/списание/перемещение/инвентаризации.
 class Database
 {
 public:
-    static bool open(const QString &path, QString *error = nullptr);
+    static bool open(const ServerConfig &config, QString *error = nullptr);
 
     enum class MovementType {
         Receipt,        // приход

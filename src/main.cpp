@@ -1,11 +1,11 @@
+#include "connectiondialog.h"
 #include "database.h"
 #include "logindialog.h"
 #include "mainwindow.h"
+#include "serverconfig.h"
 
 #include <QApplication>
-#include <QDir>
 #include <QMessageBox>
-#include <QStandardPaths>
 
 int main(int argc, char *argv[])
 {
@@ -13,16 +13,23 @@ int main(int argc, char *argv[])
     QApplication::setApplicationName("InventoryManager");
     QApplication::setOrganizationName("InventoryManager");
 
-    const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir().mkpath(dataDir);
-    const QString dbPath = dataDir + "/inventory.db";
-
+    ServerConfig config = ServerConfig::load();
     QString error;
-    if (!Database::open(dbPath, &error)) {
-        QMessageBox::critical(nullptr, QObject::tr("Ошибка базы данных"),
-                               QObject::tr("Не удалось открыть базу данных:\n%1\n\n%2").arg(dbPath, error));
-        return 1;
+
+    // Первый запуск (или прошлые данные больше не подходят) - спрашиваем
+    // адрес сервера, пока не подключимся или пользователь не откажется.
+    while (!config.isComplete() || !Database::open(config, &error)) {
+        if (!error.isEmpty()) {
+            QMessageBox::warning(nullptr, QObject::tr("Не удалось подключиться"),
+                                  QObject::tr("Не удалось подключиться к серверу:\n%1").arg(error));
+        }
+        ConnectionDialog dlg;
+        if (dlg.exec() != QDialog::Accepted)
+            return 0;
+        config = dlg.config();
+        error.clear();
     }
+    config.save();
 
     LoginDialog login;
     if (login.exec() != QDialog::Accepted)

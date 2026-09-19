@@ -4,7 +4,10 @@
 #include "stocktab.h"
 #include "labelstab.h"
 #include "importtab.h"
+#include "connectiondialog.h"
 
+#include <QMenuBar>
+#include <QMessageBox>
 #include <QTabWidget>
 
 MainWindow::MainWindow(const QString &username, QWidget *parent)
@@ -12,6 +15,17 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
 {
     setWindowTitle(tr("Управление складом — %1").arg(username));
     resize(1200, 800);
+
+    auto *fileMenu = menuBar()->addMenu(tr("Файл"));
+    auto *connectionAction = fileMenu->addAction(tr("Настройки подключения к серверу..."));
+    connect(connectionAction, &QAction::triggered, this, [this]() {
+        ConnectionDialog dlg(this);
+        if (dlg.exec() == QDialog::Accepted) {
+            dlg.config().save();
+            QMessageBox::information(this, tr("Сохранено"),
+                                      tr("Настройки сохранены. Перезапустите приложение, чтобы применить их."));
+        }
+    });
 
     auto *tabs = new QTabWidget(this);
     setCentralWidget(tabs);
