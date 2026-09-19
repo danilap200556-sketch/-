@@ -103,7 +103,7 @@ void ConnectionDialog::testConnection()
         db.setUserName(cfg.user);
         db.setPassword(cfg.password);
         if (cfg.useSsl)
-            db.setConnectOptions("sslmode=require");
+            db.setConnectOptions("sslmode=require;connect_timeout=20");
 
         if (db.open()) {
             m_status->setStyleSheet("color: #27ae60;");

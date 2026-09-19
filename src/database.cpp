@@ -30,7 +30,10 @@ bool Database::open(const ServerConfig &config, QString *error)
     db.setUserName(config.user);
     db.setPassword(config.password);
     if (config.useSsl)
-        db.setConnectOptions("sslmode=require");
+        // connect_timeout - у serverless-провайдеров (Neon, Supabase) сервер может
+        // "просыпаться" на первое подключение после простоя, дефолтный таймаут
+        // libpq для этого маловат.
+        db.setConnectOptions("sslmode=require;connect_timeout=20");
 
     if (!db.open()) {
         if (error)
