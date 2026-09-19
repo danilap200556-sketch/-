@@ -15,6 +15,7 @@
 #include <string.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <libpq-fe.h>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -210,5 +211,24 @@ int main(int argc, char **argv)
     SSL_CTX_free(ctx);
     closesocket(s);
     WSACleanup();
+
+    /* --- Тест 2: настоящий libpq (та же PQconnectdb, что и Qt-плагин),
+     * без пароля в строке подключения. Если оборвётся так же, до реальной
+     * авторизации ещё далеко - значит дело не в пароле/SCRAM, а в том,
+     * как именно libpq формирует своё полное StartupMessage. --- */
+    {
+        char conninfo[512];
+        snprintf(conninfo, sizeof(conninfo),
+                 "host=%s port=%s dbname=%s user=%s sslmode=require sslnegotiation=postgres connect_timeout=20",
+                 host, port, dbname, user);
+
+        printf("\n--- Тест через настоящий libpq (PQconnectdb, без пароля) ---\n");
+        PGconn *conn = PQconnectdb(conninfo);
+        ConnStatusType st = PQstatus(conn);
+        printf("PQstatus: %s\n", st == CONNECTION_OK ? "CONNECTION_OK" : "не OK");
+        printf("PQerrorMessage: %s\n", PQerrorMessage(conn));
+        PQfinish(conn);
+    }
+
     return 0;
 }
