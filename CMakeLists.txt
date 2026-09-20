@@ -61,3 +61,9 @@ target_link_libraries(inventory_manager PRIVATE
     Qt6::PrintSupport
     ${QRENCODE_LIBRARIES}
 )
+
+# Диагностический консольный инструмент: тот же QSqlDatabase/QSqlQuery путь,
+# что и в Database::open(), но отдельно и с подробным выводом - для отладки
+# проблем подключения к серверу без запуска всего приложения.
+add_executable(qtpgtest tools/qtpgtest.cpp)
+target_link_libraries(qtpgtest PRIVATE Qt6::Core Qt6::Sql)

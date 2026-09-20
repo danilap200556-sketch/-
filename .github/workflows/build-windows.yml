@@ -47,12 +47,6 @@ jobs:
             /out:dist_diag\tlsdiag.exe
           copy vcpkg\installed\x64-windows\bin\*.dll dist_diag\
 
-      - name: Upload TLS diagnostic tool
-        uses: actions/upload-artifact@v4
-        with:
-          name: tlsdiag-windows
-          path: dist_diag\**
-
       - name: Configure
         shell: cmd
         run: |
@@ -101,3 +95,22 @@ jobs:
         with:
           name: inventory_manager-windows
           path: dist\**
+
+      - name: Package qtpgtest (real Qt/QSqlQuery diagnostic)
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build -Recurse -Filter qtpgtest.exe | Select-Object -First 1
+          if (-not $exe) { throw "qtpgtest.exe not found" }
+          Copy-Item $exe.FullName dist_diag\
+          windeployqt.exe dist_diag\qtpgtest.exe --no-widgets
+          Copy-Item "vcpkg\installed\x64-windows\bin\*.dll" dist_diag\ -ErrorAction SilentlyContinue
+          $qtBin = (Get-Command windeployqt.exe).Source
+          $qtRoot = Split-Path (Split-Path $qtBin -Parent) -Parent
+          New-Item -ItemType Directory -Force -Path dist_diag\sqldrivers | Out-Null
+          Copy-Item "$qtRoot\plugins\sqldrivers\qsqlpsql*.dll" dist_diag\sqldrivers\ -ErrorAction SilentlyContinue
+
+      - name: Upload TLS/Qt diagnostic tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlsdiag-windows
+          path: dist_diag\**
