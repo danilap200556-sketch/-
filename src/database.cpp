@@ -6,6 +6,7 @@
 #include <QSqlError>
 #include <QVariant>
 #include <QDebug>
+#include <QThread>
 
 namespace {
 
@@ -39,11 +40,24 @@ bool Database::open(const ServerConfig &config, QString *error)
         // pooler-эндпоинт) ещё не понимают и обрывают соединение.
         db.setConnectOptions("sslmode=require;sslnegotiation=postgres;connect_timeout=20");
 
-    if (!db.open()) {
-        if (error)
-            *error = db.lastError().text();
-        return false;
+    // У serverless-пулеров (Neon и т.п.) соединение иногда обрывается разово,
+    // без видимой причины - обычно повтор через секунду-другую уже проходит.
+    // Пробуем несколько раз, прежде чем сдаться.
+    bool opened = false;
+    for (int attempt = 1; attempt <= 3 && !opened; ++attempt) {
+        opened = db.open();
+        if (!opened) {
+            if (error)
+                *error = db.lastError().text();
+            if (attempt < 3) {
+                qWarning() << "Database::open: попытка" << attempt << "не удалась, повтор:" << *error;
+                QThread::msleep(1500);
+                db.close();
+            }
+        }
     }
+    if (!opened)
+        return false;
 
     QSqlQuery q(db);
 
