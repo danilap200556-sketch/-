@@ -1,10 +1,6 @@
 /* Диагностика: подключение и запрос через НАСТОЯЩИЙ Qt QSqlDatabase/QSqlQuery
  * (не голый libpq, как в tlsdiag.exe) - точное воспроизведение того, что
- * делает Database::open() в приложении. Нужно, чтобы проверить гипотезу:
- * Qt для PostgreSQL может использовать protocol-level prepared statements
- * даже для простых запросов, а это плохо совместимо с транзакционным
- * pooler-режимом (PgBouncer/Neon pooler) - тогда как "голый" PQexec из
- * tlsdiag.exe (простой протокол запроса) работает нормально.
+ * делает Database::open() в приложении.
  *
  * Использование: qtpgtest.exe host port user database password
  */
@@ -14,6 +10,18 @@
 #include <QSqlError>
 #include <QDebug>
 #include <QTextStream>
+
+namespace {
+
+void printError(QTextStream &out, const QString &label, const QSqlError &err)
+{
+    out << "  [" << label << "] type=" << int(err.type())
+        << " nativeErrorCode=" << err.nativeErrorCode() << "\n";
+    out << "  [" << label << "] databaseText=\"" << err.databaseText() << "\"\n";
+    out << "  [" << label << "] driverText=\"" << err.driverText() << "\"\n";
+}
+
+} // namespace
 
 int main(int argc, char *argv[])
 {
@@ -43,36 +51,50 @@ int main(int argc, char *argv[])
 
     out << "Подключаюсь через QSqlDatabase::open()...\n";
     if (!db.open()) {
-        out << "OPEN FAILED: " << db.lastError().text() << "\n";
+        out << "OPEN FAILED\n";
+        printError(out, "open", db.lastError());
         return 1;
     }
-    out << ">>> db.open() OK <<<\n\n";
+    out << ">>> db.open() OK, isOpen=" << (db.isOpen() ? "true" : "false") << " <<<\n\n";
 
-    out << "Выполняю тестовый запрос через QSqlQuery::exec(QString)...\n";
-    QSqlQuery q(db);
-    const bool ok1 = q.exec("CREATE TABLE IF NOT EXISTS qtpgtest_probe (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY)");
-    out << "Результат 1 (CREATE TABLE, exec(QString)): " << (ok1 ? "OK" : "FAIL") << "\n";
-    if (!ok1)
-        out << "  lastError: " << q.lastError().text() << "\n";
-
-    if (ok1) {
-        out << "\nВыполняю второй запрос через prepare()+exec() (с bind-параметром)...\n";
-        QSqlQuery q2(db);
-        q2.prepare("INSERT INTO qtpgtest_probe DEFAULT VALUES");
-        const bool ok2 = q2.exec();
-        out << "Результат 2 (INSERT через prepare): " << (ok2 ? "OK" : "FAIL") << "\n";
-        if (!ok2)
-            out << "  lastError: " << q2.lastError().text() << "\n";
-
-        out << "\nВыполняю третий запрос (DROP TABLE, exec(QString))...\n";
-        QSqlQuery q3(db);
-        const bool ok3 = q3.exec("DROP TABLE IF EXISTS qtpgtest_probe");
-        out << "Результат 3 (DROP TABLE): " << (ok3 ? "OK" : "FAIL") << "\n";
-        if (!ok3)
-            out << "  lastError: " << q3.lastError().text() << "\n";
+    // Тест 0: максимально простой запрос без каких-либо DDL/типов.
+    {
+        out << "--- Тест 0: SELECT 1 через exec(QString) ---\n";
+        QSqlQuery q(db);
+        const bool ok = q.exec("SELECT 1");
+        out << "Результат: " << (ok ? "OK" : "FAIL") << ", isOpen после=" << (db.isOpen() ? "true" : "false") << "\n";
+        if (ok) {
+            if (q.next())
+                out << "  значение: " << q.value(0).toString() << "\n";
+        } else {
+            printError(out, "SELECT 1 / query", q.lastError());
+            printError(out, "SELECT 1 / db", db.lastError());
+        }
+        out << "\n";
     }
 
-    out << "\nСоединение всё ещё открыто: " << (db.isOpen() ? "да" : "НЕТ") << "\n";
+    if (!db.isOpen()) {
+        out << ">>> Соединение уже закрыто после SELECT 1 - дальше пробовать бессмысленно. <<<\n";
+        return 1;
+    }
+
+    // Тест 1: CREATE TABLE, как в реальном Database::open().
+    {
+        out << "--- Тест 1: CREATE TABLE через exec(QString) ---\n";
+        QSqlQuery q(db);
+        const bool ok = q.exec("CREATE TABLE IF NOT EXISTS qtpgtest_probe (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY)");
+        out << "Результат: " << (ok ? "OK" : "FAIL") << ", isOpen после=" << (db.isOpen() ? "true" : "false") << "\n";
+        if (!ok) {
+            printError(out, "CREATE / query", q.lastError());
+            printError(out, "CREATE / db", db.lastError());
+        } else {
+            QSqlQuery drop(db);
+            drop.exec("DROP TABLE IF EXISTS qtpgtest_probe");
+        }
+        out << "\n";
+    }
+
+    out << "Соединение всё ещё открыто: " << (db.isOpen() ? "да" : "НЕТ") << "\n";
     db.close();
     return 0;
 }
