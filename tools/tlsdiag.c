@@ -272,5 +272,57 @@ int main(int argc, char **argv)
         printf("\n(Тест 3 с паролем пропущен - запусти с 5-м аргументом = пароль, чтобы проверить и его)\n");
     }
 
+    /* --- Тест 4: та же connection string, что строит сам Qt (с ; в опциях,
+     * которые превращаются в пробелы - ровно как в QPSQLDriver::open), и
+     * СРАЗУ ПОСЛЕ ПОДКЛЮЧЕНИЯ - те же 5 служебных запросов, которые Qt сам
+     * выполняет внутри db.open() ДО того, как наш код в qtpgtest.exe вообще
+     * получает управление: SELECT version(), SELECT '\\' x, SET CLIENT_ENCODING,
+     * SET DATESTYLE, SET bytea_output. qtpgtest.exe показал db.open()==true, но
+     * isOpen()==false сразу после - то есть соединение обрывается именно на
+     * одном из этих пяти запросов, ещё до "SELECT 1" из нашего собственного
+     * теста. Раз голый libpq в Тесте 3 выполнил CREATE TABLE без проблем,
+     * подозрение на сами эти конкретные запросы (или их порядок/количество). */
+    if (password) {
+        char conninfo[1024];
+        snprintf(conninfo, sizeof(conninfo),
+                 "host=%s port=%s dbname=%s user=%s password=%s sslmode=require sslnegotiation=postgres connect_timeout=20",
+                 host, port, dbname, user, password);
+
+        printf("\n--- Тест 4: повторяю служебные запросы Qt-драйвера один за другим ---\n");
+        PGconn *conn = PQconnectdb(conninfo);
+        if (PQstatus(conn) != CONNECTION_OK) {
+            printf("PQconnectdb FAILED: %s\n", PQerrorMessage(conn));
+            PQfinish(conn);
+            return 1;
+        }
+        printf("PQconnectdb OK.\n");
+
+        const char *steps[] = {
+            "SELECT version()",
+            "SELECT '\\\\' x",
+            "SET CLIENT_ENCODING TO 'UNICODE'",
+            "SET DATESTYLE TO 'ISO'",
+            "SET bytea_output TO escape",
+        };
+        int i;
+        for (i = 0; i < (int)(sizeof(steps) / sizeof(steps[0])); ++i) {
+            printf("  [%d] %s ... ", i, steps[i]);
+            PGresult *r = PQexec(conn, steps[i]);
+            ExecStatusType est = PQresultStatus(r);
+            int ok = (est == PGRES_COMMAND_OK || est == PGRES_TUPLES_OK);
+            printf("%s (status=%d)\n", ok ? "OK" : "FAIL", est);
+            if (!ok)
+                printf("      PQerrorMessage: %s\n", PQerrorMessage(conn));
+            PQclear(r);
+            printf("      PQstatus после этого шага: %s\n",
+                   PQstatus(conn) == CONNECTION_OK ? "CONNECTION_OK" : "ОБОРВАНО");
+            if (PQstatus(conn) != CONNECTION_OK) {
+                printf("  >>> Соединение оборвалось именно на шаге [%d] (%s). <<<\n", i, steps[i]);
+                break;
+            }
+        }
+        PQfinish(conn);
+    }
+
     return 0;
 }
