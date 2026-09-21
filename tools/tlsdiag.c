@@ -361,5 +361,58 @@ int main(int argc, char **argv)
         }
     }
 
+    /* --- Тест 6: Тест 5 показал, что "SET bytea_output TO escape" САМ ПО
+     * СЕБЕ безобиден - на свежем соединении первым запросом проходит без
+     * проблем. Значит, в Тесте 4 дело было не в содержимом пятого запроса,
+     * а в том, что он был ПЯТЫМ. Проверяем это напрямую: те же первые 4
+     * запроса Qt-драйвера, а пятым - совершенно безобидный "SELECT 1"
+     * вместо SET bytea_output. Если оборвётся всё равно на пятом - значит
+     * Neon рвёт соединение именно по позиции/количеству запросов подряд,
+     * а не из-за конкретной инструкции, и патчить Qt-плагин бессмысленно -
+     * наш собственный Database::open() всё равно упрётся в то же самое на
+     * своих CREATE TABLE (они идут прямо следом за этими пятью). --- */
+    if (password) {
+        char conninfo[1024];
+        snprintf(conninfo, sizeof(conninfo),
+                 "host=%s port=%s dbname=%s user=%s password=%s sslmode=require sslnegotiation=postgres connect_timeout=20",
+                 host, port, dbname, user, password);
+
+        printf("\n--- Тест 6: те же первые 4 запроса, но 5-й - безобидный SELECT 1 ---\n");
+        PGconn *conn = PQconnectdb(conninfo);
+        if (PQstatus(conn) != CONNECTION_OK) {
+            printf("PQconnectdb FAILED: %s\n", PQerrorMessage(conn));
+            PQfinish(conn);
+        } else {
+            printf("PQconnectdb OK.\n");
+            const char *steps[] = {
+                "SELECT version()",
+                "SELECT '\\\\' x",
+                "SET CLIENT_ENCODING TO 'UNICODE'",
+                "SET DATESTYLE TO 'ISO'",
+                "SELECT 1",
+                "SELECT 2",
+                "SELECT 3",
+            };
+            int i;
+            for (i = 0; i < (int)(sizeof(steps) / sizeof(steps[0])); ++i) {
+                printf("  [%d] %s ... ", i, steps[i]);
+                PGresult *r = PQexec(conn, steps[i]);
+                ExecStatusType est = PQresultStatus(r);
+                int ok = (est == PGRES_COMMAND_OK || est == PGRES_TUPLES_OK);
+                printf("%s (status=%d)\n", ok ? "OK" : "FAIL", est);
+                if (!ok)
+                    printf("      PQerrorMessage: %s\n", PQerrorMessage(conn));
+                PQclear(r);
+                printf("      PQstatus после этого шага: %s\n",
+                       PQstatus(conn) == CONNECTION_OK ? "CONNECTION_OK" : "ОБОРВАНО");
+                if (PQstatus(conn) != CONNECTION_OK) {
+                    printf("  >>> Соединение оборвалось на шаге [%d] (%s). <<<\n", i, steps[i]);
+                    break;
+                }
+            }
+            PQfinish(conn);
+        }
+    }
+
     return 0;
 }
