@@ -50,9 +50,15 @@ jobs:
       - name: Configure
         shell: cmd
         run: |
+          rem Qt6_DIR points at lib\cmake\Qt6 itself, which is enough for the
+          rem main Qt6 package - but the private-module packages we need for
+          rem the embedded QPSQL driver (Qt6SqlPrivateConfig.cmake,
+          rem Qt6CorePrivateConfig.cmake) live in *sibling* folders under
+          rem lib\cmake, which find_package() won't discover unless that
+          rem parent folder is also on the prefix path.
           cmake -S . -B build -G "NMake Makefiles" ^
             -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" ^
+            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }};${{ env.Qt6_DIR }}\.." ^
             -DCMAKE_TOOLCHAIN_FILE="%GITHUB_WORKSPACE%\vcpkg\scripts\buildsystems\vcpkg.cmake" ^
             -DVCPKG_TARGET_TRIPLET=x64-windows
 
