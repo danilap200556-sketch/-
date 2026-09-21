@@ -324,5 +324,42 @@ int main(int argc, char **argv)
         PQfinish(conn);
     }
 
+    /* --- Тест 5: изолирует, дело именно в значении 'escape' или в самом
+     * факте SET bytea_output (или в его позиции после четырёх других
+     * запросов). Два СВЕЖИХ соединения, и в каждом - только ОДИН запрос,
+     * сразу первым, без всякого "разогрева" другими SET/SELECT. --- */
+    if (password) {
+        char conninfo[1024];
+        snprintf(conninfo, sizeof(conninfo),
+                 "host=%s port=%s dbname=%s user=%s password=%s sslmode=require sslnegotiation=postgres connect_timeout=20",
+                 host, port, dbname, user, password);
+
+        const char *single_tests[] = {
+            "SET bytea_output TO escape",
+            "SET bytea_output TO hex",
+        };
+        int t;
+        for (t = 0; t < (int)(sizeof(single_tests) / sizeof(single_tests[0])); ++t) {
+            printf("\n--- Тест 5.%d: свежее соединение, ЕДИНСТВЕННЫЙ первый запрос: %s ---\n", t, single_tests[t]);
+            PGconn *conn = PQconnectdb(conninfo);
+            if (PQstatus(conn) != CONNECTION_OK) {
+                printf("PQconnectdb FAILED: %s\n", PQerrorMessage(conn));
+                PQfinish(conn);
+                continue;
+            }
+            printf("PQconnectdb OK. Выполняю: %s ... ", single_tests[t]);
+            PGresult *r = PQexec(conn, single_tests[t]);
+            ExecStatusType est = PQresultStatus(r);
+            int ok = (est == PGRES_COMMAND_OK || est == PGRES_TUPLES_OK);
+            printf("%s (status=%d)\n", ok ? "OK" : "FAIL", est);
+            if (!ok)
+                printf("      PQerrorMessage: %s\n", PQerrorMessage(conn));
+            PQclear(r);
+            printf("      PQstatus после запроса: %s\n",
+                   PQstatus(conn) == CONNECTION_OK ? "CONNECTION_OK" : "ОБОРВАНО");
+            PQfinish(conn);
+        }
+    }
+
     return 0;
 }
