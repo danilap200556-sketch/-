@@ -16,6 +16,29 @@ endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Sql PrintSupport)
 
+# Neon (и, видимо, некоторые другие serverless/pooled Postgres) обрывает
+# соединение после пятого запроса подряд без паузы - экспериментально
+# подтверждено отдельными диагностическими сборками (tools/tlsdiag.c),
+# причём это не зависит от содержимого запросов. QPSQLDriver::open() в
+# самом Qt всегда шлёт 5 служебных запросов сразу после подключения
+# (SELECT version(), проверка экранирования, SET CLIENT_ENCODING,
+# SET DATESTYLE, SET bytea_output) - и это ломает вообще любое подключение
+# к такому серверу, ещё до того, как наш код получит управление. Обхода
+# через публичный API Qt нет. Поэтому при наличии приватных заголовков Qt
+# (SqlPrivate/CorePrivate) и libpq мы компилируем исходник qt-плагина QPSQL
+# (src/thirdparty/qpsql/) прямо в приложение и используем его конструктор
+# QPSQLDriver(PGconn*), который принимает уже открытое НАМИ соединение и
+# выполняет только 2 из этих пяти запросов - подробности в database.cpp.
+find_package(Qt6 QUIET COMPONENTS SqlPrivate CorePrivate)
+find_package(PostgreSQL QUIET)
+if(Qt6SqlPrivate_FOUND AND Qt6CorePrivate_FOUND AND PostgreSQL_FOUND)
+    set(QPSQL_EMBEDDED_AVAILABLE TRUE)
+    message(STATUS "QPSQL embedded driver: доступен (SqlPrivate + CorePrivate + libpq найдены)")
+else()
+    set(QPSQL_EMBEDDED_AVAILABLE FALSE)
+    message(STATUS "QPSQL embedded driver: недоступен, используется обычный QSqlDatabase::addDatabase(\"QPSQL\")")
+endif()
+
 # libqrencode ships pkg-config files on most platforms (Linux packages,
 # many vcpkg ports), but not reliably everywhere - fall back to a plain
 # header/library search so the build also works where no .pc file exists.
@@ -61,6 +84,23 @@ target_link_libraries(inventory_manager PRIVATE
     Qt6::PrintSupport
     ${QRENCODE_LIBRARIES}
 )
+
+if(QPSQL_EMBEDDED_AVAILABLE)
+    target_sources(inventory_manager PRIVATE src/thirdparty/qpsql/qsql_psql.cpp)
+    target_include_directories(inventory_manager PRIVATE ${PostgreSQL_INCLUDE_DIRS})
+    target_link_libraries(inventory_manager PRIVATE
+        Qt6::SqlPrivate
+        Qt6::CorePrivate
+        ${PostgreSQL_LIBRARIES}
+    )
+    target_compile_definitions(inventory_manager PRIVATE QPSQL_EMBEDDED_AVAILABLE)
+    # QT_PLUGIN здесь не означает "мы собираем плагин" - оно лишь отключает
+    # dllimport/dllexport-атрибуты (Q_EXPORT_SQLDRIVER_PSQL) на классе
+    # QPSQLDriver, чтобы он стал обычным символом внутри нашего exe, а не
+    # ожидал импорта из отдельной qsqlpsql.dll.
+    set_source_files_properties(src/thirdparty/qpsql/qsql_psql.cpp PROPERTIES
+        COMPILE_DEFINITIONS QT_PLUGIN)
+endif()
 
 # Диагностический консольный инструмент: тот же QSqlDatabase/QSqlQuery путь,
 # что и в Database::open(), но отдельно и с подробным выводом - для отладки

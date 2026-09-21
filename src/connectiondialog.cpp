@@ -12,8 +12,23 @@
 #include <QSqlError>
 #include <QVBoxLayout>
 
+#ifdef QPSQL_EMBEDDED_AVAILABLE
+#include <libpq-fe.h>
+#endif
+
 namespace {
+
+#ifdef QPSQL_EMBEDDED_AVAILABLE
+QString pqQuoteForTest(const QString &s)
+{
+    QString v = s;
+    v.replace(QLatin1Char('\\'), QLatin1String("\\\\"));
+    v.replace(QLatin1Char('\''), QLatin1String("\\'"));
+    return QLatin1Char('\'') + v + QLatin1Char('\'');
+}
+#else
 constexpr auto kTestConnectionName = "connection_test";
+#endif
 }
 
 ConnectionDialog::ConnectionDialog(QWidget *parent, const ServerConfig *prefill)
@@ -95,6 +110,36 @@ void ConnectionDialog::testConnection()
         return;
     }
 
+#ifdef QPSQL_EMBEDDED_AVAILABLE
+    // Обычный QSqlDatabase::open() тут не годится: у Qt-драйвера QPSQL он
+    // всегда шлёт 5 служебных запросов подряд сразу после подключения, а
+    // Neon рвёт соединение ровно на пятом - независимо от того, что это за
+    // запрос (см. комментарий в database.cpp и CMakeLists.txt). Поэтому
+    // проверяем ровно так же, как реально подключается Database::open() -
+    // напрямую через libpq, без автоматической инициализации Qt-драйвера.
+    {
+        QString conninfo;
+        conninfo += QLatin1String("host=") + pqQuoteForTest(cfg.host);
+        conninfo += QLatin1String(" port=") + QString::number(cfg.port);
+        conninfo += QLatin1String(" dbname=") + pqQuoteForTest(cfg.database);
+        conninfo += QLatin1String(" user=") + pqQuoteForTest(cfg.user);
+        conninfo += QLatin1String(" password=") + pqQuoteForTest(cfg.password);
+        if (cfg.useSsl)
+            conninfo += QLatin1String(" sslmode=require sslnegotiation=postgres");
+        conninfo += QLatin1String(" connect_timeout=20");
+
+        PGconn *conn = PQconnectdb(conninfo.toUtf8().constData());
+        if (PQstatus(conn) == CONNECTION_OK) {
+            m_status->setStyleSheet("color: #27ae60;");
+            m_status->setText(tr("Соединение установлено успешно."));
+        } else {
+            m_status->setStyleSheet("color: #c0392b;");
+            m_status->setText(tr("Не удалось подключиться:\n%1")
+                                   .arg(QString::fromUtf8(PQerrorMessage(conn)).trimmed()));
+        }
+        PQfinish(conn);
+    }
+#else
     {
         QSqlDatabase db = QSqlDatabase::addDatabase("QPSQL", kTestConnectionName);
         db.setHostName(cfg.host);
@@ -115,6 +160,7 @@ void ConnectionDialog::testConnection()
         }
     }
     QSqlDatabase::removeDatabase(kTestConnectionName);
+#endif
 }
 
 void ConnectionDialog::trySave()

@@ -8,6 +8,11 @@
 #include <QDebug>
 #include <QThread>
 
+#ifdef QPSQL_EMBEDDED_AVAILABLE
+#include "thirdparty/qpsql/qsql_psql_p.h"
+#include <libpq-fe.h>
+#endif
+
 namespace {
 
 bool execOrFail(QSqlQuery &q, const QString &sql, QString *error)
@@ -20,48 +25,9 @@ bool execOrFail(QSqlQuery &q, const QString &sql, QString *error)
     return true;
 }
 
-} // namespace
-
-bool Database::open(const ServerConfig &config, QString *error)
+const QStringList &schemaDdl()
 {
-    QSqlDatabase db = QSqlDatabase::addDatabase("QPSQL");
-    db.setHostName(config.host);
-    db.setPort(config.port);
-    db.setDatabaseName(config.database);
-    db.setUserName(config.user);
-    db.setPassword(config.password);
-    if (config.useSsl)
-        // connect_timeout - у serverless-провайдеров (Neon, Supabase) сервер может
-        // "просыпаться" на первое подключение после простоя, дефолтный таймаут
-        // libpq для этого маловат.
-        // sslnegotiation=postgres - явно классический способ согласования TLS
-        // (SSLRequest, затем апгрейд до TLS). Новый режим "direct" (libpq 17+)
-        // многие коннекшн-пулеры (в т.ч. PgBouncer, на котором у Neon работает
-        // pooler-эндпоинт) ещё не понимают и обрывают соединение.
-        db.setConnectOptions("sslmode=require;sslnegotiation=postgres;connect_timeout=20");
-
-    // У serverless-пулеров (Neon и т.п.) соединение иногда обрывается разово,
-    // без видимой причины - обычно повтор через секунду-другую уже проходит.
-    // Пробуем несколько раз, прежде чем сдаться.
-    bool opened = false;
-    for (int attempt = 1; attempt <= 3 && !opened; ++attempt) {
-        opened = db.open();
-        if (!opened) {
-            if (error)
-                *error = db.lastError().text();
-            if (attempt < 3) {
-                qWarning() << "Database::open: попытка" << attempt << "не удалась, повтор:" << *error;
-                QThread::msleep(1500);
-                db.close();
-            }
-        }
-    }
-    if (!opened)
-        return false;
-
-    QSqlQuery q(db);
-
-    const QStringList ddl = {
+    static const QStringList ddl = {
         R"(CREATE TABLE IF NOT EXISTS products (
             id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             sku TEXT NOT NULL UNIQUE,
@@ -109,13 +75,129 @@ bool Database::open(const ServerConfig &config, QString *error)
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         ))",
     };
+    return ddl;
+}
 
-    for (const QString &stmt : ddl) {
+#ifdef QPSQL_EMBEDDED_AVAILABLE
+
+QString pqQuote(const QString &s)
+{
+    QString v = s;
+    v.replace(QLatin1Char('\\'), QLatin1String("\\\\"));
+    v.replace(QLatin1Char('\''), QLatin1String("\\'"));
+    return QLatin1Char('\'') + v + QLatin1Char('\'');
+}
+
+// Открывает соединение НАПРЯМУЮ через libpq (в обход QSqlDatabase::open()) и
+// сразу одним пакетным запросом (все CREATE TABLE через ';' в одном PQexec)
+// создаёт схему - это ровно ОДИН запрос с точки зрения соединения, а не 6+
+// отдельных. Затем оборачивает уже открытое и проинициализированное
+// соединение в QPSQLDriver(conn), которому для инициализации нужно всего
+// 2 служебных запроса (а не 5, как при обычном QPSQLDriver::open()) - и то,
+// и другое нужно, чтобы не перевалить за порог примерно в 4-5 запросов
+// подряд, после которого Neon рвёт соединение (см. комментарий в CMakeLists.txt).
+bool tryConnectEmbedded(const ServerConfig &config, QString *error)
+{
+    QString conninfo;
+    conninfo += QLatin1String("host=") + pqQuote(config.host);
+    conninfo += QLatin1String(" port=") + QString::number(config.port);
+    conninfo += QLatin1String(" dbname=") + pqQuote(config.database);
+    conninfo += QLatin1String(" user=") + pqQuote(config.user);
+    conninfo += QLatin1String(" password=") + pqQuote(config.password);
+    if (config.useSsl)
+        conninfo += QLatin1String(" sslmode=require sslnegotiation=postgres");
+    conninfo += QLatin1String(" connect_timeout=20");
+
+    PGconn *conn = PQconnectdb(conninfo.toUtf8().constData());
+    if (PQstatus(conn) != CONNECTION_OK) {
+        if (error)
+            *error = QString::fromUtf8(PQerrorMessage(conn)).trimmed();
+        PQfinish(conn);
+        return false;
+    }
+
+    const QString batch = schemaDdl().join(QLatin1String(";\n")) + QLatin1Char(';');
+    const QByteArray batchUtf8 = batch.toUtf8();
+    PGresult *res = PQexec(conn, batchUtf8.constData());
+    const ExecStatusType status = PQresultStatus(res);
+    if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
+        if (error)
+            *error = QString::fromUtf8(PQresultErrorMessage(res)).trimmed();
+        PQclear(res);
+        PQfinish(conn);
+        return false;
+    }
+    PQclear(res);
+
+    if (QSqlDatabase::contains(QSqlDatabase::defaultConnection))
+        QSqlDatabase::removeDatabase(QSqlDatabase::defaultConnection);
+
+    // QPSQLDriver берёт на себя владение conn (включая PQfinish при закрытии) -
+    // сами conn больше не трогаем. QSqlDatabase::addDatabase(QSqlDriver*)
+    // берёт на себя владение самим драйвером.
+    auto *driver = new QPSQLDriver(conn);
+    QSqlDatabase db = QSqlDatabase::addDatabase(driver);
+    if (!db.isOpen()) {
+        if (error)
+            *error = QStringLiteral("Драйвер не смог инициализироваться после подключения");
+        return false;
+    }
+    return true;
+}
+
+#else
+
+bool tryConnectViaQtDriver(const ServerConfig &config, QString *error)
+{
+    QSqlDatabase db = QSqlDatabase::addDatabase("QPSQL");
+    db.setHostName(config.host);
+    db.setPort(config.port);
+    db.setDatabaseName(config.database);
+    db.setUserName(config.user);
+    db.setPassword(config.password);
+    if (config.useSsl)
+        db.setConnectOptions("sslmode=require;sslnegotiation=postgres;connect_timeout=20");
+
+    if (!db.open()) {
+        if (error)
+            *error = db.lastError().text();
+        return false;
+    }
+
+    QSqlQuery q(db);
+    for (const QString &stmt : schemaDdl()) {
         if (!execOrFail(q, stmt, error))
             return false;
     }
-
     return true;
+}
+
+#endif
+
+} // namespace
+
+bool Database::open(const ServerConfig &config, QString *error)
+{
+    // У serverless-провайдеров (Neon и т.п.) соединение иногда обрывается
+    // разово, без видимой причины - обычно повтор через секунду-другую уже
+    // проходит. Пробуем несколько раз, прежде чем сдаться.
+    QString lastError;
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+#ifdef QPSQL_EMBEDDED_AVAILABLE
+        if (tryConnectEmbedded(config, &lastError)) {
+#else
+        if (tryConnectViaQtDriver(config, &lastError)) {
+#endif
+            return true;
+        }
+        if (attempt < 3) {
+            qWarning() << "Database::open: попытка" << attempt << "не удалась, повтор:" << lastError;
+            QThread::msleep(1500);
+        }
+    }
+    if (error)
+        *error = lastError;
+    return false;
 }
 
 QString Database::movementTypeLabel(MovementType type)
