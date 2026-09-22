@@ -88,6 +88,42 @@ QString pqQuote(const QString &s)
     return QLatin1Char('\'') + v + QLatin1Char('\'');
 }
 
+QByteArray connInfo(const ServerConfig &config)
+{
+    QString conninfo;
+    conninfo += QLatin1String("host=") + pqQuote(config.host);
+    conninfo += QLatin1String(" port=") + QString::number(config.port);
+    conninfo += QLatin1String(" dbname=") + pqQuote(config.database);
+    conninfo += QLatin1String(" user=") + pqQuote(config.user);
+    conninfo += QLatin1String(" password=") + pqQuote(config.password);
+    // QPSQLDriver(PGconn*) не делает SET CLIENT_ENCODING (в отличие от обычного
+    // open()), а сам всегда кодирует строки в UTF-8. Передаём кодировку в
+    // стартовом пакете - это не отдельный запрос, лимит Neon не тратится.
+    conninfo += QLatin1String(" client_encoding=UTF8");
+    if (config.useSsl) {
+        conninfo += QLatin1String(" sslmode=require");
+        // Параметр появился только в libpq 17 - старая libpq отвергла бы всю
+        // строку подключения как "invalid connection option".
+        if (PQlibVersion() >= 170000)
+            conninfo += QLatin1String(" sslnegotiation=postgres");
+    }
+    conninfo += QLatin1String(" connect_timeout=20");
+    return conninfo.toUtf8();
+}
+
+// Возвращает открытое соединение или nullptr (с текстом ошибки в *error).
+PGconn *connectRaw(const ServerConfig &config, QString *error)
+{
+    PGconn *conn = PQconnectdb(connInfo(config).constData());
+    if (PQstatus(conn) != CONNECTION_OK) {
+        if (error)
+            *error = QString::fromUtf8(PQerrorMessage(conn)).trimmed();
+        PQfinish(conn);
+        return nullptr;
+    }
+    return conn;
+}
+
 // Открывает соединение НАПРЯМУЮ через libpq (в обход QSqlDatabase::open()) и
 // сразу одним пакетным запросом (все CREATE TABLE через ';' в одном PQexec)
 // создаёт схему - это ровно ОДИН запрос с точки зрения соединения, а не 6+
@@ -98,27 +134,18 @@ QString pqQuote(const QString &s)
 // подряд, после которого Neon рвёт соединение (см. комментарий в CMakeLists.txt).
 bool tryConnectEmbedded(const ServerConfig &config, QString *error)
 {
-    QString conninfo;
-    conninfo += QLatin1String("host=") + pqQuote(config.host);
-    conninfo += QLatin1String(" port=") + QString::number(config.port);
-    conninfo += QLatin1String(" dbname=") + pqQuote(config.database);
-    conninfo += QLatin1String(" user=") + pqQuote(config.user);
-    conninfo += QLatin1String(" password=") + pqQuote(config.password);
-    if (config.useSsl)
-        conninfo += QLatin1String(" sslmode=require sslnegotiation=postgres");
-    conninfo += QLatin1String(" connect_timeout=20");
-
-    PGconn *conn = PQconnectdb(conninfo.toUtf8().constData());
-    if (PQstatus(conn) != CONNECTION_OK) {
-        if (error)
-            *error = QString::fromUtf8(PQerrorMessage(conn)).trimmed();
-        PQfinish(conn);
+    PGconn *conn = connectRaw(config, error);
+    if (!conn)
         return false;
-    }
 
     const QString batch = schemaDdl().join(QLatin1String(";\n")) + QLatin1Char(';');
     const QByteArray batchUtf8 = batch.toUtf8();
+    // Иначе libpq на каждом запуске печатает в stderr
+    // "NOTICE: relation ... already exists, skipping" по разу на таблицу.
+    const PQnoticeProcessor prevNotice =
+        PQsetNoticeProcessor(conn, [](void *, const char *) {}, nullptr);
     PGresult *res = PQexec(conn, batchUtf8.constData());
+    PQsetNoticeProcessor(conn, prevNotice, nullptr);
     const ExecStatusType status = PQresultStatus(res);
     if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
         if (error)
@@ -149,6 +176,8 @@ bool tryConnectEmbedded(const ServerConfig &config, QString *error)
 
 bool tryConnectViaQtDriver(const ServerConfig &config, QString *error)
 {
+    if (QSqlDatabase::contains(QSqlDatabase::defaultConnection))
+        QSqlDatabase::removeDatabase(QSqlDatabase::defaultConnection);
     QSqlDatabase db = QSqlDatabase::addDatabase("QPSQL");
     db.setHostName(config.host);
     db.setPort(config.port);
@@ -198,6 +227,38 @@ bool Database::open(const ServerConfig &config, QString *error)
     if (error)
         *error = lastError;
     return false;
+}
+
+bool Database::testConnection(const ServerConfig &config, QString *error)
+{
+#ifdef QPSQL_EMBEDDED_AVAILABLE
+    // Обычный QSqlDatabase::open() тут не годится - он сам шлёт серию
+    // служебных запросов, на которой Neon рвёт соединение.
+    PGconn *conn = connectRaw(config, error);
+    if (!conn)
+        return false;
+    PQfinish(conn);
+    return true;
+#else
+    const QString name = QStringLiteral("connection_test");
+    bool ok = false;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QPSQL", name);
+        db.setHostName(config.host);
+        db.setPort(config.port);
+        db.setDatabaseName(config.database);
+        db.setUserName(config.user);
+        db.setPassword(config.password);
+        if (config.useSsl)
+            db.setConnectOptions("sslmode=require;sslnegotiation=postgres;connect_timeout=20");
+        ok = db.open();
+        if (!ok && error)
+            *error = db.lastError().text();
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(name);
+    return ok;
+#endif
 }
 
 QString Database::movementTypeLabel(MovementType type)

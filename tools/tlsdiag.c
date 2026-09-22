@@ -414,5 +414,73 @@ int main(int argc, char **argv)
         }
     }
 
+    /* --- Тест 7: те же безобидные запросы, но с паузой 1 с между ними.
+     * Если соединение и так умрёт на 5-м - ограничение не на "пачку подряд",
+     * а на соединение вообще (по числу запросов или объёму трафика). --- */
+    if (password) {
+        char conninfo[1024];
+        snprintf(conninfo, sizeof(conninfo),
+                 "host=%s port=%s dbname=%s user=%s password=%s sslmode=require sslnegotiation=postgres connect_timeout=20",
+                 host, port, dbname, user, password);
+
+        printf("\n--- Тест 7: 10 запросов SELECT n с паузой 1 с между ними ---\n");
+        PGconn *conn = PQconnectdb(conninfo);
+        if (PQstatus(conn) != CONNECTION_OK) {
+            printf("PQconnectdb FAILED: %s\n", PQerrorMessage(conn));
+        } else {
+            int i;
+            for (i = 1; i <= 10; ++i) {
+                char sql[32];
+                snprintf(sql, sizeof(sql), "SELECT %d", i);
+                Sleep(1000);
+                PGresult *r = PQexec(conn, sql);
+                ExecStatusType est = PQresultStatus(r);
+                PQclear(r);
+                if (est != PGRES_TUPLES_OK || PQstatus(conn) != CONNECTION_OK) {
+                    printf("  [%d] FAIL (status=%d): %s", i, est, PQerrorMessage(conn));
+                    printf("  >>> С паузами соединение тоже умерло на запросе %d. <<<\n", i);
+                    break;
+                }
+                printf("  [%d] OK\n", i);
+            }
+            if (i > 10)
+                printf("  >>> Все 10 запросов с паузами прошли. <<<\n");
+        }
+        PQfinish(conn);
+    }
+
+    /* --- Тест 8: один запрос с большим ответом на СВЕЖЕМ соединении.
+     * Если обрывается уже где-то на 16-20 КБ ответа - это не Neon, а
+     * фильтрация трафика по пути (DPI у провайдера, антивирус и т.п.). --- */
+    if (password) {
+        char conninfo[1024];
+        snprintf(conninfo, sizeof(conninfo),
+                 "host=%s port=%s dbname=%s user=%s password=%s sslmode=require sslnegotiation=postgres connect_timeout=20",
+                 host, port, dbname, user, password);
+
+        const int sizes[] = {2000, 8000, 14000, 20000, 40000, 100000};
+        int s;
+        printf("\n--- Тест 8: один SELECT repeat('x', N) на свежем соединении ---\n");
+        for (s = 0; s < (int)(sizeof(sizes) / sizeof(sizes[0])); ++s) {
+            PGconn *conn = PQconnectdb(conninfo);
+            if (PQstatus(conn) != CONNECTION_OK) {
+                printf("  N=%d: PQconnectdb FAILED: %s", sizes[s], PQerrorMessage(conn));
+                PQfinish(conn);
+                continue;
+            }
+            char sql[64];
+            snprintf(sql, sizeof(sql), "SELECT repeat('x', %d)", sizes[s]);
+            PGresult *r = PQexec(conn, sql);
+            ExecStatusType est = PQresultStatus(r);
+            int got = (est == PGRES_TUPLES_OK && PQntuples(r) == 1) ? PQgetlength(r, 0, 0) : -1;
+            PQclear(r);
+            if (got == sizes[s])
+                printf("  N=%6d байт: OK\n", sizes[s]);
+            else
+                printf("  N=%6d байт: FAIL (status=%d): %s", sizes[s], est, PQerrorMessage(conn));
+            PQfinish(conn);
+        }
+    }
+
     return 0;
 }

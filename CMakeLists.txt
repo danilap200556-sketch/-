@@ -29,14 +29,49 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Sql PrintSupport)
 # (src/thirdparty/qpsql/) прямо в приложение и используем его конструктор
 # QPSQLDriver(PGconn*), который принимает уже открытое НАМИ соединение и
 # выполняет только 2 из этих пяти запросов - подробности в database.cpp.
-find_package(Qt6 QUIET COMPONENTS SqlPrivate CorePrivate)
+# До Qt 6.9 цели Qt6::SqlPrivate/Qt6::CorePrivate создаются вместе с
+# публичными модулями, отдельных пакетов *Private нет; с 6.9 их нужно
+# запрашивать явно. Поэтому проверяем наличие целей, а не пакетов.
+find_package(Qt6 QUIET OPTIONAL_COMPONENTS SqlPrivate CorePrivate)
 find_package(PostgreSQL QUIET)
-if(Qt6SqlPrivate_FOUND AND Qt6CorePrivate_FOUND AND PostgreSQL_FOUND)
+if(PostgreSQL_FOUND)
+    find_path(PG_CONFIG_H_DIR pg_config.h HINTS ${PostgreSQL_INCLUDE_DIRS})
+endif()
+
+option(REQUIRE_QPSQL_EMBEDDED
+       "Падать на этапе конфигурации, если встроенный драйвер QPSQL собрать нельзя" OFF)
+
+# src/thirdparty/qpsql - исходник из Qt 6.7.3, он опирается на приватный API
+# Qt, который меняется между минорными версиями (напр. в 6.4 другие сигнатуры
+# QSqlResultPrivate), поэтому с другой версией Qt его не собрать.
+set(_qpsql_qt_ok FALSE)
+if(Qt6_VERSION VERSION_GREATER_EQUAL 6.7 AND Qt6_VERSION VERSION_LESS 6.8)
+    set(_qpsql_qt_ok TRUE)
+endif()
+
+if(_qpsql_qt_ok AND TARGET Qt6::SqlPrivate AND TARGET Qt6::CorePrivate
+   AND PostgreSQL_FOUND AND PG_CONFIG_H_DIR)
     set(QPSQL_EMBEDDED_AVAILABLE TRUE)
-    message(STATUS "QPSQL embedded driver: доступен (SqlPrivate + CorePrivate + libpq найдены)")
+    message(STATUS "QPSQL embedded driver: доступен")
 else()
     set(QPSQL_EMBEDDED_AVAILABLE FALSE)
-    message(STATUS "QPSQL embedded driver: недоступен, используется обычный QSqlDatabase::addDatabase(\"QPSQL\")")
+    set(_qpsql_why "Qt ${Qt6_VERSION} (нужна 6.7.x), Qt6::SqlPrivate=")
+    if(TARGET Qt6::SqlPrivate)
+        string(APPEND _qpsql_why "есть")
+    else()
+        string(APPEND _qpsql_why "НЕТ")
+    endif()
+    string(APPEND _qpsql_why ", Qt6::CorePrivate=")
+    if(TARGET Qt6::CorePrivate)
+        string(APPEND _qpsql_why "есть")
+    else()
+        string(APPEND _qpsql_why "НЕТ")
+    endif()
+    string(APPEND _qpsql_why ", PostgreSQL_FOUND=${PostgreSQL_FOUND}, pg_config.h=${PG_CONFIG_H_DIR}")
+    if(REQUIRE_QPSQL_EMBEDDED)
+        message(FATAL_ERROR "QPSQL embedded driver недоступен (${_qpsql_why}) - без него подключение к Neon не работает")
+    endif()
+    message(STATUS "QPSQL embedded driver: недоступен (${_qpsql_why}), используется обычный QSqlDatabase::addDatabase(\"QPSQL\")")
 endif()
 
 # libqrencode ships pkg-config files on most platforms (Linux packages,
@@ -87,19 +122,22 @@ target_link_libraries(inventory_manager PRIVATE
 
 if(QPSQL_EMBEDDED_AVAILABLE)
     target_sources(inventory_manager PRIVATE src/thirdparty/qpsql/qsql_psql.cpp)
-    target_include_directories(inventory_manager PRIVATE ${PostgreSQL_INCLUDE_DIRS})
+    target_include_directories(inventory_manager PRIVATE ${PG_CONFIG_H_DIR})
     target_link_libraries(inventory_manager PRIVATE
         Qt6::SqlPrivate
         Qt6::CorePrivate
-        ${PostgreSQL_LIBRARIES}
+        PostgreSQL::PostgreSQL
     )
     target_compile_definitions(inventory_manager PRIVATE QPSQL_EMBEDDED_AVAILABLE)
     # QT_PLUGIN здесь не означает "мы собираем плагин" - оно лишь отключает
     # dllimport/dllexport-атрибуты (Q_EXPORT_SQLDRIVER_PSQL) на классе
     # QPSQLDriver, чтобы он стал обычным символом внутри нашего exe, а не
-    # ожидал импорта из отдельной qsqlpsql.dll.
-    set_source_files_properties(src/thirdparty/qpsql/qsql_psql.cpp PROPERTIES
-        COMPILE_DEFINITIONS QT_PLUGIN)
+    # ожидал импорта из отдельной qsqlpsql.dll. Нужно в КАЖДОМ файле, который
+    # видит объявление класса, иначе MSVC будет искать __imp_-символ.
+    set_source_files_properties(
+        src/thirdparty/qpsql/qsql_psql.cpp
+        src/database.cpp
+        PROPERTIES COMPILE_DEFINITIONS QT_PLUGIN)
 endif()
 
 # Диагностический консольный инструмент: тот же QSqlDatabase/QSqlQuery путь,

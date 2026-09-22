@@ -16,6 +16,10 @@ class Database
 public:
     static bool open(const ServerConfig &config, QString *error = nullptr);
 
+    // Только проверяет, что к серверу можно подключиться (без создания схемы
+    // и без регистрации соединения для остального приложения).
+    static bool testConnection(const ServerConfig &config, QString *error = nullptr);
+
     enum class MovementType {
         Receipt,        // приход
         WriteOff,       // списание
