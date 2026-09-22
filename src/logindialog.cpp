@@ -48,6 +48,8 @@ LoginDialog::LoginDialog(QWidget *parent)
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     buttons->button(QDialogButtonBox::Ok)->setText(m_registerMode ? tr("Создать") : tr("Войти"));
+    auto *changeServer = buttons->addButton(tr("Сменить сервер…"), QDialogButtonBox::ResetRole);
+    connect(changeServer, &QPushButton::clicked, this, [this] { done(ChangeServer); });
     connect(buttons, &QDialogButtonBox::accepted, this, &LoginDialog::trySubmit);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);

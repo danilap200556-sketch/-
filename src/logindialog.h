@@ -14,6 +14,9 @@ class LoginDialog : public QDialog
 {
     Q_OBJECT
 public:
+    // Код возврата exec(), когда пользователь хочет подключиться к другому серверу.
+    enum { ChangeServer = 2 };
+
     explicit LoginDialog(QWidget *parent = nullptr);
 
     QString username() const;

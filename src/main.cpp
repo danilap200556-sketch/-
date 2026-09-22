@@ -14,29 +14,38 @@ int main(int argc, char *argv[])
     QApplication::setOrganizationName("InventoryManager");
 
     ServerConfig config = ServerConfig::load();
-    QString error;
+    bool askServer = false;
 
-    // Первый запуск (или прошлые данные больше не подходят) - спрашиваем
-    // адрес сервера, пока не подключимся или пользователь не откажется.
-    while (!config.isComplete() || !Database::open(config, &error)) {
-        if (!error.isEmpty()) {
-            QMessageBox::warning(nullptr, QObject::tr("Не удалось подключиться"),
-                                  QObject::tr("Не удалось подключиться к серверу:\n%1").arg(error));
+    for (;;) {
+        // Первый запуск, прошлые данные больше не подходят или пользователь
+        // сам попросил сменить сервер - спрашиваем адрес, пока не подключимся
+        // или пользователь не откажется.
+        QString error;
+        while (askServer || !config.isComplete() || !Database::open(config, &error)) {
+            if (!error.isEmpty()) {
+                QMessageBox::warning(nullptr, QObject::tr("Не удалось подключиться"),
+                                      QObject::tr("Не удалось подключиться к серверу:\n%1").arg(error));
+            }
+            ConnectionDialog dlg(nullptr, &config);
+            if (dlg.exec() != QDialog::Accepted)
+                return 0;
+            config = dlg.config();
+            error.clear();
+            askServer = false;
         }
-        ConnectionDialog dlg(nullptr, &config);
-        if (dlg.exec() != QDialog::Accepted)
+        config.save();
+
+        LoginDialog login;
+        const int result = login.exec();
+        if (result == LoginDialog::ChangeServer) {
+            askServer = true;
+            continue;
+        }
+        if (result != QDialog::Accepted)
             return 0;
-        config = dlg.config();
-        error.clear();
+
+        MainWindow window(login.username());
+        window.show();
+        return app.exec();
     }
-    config.save();
-
-    LoginDialog login;
-    if (login.exec() != QDialog::Accepted)
-        return 0;
-
-    MainWindow window(login.username());
-    window.show();
-
-    return app.exec();
 }
