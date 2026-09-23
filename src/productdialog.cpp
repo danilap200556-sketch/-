@@ -1,4 +1,8 @@
 #include "productdialog.h"
+#include "barcode.h"
+
+#include <QKeyEvent>
+#include <QListWidget>
 
 #include <QDialogButtonBox>
 #include <QDesktopServices>
@@ -63,6 +67,35 @@ ProductDialog::ProductDialog(QWidget *parent)
     m_marketSku->setPlaceholderText(tr("оставьте пустым, если совпадает с артикулом"));
     form->addRow(tr("Артикул на Маркете"), m_marketSku);
 
+    // --- Штрихкоды: можно просто сканировать сканером в поле ввода ---
+    auto *barcodeBox = new QWidget(this);
+    auto *barcodeLayout = new QVBoxLayout(barcodeBox);
+    barcodeLayout->setContentsMargins(0, 0, 0, 0);
+    auto *inputRow = new QHBoxLayout();
+    m_barcodeInput = new QLineEdit(barcodeBox);
+    m_barcodeInput->setPlaceholderText(tr("отсканируйте или введите 13 цифр и нажмите Enter"));
+    m_barcodeInput->installEventFilter(this);
+    auto *addBarcodeBtn = new QPushButton(tr("Добавить"), barcodeBox);
+    auto *genBarcodeBtn = new QPushButton(tr("Сгенерировать свой"), barcodeBox);
+    auto *delBarcodeBtn = new QPushButton(tr("Удалить"), barcodeBox);
+    for (auto *b : {addBarcodeBtn, genBarcodeBtn, delBarcodeBtn})
+        b->setAutoDefault(false);
+    inputRow->addWidget(m_barcodeInput, 1);
+    inputRow->addWidget(addBarcodeBtn);
+    barcodeLayout->addLayout(inputRow);
+    m_barcodes = new QListWidget(barcodeBox);
+    m_barcodes->setMaximumHeight(80);
+    barcodeLayout->addWidget(m_barcodes);
+    auto *barcodeButtons = new QHBoxLayout();
+    barcodeButtons->addWidget(genBarcodeBtn);
+    barcodeButtons->addWidget(delBarcodeBtn);
+    barcodeButtons->addStretch();
+    barcodeLayout->addLayout(barcodeButtons);
+    form->addRow(tr("Штрихкоды (EAN-13)"), barcodeBox);
+    connect(addBarcodeBtn, &QPushButton::clicked, this, &ProductDialog::addBarcode);
+    connect(genBarcodeBtn, &QPushButton::clicked, this, &ProductDialog::generateBarcode);
+    connect(delBarcodeBtn, &QPushButton::clicked, this, &ProductDialog::removeBarcode);
+
     m_photoStatus = new QLabel(this);
     m_photoStatus->setStyleSheet("color: gray; font-size: 11px;");
     layout->addWidget(m_photoStatus);
@@ -71,6 +104,16 @@ ProductDialog::ProductDialog(QWidget *parent)
     connect(buttons, &QDialogButtonBox::accepted, this, [this, buttons]() {
         if (m_sku->text().trimmed().isEmpty() || m_name->text().trimmed().isEmpty()) {
             QMessageBox::warning(this, tr("Проверьте поля"), tr("Артикул и название обязательны."));
+            return;
+        }
+        // Недобавленный код в поле ввода - почти наверняка забыли нажать Enter.
+        if (!m_barcodeInput->text().trimmed().isEmpty() && !addBarcodeCode(m_barcodeInput->text()))
+            return;
+        QString code, otherSku;
+        if (Barcode::findConflict(m_productId, data().barcodes, &code, &otherSku)) {
+            QMessageBox::warning(this, tr("Штрихкод занят"),
+                                 tr("Штрихкод %1 уже привязан к товару %2. Один штрихкод может быть только у "
+                                    "одного товара.").arg(code, otherSku));
             return;
         }
         accept();
@@ -107,6 +150,8 @@ void ProductDialog::setData(const ProductData &data)
     m_photoPath->setText(data.photoPath);
     m_customCode->setText(data.customCode);
     m_marketSku->setText(data.marketSku);
+    m_barcodes->clear();
+    m_barcodes->addItems(data.barcodes);
 }
 
 ProductDialog::ProductData ProductDialog::data() const
@@ -119,5 +164,58 @@ ProductDialog::ProductData ProductDialog::data() const
     d.photoPath = m_photoPath->text();
     d.customCode = m_customCode->text().trimmed();
     d.marketSku = m_marketSku->text().trimmed();
+    for (int i = 0; i < m_barcodes->count(); ++i)
+        d.barcodes << m_barcodes->item(i)->text();
     return d;
+}
+
+bool ProductDialog::eventFilter(QObject *obj, QEvent *event)
+{
+    // Сканер штрихкодов "печатает" цифры и нажимает Enter - Enter здесь должен
+    // добавить код в список, а не закрыть карточку товара.
+    if (obj == m_barcodeInput && event->type() == QEvent::KeyPress) {
+        const int key = static_cast<QKeyEvent *>(event)->key();
+        if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            addBarcode();
+            return true;
+        }
+    }
+    return QDialog::eventFilter(obj, event);
+}
+
+bool ProductDialog::addBarcodeCode(const QString &input)
+{
+    const QString code = Barcode::normalize(input);
+    QString err;
+    if (!Barcode::isValid(code, &err)) {
+        QMessageBox::warning(this, tr("Неверный штрихкод"), tr("%1: %2").arg(code, err));
+        m_barcodeInput->selectAll();
+        return false;
+    }
+    if (m_barcodes->findItems(code, Qt::MatchExactly).isEmpty())
+        m_barcodes->addItem(code);
+    m_barcodeInput->clear();
+    return true;
+}
+
+void ProductDialog::addBarcode()
+{
+    if (!m_barcodeInput->text().trimmed().isEmpty())
+        addBarcodeCode(m_barcodeInput->text());
+    m_barcodeInput->setFocus();
+}
+
+void ProductDialog::removeBarcode()
+{
+    delete m_barcodes->takeItem(m_barcodes->currentRow());
+}
+
+void ProductDialog::generateBarcode()
+{
+    const QString code = Barcode::generateInternalEan13();
+    if (code.isEmpty()) {
+        QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось подобрать свободный штрихкод."));
+        return;
+    }
+    m_barcodes->addItem(code);
 }

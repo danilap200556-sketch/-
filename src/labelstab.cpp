@@ -1,4 +1,5 @@
 #include "labelstab.h"
+#include "barcode.h"
 #include "qrlabel.h"
 
 #include <QComboBox>
@@ -18,6 +19,7 @@
 namespace {
 constexpr int TypeProduct = 0;
 constexpr int TypeLocation = 1;
+constexpr int TypeBarcode = 2;
 }
 
 LabelsTab::LabelsTab(QWidget *parent)
@@ -32,6 +34,7 @@ LabelsTab::LabelsTab(QWidget *parent)
     m_type = new QComboBox(formBox);
     m_type->addItem(tr("Этикетка товара"), TypeProduct);
     m_type->addItem(tr("Этикетка места хранения (полки)"), TypeLocation);
+    m_type->addItem(tr("Штрихкод EAN-13 товара (на коробку)"), TypeBarcode);
     formLayout->addWidget(new QLabel(tr("Тип этикетки:"), formBox));
     formLayout->addWidget(m_type);
 
@@ -42,6 +45,14 @@ LabelsTab::LabelsTab(QWidget *parent)
     productRowLayout->addWidget(new QLabel(tr("Товар:"), m_productRow));
     productRowLayout->addWidget(m_product);
     formLayout->addWidget(m_productRow);
+
+    m_barcodeRow = new QWidget(formBox);
+    auto *barcodeRowLayout = new QVBoxLayout(m_barcodeRow);
+    barcodeRowLayout->setContentsMargins(0, 0, 0, 0);
+    m_barcode = new QComboBox(m_barcodeRow);
+    barcodeRowLayout->addWidget(new QLabel(tr("Штрихкод:"), m_barcodeRow));
+    barcodeRowLayout->addWidget(m_barcode);
+    formLayout->addWidget(m_barcodeRow);
 
     m_warehouse = new QComboBox(formBox);
     formLayout->addWidget(new QLabel(tr("Склад:"), formBox));
@@ -97,6 +108,7 @@ LabelsTab::LabelsTab(QWidget *parent)
 
     connect(m_type, &QComboBox::currentIndexChanged, this, &LabelsTab::onTypeChanged);
     connect(m_warehouse, &QComboBox::currentIndexChanged, this, &LabelsTab::onWarehouseChanged);
+    connect(m_product, &QComboBox::currentIndexChanged, this, &LabelsTab::fillBarcodeCombo);
     connect(addBtn, &QPushButton::clicked, this, &LabelsTab::addToQueue);
     connect(removeBtn, &QPushButton::clicked, this, &LabelsTab::removeSelected);
     connect(clearBtn, &QPushButton::clicked, this, &LabelsTab::clearQueue);
@@ -108,6 +120,7 @@ LabelsTab::LabelsTab(QWidget *parent)
 void LabelsTab::refresh()
 {
     fillProductCombo();
+    fillBarcodeCombo();
     fillWarehouseCombo();
     fillLocationCombo();
 }
@@ -161,8 +174,9 @@ void LabelsTab::onWarehouseChanged()
 
 void LabelsTab::onTypeChanged()
 {
-    const bool isProduct = m_type->currentData().toInt() == TypeProduct;
-    m_productRow->setVisible(isProduct);
+    const int type = m_type->currentData().toInt();
+    m_productRow->setVisible(type == TypeProduct || type == TypeBarcode);
+    m_barcodeRow->setVisible(type == TypeBarcode);
 }
 
 void LabelsTab::addToQueue()
@@ -173,6 +187,28 @@ void LabelsTab::addToQueue()
 
     QString content;
     QStringList captions;
+
+    if (type == TypeBarcode) {
+        if (m_product->count() == 0) {
+            QMessageBox::information(this, tr("Нет товаров"), tr("Сначала добавьте товары на вкладке «Товары»."));
+            return;
+        }
+        const QString code = m_barcode->currentData().toString();
+        if (code.isEmpty()) {
+            QMessageBox::information(this, tr("Нет штрихкода"),
+                                     tr("У этого товара нет штрихкода EAN-13. Добавьте его с коробки или "
+                                        "сгенерируйте свой в карточке товара (вкладка «Товары»)."));
+            return;
+        }
+        const QStringList meta = m_product->currentData().toStringList();
+        captions << meta.value(1) << meta.value(2);
+        if (!warehouseName.isEmpty())
+            captions << warehouseName + (locationCode.isEmpty() ? QString() : " / " + locationCode);
+        QueueEntry entry{code, captions, m_copies->value(), true};
+        m_queue.append(entry);
+        m_queueList->addItem(QStringLiteral("EAN %1 · %2  x%3").arg(code, captions.join(" / ")).arg(entry.copies));
+        return;
+    }
 
     if (type == TypeProduct) {
         if (m_product->count() == 0) {
@@ -227,7 +263,8 @@ QList<QPixmap> LabelsTab::expandedLabels() const
 {
     QList<QPixmap> result;
     for (const QueueEntry &e : m_queue) {
-        const QPixmap pm = QrLabel::renderLabel(e.content, e.captions);
+        const QPixmap pm = e.ean13 ? Barcode::renderLabel(e.content, e.captions)
+                                   : QrLabel::renderLabel(e.content, e.captions);
         for (int i = 0; i < e.copies; ++i)
             result.append(pm);
     }
@@ -296,4 +333,17 @@ void LabelsTab::exportPdf()
         QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось сформировать PDF."));
     else
         QMessageBox::information(this, tr("Готово"), tr("PDF сохранён: %1").arg(path));
+}
+
+void LabelsTab::fillBarcodeCombo()
+{
+    m_barcode->clear();
+    const QStringList meta = m_product->currentData().toStringList();
+    if (meta.isEmpty())
+        return;
+    for (const QString &code : Barcode::forProduct(meta.value(0).toInt()))
+        if (Barcode::canRenderEan13(code))
+            m_barcode->addItem(code, code);
+    if (m_barcode->count() == 0)
+        m_barcode->addItem(tr("— нет штрихкода EAN-13 —"), QString());
 }

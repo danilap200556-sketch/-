@@ -8,6 +8,7 @@ class StockTab;
 class LabelsTab;
 class ImportTab;
 class MarketTab;
+class OrdersTab;
 class UsersTab;
 
 class MainWindow : public QMainWindow
@@ -23,5 +24,6 @@ private:
     LabelsTab *m_labelsTab;
     ImportTab *m_importTab;
     MarketTab *m_marketTab;
+    OrdersTab *m_ordersTab;
     UsersTab *m_usersTab = nullptr;
 };

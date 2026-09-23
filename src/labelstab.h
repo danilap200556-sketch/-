@@ -24,6 +24,7 @@ public:
 private slots:
     void onTypeChanged();
     void onWarehouseChanged();
+    void fillBarcodeCombo();
     void addToQueue();
     void removeSelected();
     void clearQueue();
@@ -36,6 +37,7 @@ private:
         QString content;
         QStringList captions;
         int copies;
+        bool ean13 = false;
     };
 
     void fillProductCombo();
@@ -46,6 +48,8 @@ private:
     QComboBox *m_type;
     QWidget *m_productRow;
     QComboBox *m_product;
+    QWidget *m_barcodeRow;
+    QComboBox *m_barcode;
     QComboBox *m_warehouse;
     QComboBox *m_location;
     QSpinBox *m_copies;

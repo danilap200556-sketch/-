@@ -1,5 +1,6 @@
 #include "marketapi.h"
 
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -9,6 +10,7 @@
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QTimer>
 #include <QVariant>
 
 namespace {
@@ -511,4 +513,177 @@ bool MarketApi::updatePrices(qint64 businessId, const QList<MarketPriceUpdate> &
             m_log(QStringLiteral("Передано цен: %1 из %2").arg(start + batch.size()).arg(items.size()));
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Заказы и ярлыки
+
+bool MarketApi::orders(qint64 businessId, const QList<qint64> &campaignIds, const QStringList &statuses,
+                       const QStringList &substatuses, QList<MarketOrder> *out, QString *error)
+{
+    out->clear();
+    QJsonObject body;
+    body.insert("fake", false);
+    if (!statuses.isEmpty())
+        body.insert("statuses", QJsonArray::fromStringList(statuses));
+    if (!substatuses.isEmpty())
+        body.insert("substatuses", QJsonArray::fromStringList(substatuses));
+
+    // В фильтре не больше 50 магазинов за запрос.
+    for (int start = 0; start < qMax<qsizetype>(campaignIds.size(), 1); start += 50) {
+        QJsonArray ids;
+        for (qint64 id : campaignIds.mid(start, 50))
+            ids.append(id);
+        if (!ids.isEmpty())
+            body.insert("campaignIds", ids);
+
+        QString token;
+        for (int page = 0; page < kMaxPages; ++page) {
+            QUrlQuery query;
+            query.addQueryItem("limit", "50");
+            if (!token.isEmpty())
+                query.addQueryItem("page_token", token);
+            const Reply r = request("POST", QStringLiteral("/v1/businesses/%1/orders").arg(businessId), query,
+                                    QJsonDocument(body));
+            if (!r.error.isEmpty()) {
+                if (error)
+                    *error = r.error;
+                return false;
+            }
+            const QJsonObject root = r.json.object();
+            for (const QJsonValue &v : root.value("orders").toArray()) {
+                const QJsonObject o = v.toObject();
+                MarketOrder mo;
+                mo.id = o.value("orderId").toInteger();
+                mo.campaignId = o.value("campaignId").toInteger();
+                mo.status = o.value("status").toString();
+                mo.substatus = o.value("substatus").toString();
+                mo.creationDate = o.value("creationDate").toString();
+                const QJsonObject delivery = o.value("delivery").toObject();
+                mo.deliveryService = delivery.value("serviceName").toString();
+                mo.shipmentDate = delivery.value("shipment").toObject().value("shipmentDate").toString();
+                for (const QJsonValue &iv : o.value("items").toArray()) {
+                    const QJsonObject item = iv.toObject();
+                    mo.items.append({item.value("offerId").toString(), item.value("offerName").toString(),
+                                     int(item.value("count").toInteger())});
+                }
+                out->append(mo);
+            }
+            token = nextPageToken(root);
+            if (token.isEmpty())
+                break;
+        }
+    }
+    return true;
+}
+
+void MarketApi::wait(int ms)
+{
+    QEventLoop loop;
+    QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+    loop.exec();
+}
+
+bool MarketApi::download(const QUrl &url, QByteArray *data, QString *error)
+{
+    QNetworkRequest req(url);
+    // Ключ отправляем только самому API; ссылка на готовый файл может вести
+    // на стороннее хранилище, и ключ туда уходить не должен.
+    if (url.host() == QUrl(baseUrl()).host())
+        req.setRawHeader("Api-Key", m_apiKey.toUtf8());
+    req.setTransferTimeout(kTimeoutMs);
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply *reply = m_nam->get(req);
+    QEventLoop loop;
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    *data = reply->readAll();
+    const QString netError = reply->errorString();
+    const bool failed = reply->error() != QNetworkReply::NoError || status >= 400;
+    reply->deleteLater();
+    if (failed) {
+        if (error)
+            *error = QStringLiteral("не удалось скачать файл: %1").arg(status ? QStringLiteral("HTTP %1").arg(status) : netError);
+        return false;
+    }
+    return true;
+}
+
+bool MarketApi::orderLabels(qint64 businessId, const QList<qint64> &orderIds, const QString &format, QByteArray *pdf,
+                            QString *warning, QString *error)
+{
+    QJsonArray ids;
+    for (qint64 id : orderIds)
+        ids.append(id);
+    QUrlQuery query;
+    if (!format.isEmpty())
+        query.addQueryItem("format", format);
+    const Reply gen = request("POST", "/v2/reports/documents/labels/generate", query,
+                              QJsonDocument(QJsonObject{{"businessId", businessId},
+                                                        {"orderIds", ids},
+                                                        {"sortingType", "SORT_BY_GIVEN_ORDER"}}));
+    if (!gen.error.isEmpty()) {
+        if (error)
+            *error = gen.error;
+        return false;
+    }
+    const QJsonObject genResult = gen.json.object().value("result").toObject();
+    const QString reportId = genResult.value("reportId").toString();
+    if (reportId.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Маркет не вернул идентификатор файла с ярлыками");
+        return false;
+    }
+    if (m_log)
+        m_log(QStringLiteral("Маркет готовит файл с ярлыками (%1 заказов)...").arg(orderIds.size()));
+
+    // Ждём готовности: сначала столько, сколько обещал Маркет, потом опрашиваем
+    // каждые 2 секунды, но не дольше 5 минут.
+    const qint64 estimated = genResult.value("estimatedGenerationTime").toInteger();
+    wait(int(qBound(qint64(500), estimated, qint64(10000))));
+    QElapsedTimer timer;
+    timer.start();
+    while (true) {
+        const Reply info = request("GET", QStringLiteral("/v2/reports/info/%1").arg(reportId), {}, QJsonDocument());
+        if (!info.error.isEmpty()) {
+            if (error)
+                *error = info.error;
+            return false;
+        }
+        const QJsonObject result = info.json.object().value("result").toObject();
+        const QString status = result.value("status").toString();
+        const QString subStatus = result.value("subStatus").toString();
+        if (status == QLatin1String("DONE")) {
+            if (subStatus == QLatin1String("RESOURCE_NOT_FOUND") && warning)
+                *warning = QStringLiteral("часть заказов Маркет не нашёл - ярлыков для них в файле нет");
+            const QString file = result.value("file").toString();
+            if (file.isEmpty()) {
+                if (error)
+                    *error = subStatus == QLatin1String("NO_DATA")
+                                 ? QStringLiteral("для этих заказов ярлыков нет (заказы не в статусе сборки?)")
+                                 : QStringLiteral("Маркет не вернул ссылку на файл");
+                return false;
+            }
+            return download(QUrl(file), pdf, error);
+        }
+        if (status == QLatin1String("FAILED")) {
+            if (error) {
+                if (subStatus == QLatin1String("NO_DATA"))
+                    *error = QStringLiteral("для этих заказов ярлыков нет (заказы не в статусе сборки?)");
+                else if (subStatus == QLatin1String("TOO_LARGE"))
+                    *error = QStringLiteral("слишком много заказов для одного файла");
+                else
+                    *error = QStringLiteral("Маркет не смог подготовить файл с ярлыками%1")
+                                 .arg(subStatus.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(subStatus));
+            }
+            return false;
+        }
+        if (timer.elapsed() > 5 * 60 * 1000) {
+            if (error)
+                *error = QStringLiteral("Маркет готовит файл дольше 5 минут - попробуйте позже");
+            return false;
+        }
+        wait(2000);
+    }
 }

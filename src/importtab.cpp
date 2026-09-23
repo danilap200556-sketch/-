@@ -1,9 +1,14 @@
 #include "importtab.h"
 #include "csvimport.h"
 #include "database.h"
+#include "xlsx.h"
+#include "barcode.h"
+
+#include <QRegularExpression>
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDate>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGroupBox>
@@ -29,11 +34,14 @@ const QStringList kRoleLabels = {
     QStringLiteral("Название"),
     QStringLiteral("Остаток"),
     QStringLiteral("Склад"),
+    QStringLiteral("Штрихкод"),
 };
 
 int guessRoleForHeader(const QString &header)
 {
     const QString h = header.toLower();
+    if (h.contains(QStringLiteral("штрих")) || h.contains(QStringLiteral("ean")) || h.contains(QStringLiteral("barcode")))
+        return ImportTab::RoleBarcode;
     if (h.contains(QStringLiteral("артикул")))
         return ImportTab::RoleKey;
     if (h.contains(QStringLiteral("наимен")) || h.contains(QStringLiteral("назв")))
@@ -53,8 +61,10 @@ ImportTab::ImportTab(QWidget *parent)
     auto *layout = new QVBoxLayout(this);
 
     auto *hint = new QLabel(
-        tr("Сохраните отчёт (например, «Остатки» из МойСклад) в формате CSV "
-           "(Файл → Сохранить как → CSV) и выберите файл ниже."),
+        tr("Загрузите Excel (.xlsx) или CSV - например, отчёт «Остатки» из МойСклад. "
+           "Чтобы поправить остатки в Excel: «Выгрузить остатки в Excel», измените числа, "
+           "сохраните и загрузите файл обратно в режиме «фактический остаток». Для прихода "
+           "или списания укажите в колонке «Остаток» количество, которое добавить или убрать."),
         this);
     hint->setWordWrap(true);
     hint->setStyleSheet("color: gray;");
@@ -63,8 +73,10 @@ ImportTab::ImportTab(QWidget *parent)
     auto *fileRow = new QHBoxLayout();
     m_fileLabel = new QLabel(tr("Файл не выбран"), this);
     auto *pickBtn = new QPushButton(tr("Выбрать файл..."), this);
+    auto *exportBtn = new QPushButton(tr("Выгрузить остатки в Excel..."), this);
     fileRow->addWidget(m_fileLabel, 1);
     fileRow->addWidget(pickBtn);
+    fileRow->addWidget(exportBtn);
     layout->addLayout(fileRow);
 
     auto *splitter = new QSplitter(this);
@@ -108,10 +120,12 @@ ImportTab::ImportTab(QWidget *parent)
     paramsLayout->addLayout(whRow);
 
     m_modeInventory = new QRadioButton(tr("Задать как фактический остаток (рекомендуется)"), paramsGroup);
-    m_modeReceipt = new QRadioButton(tr("Добавить как приход"), paramsGroup);
+    m_modeReceipt = new QRadioButton(tr("Добавить к остатку (приход)"), paramsGroup);
+    m_modeWriteOff = new QRadioButton(tr("Убрать из остатка (списание)"), paramsGroup);
     m_modeInventory->setChecked(true);
     paramsLayout->addWidget(m_modeInventory);
     paramsLayout->addWidget(m_modeReceipt);
+    paramsLayout->addWidget(m_modeWriteOff);
 
     m_createMissing = new QCheckBox(tr("Создавать новые товары, если ключ не найден"), paramsGroup);
     m_createMissing->setChecked(true);
@@ -133,6 +147,11 @@ ImportTab::ImportTab(QWidget *parent)
     refresh();
 
     connect(pickBtn, &QPushButton::clicked, this, &ImportTab::pickFile);
+    connect(exportBtn, &QPushButton::clicked, this, &ImportTab::exportStock);
+    connect(m_modeWriteOff, &QRadioButton::toggled, this, [this](bool on) {
+        // Списывать товары, которых у нас нет, бессмысленно.
+        m_createMissing->setEnabled(!on);
+    });
     connect(m_headerRow, &QSpinBox::valueChanged, this, &ImportTab::onHeaderRowChanged);
     connect(importBtn, &QPushButton::clicked, this, &ImportTab::runImport);
 }
@@ -154,22 +173,39 @@ void ImportTab::refresh()
 
 void ImportTab::pickFile()
 {
-    const QString path = QFileDialog::getOpenFileName(this, tr("Выберите CSV-файл"), QString(),
-                                                        tr("CSV файлы (*.csv);;Все файлы (*)"));
+    const QString path = QFileDialog::getOpenFileName(this, tr("Выберите файл с остатками"), QString(),
+                                                        tr("Excel и CSV (*.xlsx *.csv);;Все файлы (*)"));
     if (path.isEmpty())
         return;
 
-    const CsvImport::Table table = CsvImport::readFile(path);
-    if (!table.ok) {
-        QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось прочитать файл:\n%1").arg(table.error));
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    if (suffix == QLatin1String("xls")) {
+        QMessageBox::warning(this, tr("Старый формат Excel"),
+                             tr("Файлы .xls (Excel 97-2003) не поддерживаются. Откройте файл в Excel и "
+                                "сохраните как «Книга Excel (.xlsx)»."));
         return;
     }
-    if (table.rows.isEmpty()) {
+    QVector<QStringList> rows;
+    QString readError;
+    if (suffix == QLatin1String("xlsx")) {
+        const Xlsx::Table t = Xlsx::readFirstSheet(path);
+        rows = t.rows;
+        readError = t.ok ? QString() : t.error;
+    } else {
+        const CsvImport::Table t = CsvImport::readFile(path);
+        rows = t.rows;
+        readError = t.ok ? QString() : t.error;
+    }
+    if (!readError.isEmpty()) {
+        QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось прочитать файл:\n%1").arg(readError));
+        return;
+    }
+    if (rows.isEmpty()) {
         QMessageBox::warning(this, tr("Пустой файл"), tr("В файле не найдено ни одной строки."));
         return;
     }
 
-    m_rows = table.rows;
+    m_rows = rows;
     m_fileName = QFileInfo(path).fileName();
     m_fileLabel->setText(tr("%1 (%2 строк)").arg(m_fileName).arg(m_rows.size()));
 
@@ -257,6 +293,7 @@ void ImportTab::rebuildColumnMapping()
         combo->addItem(kRoleLabels[RoleName], RoleName);
         combo->addItem(kRoleLabels[RoleStock], RoleStock);
         combo->addItem(kRoleLabels[RoleWarehouse], RoleWarehouse);
+        combo->addItem(kRoleLabels[RoleBarcode], RoleBarcode);
         combo->setCurrentIndex(guessRoleForHeader(headerText));
         rowLayout->addWidget(label);
         rowLayout->addWidget(combo, 1);
@@ -273,20 +310,25 @@ void ImportTab::runImport()
         return;
     }
 
-    int keyCol = -1, stockCol = -1, nameCol = -1, warehouseCol = -1;
+    int keyCol = -1, stockCol = -1, nameCol = -1, warehouseCol = -1, barcodeCol = -1;
     for (int c = 0; c < m_roleCombos.size(); ++c) {
         switch (m_roleCombos[c]->currentData().toInt()) {
         case RoleKey: keyCol = c; break;
         case RoleStock: stockCol = c; break;
         case RoleName: nameCol = c; break;
         case RoleWarehouse: warehouseCol = c; break;
+        case RoleBarcode: barcodeCol = c; break;
         default: break;
         }
     }
 
-    if (keyCol < 0 || stockCol < 0) {
+    // Без колонки остатка импорт только привязывает штрихкоды к товарам.
+    const bool barcodesOnly = stockCol < 0 && barcodeCol >= 0;
+    if ((keyCol < 0 && barcodeCol < 0) || (stockCol < 0 && !barcodesOnly)) {
         QMessageBox::warning(this, tr("Не хватает колонок"),
-                              tr("Укажите, какая колонка - «Ключ товара (артикул)», а какая - «Остаток»."));
+                              tr("Укажите, какая колонка - «Ключ товара (артикул)» (или «Штрихкод»), а какая - "
+                                 "«Остаток». Чтобы только привязать штрихкоды, достаточно колонок артикула и "
+                                 "штрихкода."));
         return;
     }
 
@@ -311,21 +353,58 @@ void ImportTab::runImport()
     }
 
     const bool asInventory = m_modeInventory->isChecked();
-    const bool createMissing = m_createMissing->isChecked();
+    const bool asWriteOff = m_modeWriteOff->isChecked();
+    const bool createMissing = m_createMissing->isChecked() && !asWriteOff;
     const QString comment = tr("импорт из %1").arg(m_fileName);
 
-    int processed = 0, created = 0, updated = 0, skipped = 0, errors = 0;
+    int processed = 0, created = 0, updated = 0, skipped = 0, errors = 0, linked = 0;
     QStringList logLines;
 
     for (int r = headerIdx + 1; r < m_rows.size(); ++r) {
         const QStringList &row = m_rows[r];
-        const QString key = row.value(keyCol).trimmed();
-        if (key.isEmpty())
+        QString key = keyCol >= 0 ? row.value(keyCol).trimmed() : QString();
+        // В одной ячейке может быть несколько штрихкодов через запятую/пробел.
+        QStringList codes;
+        if (barcodeCol >= 0)
+            for (const QString &part : row.value(barcodeCol).split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts))
+                codes << Barcode::normalize(part);
+        if (key.isEmpty() && codes.isEmpty())
             continue;
         if (key.toLower().startsWith(QStringLiteral("итого")))
             continue;
 
         ++processed;
+
+        // Товар ищем по артикулу, а если его нет - по штрихкоду.
+        int productId = key.isEmpty() ? -1 : productBySku.value(key, -1);
+        for (const QString &c : codes)
+            if (productId < 0)
+                productId = Barcode::productIdFor(c);
+        auto linkBarcodes = [&](int pid) {
+            for (const QString &c : codes) {
+                QString err;
+                const bool isNew = Barcode::productIdFor(c) != pid;
+                if (!Barcode::attach(pid, c, &err))
+                    logLines << tr("Строка %1: штрихкод «%2» не привязан - %3").arg(r + 1).arg(c, err);
+                else if (isNew)
+                    ++linked;
+            }
+        };
+        if (barcodesOnly) {
+            if (productId < 0) {
+                ++skipped;
+                logLines << tr("Строка %1: товар «%2» не найден").arg(r + 1).arg(key.isEmpty() ? codes.join(", ") : key);
+                continue;
+            }
+            linkBarcodes(productId);
+            continue;
+        }
+        if (key.isEmpty() && productId < 0) {
+            ++skipped;
+            logLines << tr("Строка %1: штрихкод %2 не привязан ни к одному товару, а артикула нет")
+                            .arg(r + 1).arg(codes.join(", "));
+            continue;
+        }
 
         QString stockRaw = row.value(stockCol).trimmed();
         stockRaw.replace(QChar(','), QChar('.'));
@@ -337,6 +416,14 @@ void ImportTab::runImport()
             continue;
         }
         const int qty = qRound(qtyD);
+        if (!asInventory && qty == 0)
+            continue;
+        if (!asInventory && qty < 0) {
+            ++errors;
+            logLines << tr("Строка %1: отрицательное количество %2 для «%3» - для прихода и списания "
+                           "укажите, сколько добавить или убрать").arg(r + 1).arg(qty).arg(key);
+            continue;
+        }
 
         int warehouseId = defaultWarehouseId;
         if (warehouseCol >= 0) {
@@ -354,7 +441,6 @@ void ImportTab::runImport()
             continue;
         }
 
-        int productId = productBySku.value(key, -1);
         if (productId < 0) {
             if (!createMissing) {
                 ++skipped;
@@ -377,11 +463,14 @@ void ImportTab::runImport()
             ++created;
             logLines << tr("Строка %1: создан новый товар «%2»").arg(r + 1).arg(key);
         }
+        linkBarcodes(productId);
 
         QString err;
         bool ok;
         if (asInventory)
             ok = Database::inventoryAdjust(productId, warehouseId, qty, comment, &err);
+        else if (asWriteOff)
+            ok = Database::adjustStock(productId, warehouseId, -qty, Database::MovementType::WriteOff, comment, &err);
         else
             ok = Database::adjustStock(productId, warehouseId, qty, Database::MovementType::Receipt, comment, &err);
 
@@ -394,10 +483,58 @@ void ImportTab::runImport()
     }
 
     logLines << QString();
-    logLines << tr("Готово: обработано %1, создано товаров %2, обновлено остатков %3, пропущено %4, ошибок %5")
-                     .arg(processed).arg(created).arg(updated).arg(skipped).arg(errors);
+    logLines << tr("Готово: обработано %1, создано товаров %2, обновлено остатков %3, привязано штрихкодов %4, "
+                   "пропущено %5, ошибок %6")
+                     .arg(processed).arg(created).arg(updated).arg(linked).arg(skipped).arg(errors);
     m_log->setPlainText(logLines.join('\n'));
 
-    if (updated > 0 || created > 0)
+    if (updated > 0 || created > 0 || linked > 0)
         emit dataImported();
+}
+
+void ImportTab::exportStock()
+{
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Выгрузить остатки в Excel"),
+        tr("Остатки_%1.xlsx").arg(QDate::currentDate().toString("yyyy-MM-dd")), tr("Excel (*.xlsx)"));
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(QLatin1String(".xlsx"), Qt::CaseInsensitive))
+        path += QLatin1String(".xlsx");
+
+    Xlsx::Sheet sheet;
+    sheet.name = tr("Остатки");
+    sheet.rows.append({tr("Артикул"), tr("Название"), tr("Склад"), tr("Остаток"), tr("Место хранения")});
+    sheet.numericColumns = {3};
+    sheet.columnWidths = {22, 45, 20, 10, 16};
+
+    // Товары, которых ещё нет ни на одном складе, тоже попадают в файл - на
+    // склад по умолчанию с нулём, чтобы им можно было проставить остаток.
+    QSqlQuery q;
+    q.prepare("SELECT p.sku, p.name, w.name, s.quantity, l.code "
+              "FROM stock s JOIN products p ON p.id = s.product_id "
+              "JOIN warehouses w ON w.id = s.warehouse_id "
+              "LEFT JOIN locations l ON l.id = s.location_id "
+              "UNION ALL "
+              "SELECT p.sku, p.name, ?, 0, NULL FROM products p "
+              "WHERE NOT EXISTS (SELECT 1 FROM stock s WHERE s.product_id = p.id) "
+              "ORDER BY 1, 3");
+    q.addBindValue(m_warehouseCombo->currentText());
+    if (!q.exec()) {
+        QMessageBox::warning(this, tr("Ошибка"), q.lastError().text());
+        return;
+    }
+    while (q.next())
+        sheet.rows.append({q.value(0).toString(), q.value(1).toString(), q.value(2).toString(),
+                           QString::number(q.value(3).toInt()), q.value(4).toString()});
+
+    QString err;
+    if (!Xlsx::write(path, {sheet}, &err)) {
+        QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось сохранить файл:\n%1").arg(err));
+        return;
+    }
+    QMessageBox::information(this, tr("Готово"),
+                             tr("Выгружено строк: %1.\n\nИзмените остатки в Excel, сохраните файл и загрузите его "
+                                "здесь же в режиме «Задать как фактический остаток».")
+                                 .arg(sheet.rows.size() - 1));
 }

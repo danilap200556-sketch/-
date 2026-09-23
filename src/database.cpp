@@ -93,6 +93,14 @@ const QStringList &schemaDdl()
             market_warehouse_id BIGINT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         ))",
+        // Штрихкоды товаров (с коробок производителя или свои). У товара их
+        // может быть несколько, но один штрихкод - только у одного товара.
+        R"(CREATE TABLE IF NOT EXISTS product_barcodes (
+            barcode TEXT PRIMARY KEY,
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        ))",
+        "CREATE INDEX IF NOT EXISTS product_barcodes_product_idx ON product_barcodes (product_id)",
         // Наши склады, остатки которых суммируются и передаются в кабинет.
         // Пусто - берутся все склады.
         R"(CREATE TABLE IF NOT EXISTS market_account_warehouses (

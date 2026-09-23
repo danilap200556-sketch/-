@@ -23,7 +23,7 @@ class ImportTab : public QWidget
 {
     Q_OBJECT
 public:
-    enum Role { RoleIgnore = 0, RoleKey, RoleName, RoleStock, RoleWarehouse };
+    enum Role { RoleIgnore = 0, RoleKey, RoleName, RoleStock, RoleWarehouse, RoleBarcode };
 
     explicit ImportTab(QWidget *parent = nullptr);
 
@@ -34,6 +34,7 @@ signals:
 
 private slots:
     void pickFile();
+    void exportStock();
     void onHeaderRowChanged(int row);
     void runImport();
 
@@ -56,6 +57,7 @@ private:
     QComboBox *m_warehouseCombo;
     QRadioButton *m_modeInventory;
     QRadioButton *m_modeReceipt;
+    QRadioButton *m_modeWriteOff;
     QCheckBox *m_createMissing;
 
     QPlainTextEdit *m_log;

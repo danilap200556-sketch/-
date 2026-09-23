@@ -73,6 +73,25 @@ struct MarketPriceUpdate
     double discountBase = 0; // 0 - не передавать
 };
 
+struct MarketOrderItem
+{
+    QString offerId;
+    QString name;
+    int count = 0;
+};
+
+struct MarketOrder
+{
+    qint64 id = 0;
+    qint64 campaignId = 0;
+    QString status;
+    QString substatus;
+    QString creationDate;
+    QString shipmentDate;
+    QString deliveryService;
+    QList<MarketOrderItem> items;
+};
+
 // Клиент API Яндекс Маркета для продавцов (https://api.partner.market.yandex.ru),
 // схемы запросов - по официальной спецификации
 // github.com/yandex-market/yandex-market-partner-api. Запросы синхронные
@@ -101,7 +120,20 @@ public:
     bool prices(qint64 businessId, QHash<QString, MarketPrice> *out, QString *error);
     bool updatePrices(qint64 businessId, const QList<MarketPriceUpdate> &items, QString *error);
 
+    // Заказы магазинов кабинета (последние 30 дней). Пустой statuses - любые.
+    bool orders(qint64 businessId, const QList<qint64> &campaignIds, const QStringList &statuses,
+                const QStringList &substatuses, QList<MarketOrder> *out, QString *error);
+
+    // Один PDF с ярлыками на все коробки переданных заказов одного кабинета.
+    // Маркет готовит файл асинхронно - метод ждёт готовности (до нескольких минут).
+    // warning - непустой, если файл готов, но часть заказов в него не попала.
+    bool orderLabels(qint64 businessId, const QList<qint64> &orderIds, const QString &format, QByteArray *pdf,
+                     QString *warning, QString *error);
+
 private:
+    bool download(const QUrl &url, QByteArray *data, QString *error);
+    static void wait(int ms);
+
     struct Reply {
         int httpStatus = 0;
         QJsonDocument json;

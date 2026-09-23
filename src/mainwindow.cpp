@@ -6,6 +6,7 @@
 #include "importtab.h"
 #include "connectiondialog.h"
 #include "markettab.h"
+#include "ordertab.h"
 #include "userstab.h"
 #include "authservice.h"
 
@@ -52,6 +53,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     m_labelsTab = new LabelsTab(this);
     m_importTab = new ImportTab(this);
     m_marketTab = new MarketTab(isAdmin, this);
+    m_ordersTab = new OrdersTab(this);
 
     tabs->addTab(m_productsTab, tr("Товары"));
     tabs->addTab(m_warehousesTab, tr("Склады"));
@@ -59,6 +61,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     tabs->addTab(m_labelsTab, tr("Этикетки"));
     tabs->addTab(m_importTab, tr("Импорт"));
     tabs->addTab(m_marketTab, tr("Яндекс Маркет"));
+    tabs->addTab(m_ordersTab, tr("Заказы Маркета"));
     if (isAdmin) {
         m_usersTab = new UsersTab(username, this);
         tabs->addTab(m_usersTab, tr("Пользователи"));
@@ -84,6 +87,8 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
             m_labelsTab->refresh();
         else if (w == m_importTab)
             m_importTab->refresh();
+        else if (w == m_ordersTab)
+            m_ordersTab->refresh();
         else if (w == m_usersTab)
             m_usersTab->refresh();
     });

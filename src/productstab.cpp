@@ -1,5 +1,11 @@
 #include "productstab.h"
 #include "productdialog.h"
+#include "barcode.h"
+
+#include <QInputDialog>
+#include <QLabel>
+#include <QLineEdit>
+#include <QSqlQuery>
 
 #include <QDesktopServices>
 #include <QHBoxLayout>
@@ -35,8 +41,16 @@ ProductsTab::ProductsTab(QWidget *parent)
     toolbarLayout->addWidget(editBtn);
     toolbarLayout->addWidget(deleteBtn);
     toolbarLayout->addWidget(photoBtn);
-    toolbarLayout->addStretch();
+    toolbarLayout->addSpacing(20);
+    m_search = new QLineEdit(toolbar);
+    m_search->setPlaceholderText(tr("Поиск: артикул, название или штрихкод (можно сканером)"));
+    m_search->setClearButtonEnabled(true);
+    m_search->setMinimumWidth(320);
+    toolbarLayout->addWidget(m_search, 1);
     layout->addWidget(toolbar);
+    m_searchStatus = new QLabel(this);
+    m_searchStatus->setStyleSheet("color: gray;");
+    layout->addWidget(m_searchStatus);
 
     m_model = new QSqlTableModel(this);
     m_model->setTable("products");
@@ -58,11 +72,15 @@ ProductsTab::ProductsTab(QWidget *parent)
     connect(deleteBtn, &QPushButton::clicked, this, &ProductsTab::deleteProduct);
     connect(photoBtn, &QPushButton::clicked, this, &ProductsTab::openSelectedPhoto);
     connect(m_table, &QTableView::doubleClicked, this, &ProductsTab::editProduct);
+    connect(m_search, &QLineEdit::textChanged, this, &ProductsTab::applySearch);
+    connect(m_search, &QLineEdit::returnPressed, this, &ProductsTab::onSearchEntered);
 }
 
 void ProductsTab::refresh()
 {
     m_model->select();
+    while (m_model->canFetchMore())
+        m_model->fetchMore();
     m_model->setHeaderData(ColSku, Qt::Horizontal, tr("Артикул"));
     m_model->setHeaderData(ColName, Qt::Horizontal, tr("Название"));
     m_model->setHeaderData(ColPrice, Qt::Horizontal, tr("Цена"));
@@ -106,6 +124,11 @@ void ProductsTab::addProduct()
         m_model->revertAll();
         return;
     }
+    QSqlQuery idQuery;
+    idQuery.prepare("SELECT id FROM products WHERE sku = ?");
+    idQuery.addBindValue(d.sku);
+    if (idQuery.exec() && idQuery.next())
+        saveBarcodes(idQuery.value(0).toInt(), d.barcodes);
     refresh();
     emit productsChanged();
 }
@@ -118,8 +141,11 @@ void ProductsTab::editProduct()
     const int row = sel.first().row();
     const QSqlRecord rec = m_model->record(row);
 
+    const int productId = rec.value("id").toInt();
     ProductDialog dlg(this);
+    dlg.setProductId(productId);
     ProductDialog::ProductData d;
+    d.barcodes = Barcode::forProduct(productId);
     d.sku = rec.value("sku").toString();
     d.name = rec.value("name").toString();
     d.description = rec.value("description").toString();
@@ -147,6 +173,7 @@ void ProductsTab::editProduct()
         m_model->revertAll();
         return;
     }
+    saveBarcodes(productId, nd.barcodes);
     refresh();
     emit productsChanged();
 }
@@ -183,4 +210,92 @@ void ProductsTab::openSelectedPhoto()
         return;
     }
     QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+}
+
+void ProductsTab::saveBarcodes(int productId, const QStringList &codes)
+{
+    QString err;
+    if (!Barcode::setForProduct(productId, codes, &err))
+        QMessageBox::warning(this, tr("Штрихкоды не сохранены"), err);
+}
+
+void ProductsTab::applySearch()
+{
+    const QString term = m_search->text().trimmed();
+    if (term.isEmpty()) {
+        m_model->setFilter(QString());
+        m_searchStatus->clear();
+    } else {
+        // Фильтр QSqlTableModel - это кусок SQL, поэтому экранируем кавычки и
+        // спецсимволы LIKE, чтобы введённый текст искался буквально.
+        QString t = term;
+        t.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_").replace('\'', "''");
+        m_model->setFilter(QStringLiteral("sku ILIKE '%%1%' OR name ILIKE '%%1%' OR market_sku ILIKE '%%1%' "
+                                          "OR id IN (SELECT product_id FROM product_barcodes WHERE barcode LIKE '%%1%')")
+                               .arg(t));
+    }
+    m_model->select();
+    // Модель подгружает строки порциями - для поиска и выделения нужны все.
+    while (m_model->canFetchMore())
+        m_model->fetchMore();
+    if (!term.isEmpty())
+        m_searchStatus->setText(tr("Найдено товаров: %1").arg(m_model->rowCount()));
+}
+
+void ProductsTab::selectProduct(int productId)
+{
+    for (int row = 0; row < m_model->rowCount(); ++row) {
+        if (m_model->record(row).value("id").toInt() == productId) {
+            m_table->selectRow(row);
+            m_table->scrollTo(m_model->index(row, ColSku));
+            return;
+        }
+    }
+}
+
+void ProductsTab::onSearchEntered()
+{
+    const QString code = Barcode::normalize(m_search->text());
+    if (!Barcode::isValid(code))
+        return; // обычный текстовый поиск - уже отфильтровано
+
+    const int productId = Barcode::productIdFor(code);
+    if (productId >= 0) {
+        m_search->setText(code);
+        selectProduct(productId);
+        m_searchStatus->setText(tr("Штрихкод %1 - найден товар").arg(code));
+        m_search->selectAll();
+        return;
+    }
+
+    // Незнакомый штрихкод с коробки - предлагаем сразу привязать его к товару.
+    QStringList items;
+    QList<int> ids;
+    QSqlQuery q("SELECT id, sku, name FROM products ORDER BY sku");
+    while (q.next()) {
+        ids << q.value(0).toInt();
+        items << QStringLiteral("%1 — %2").arg(q.value(1).toString(), q.value(2).toString());
+    }
+    if (items.isEmpty()) {
+        QMessageBox::information(this, tr("Штрихкод не найден"), tr("Штрихкод %1 не привязан ни к одному товару, "
+                                                                   "а товаров ещё нет.").arg(code));
+        return;
+    }
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(
+        this, tr("Новый штрихкод"),
+        tr("Штрихкод %1 ещё не привязан ни к одному товару.\nК какому товару его привязать?").arg(code), items, 0,
+        false, &ok);
+    if (!ok)
+        return;
+    const int chosenId = ids.value(items.indexOf(choice), -1);
+    QString err;
+    if (!Barcode::attach(chosenId, code, &err)) {
+        QMessageBox::warning(this, tr("Ошибка"), err);
+        return;
+    }
+    m_search->setText(code);
+    selectProduct(chosenId);
+    m_searchStatus->setText(tr("Штрихкод %1 привязан к товару %2").arg(code, choice));
+    m_search->selectAll();
 }

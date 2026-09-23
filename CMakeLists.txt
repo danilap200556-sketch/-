@@ -15,6 +15,11 @@ if(MSVC)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Sql PrintSupport Network)
+# QZipReader/QZipWriter (для .xlsx) - приватный, но экспортируемый API QtGui.
+find_package(Qt6 QUIET OPTIONAL_COMPONENTS GuiPrivate)
+if(NOT TARGET Qt6::GuiPrivate)
+    message(FATAL_ERROR "Нужны приватные заголовки QtGui (Qt6::GuiPrivate) для работы с Excel-файлами")
+endif()
 
 # Neon (и, видимо, некоторые другие serverless/pooled Postgres) обрывает
 # соединение после пятого запроса подряд без паузы - экспериментально
@@ -113,6 +118,9 @@ add_executable(inventory_manager
     src/marketapi.cpp
     src/marketaccountdialog.cpp
     src/markettab.cpp
+    src/xlsx.cpp
+    src/ordertab.cpp
+    src/barcode.cpp
 )
 
 target_include_directories(inventory_manager PRIVATE ${QRENCODE_INCLUDE_DIRS})
@@ -122,6 +130,7 @@ target_link_libraries(inventory_manager PRIVATE
     Qt6::Sql
     Qt6::PrintSupport
     Qt6::Network
+    Qt6::GuiPrivate
     ${QRENCODE_LIBRARIES}
 )
 
