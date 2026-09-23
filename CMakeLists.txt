@@ -15,7 +15,8 @@ if(MSVC)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Sql PrintSupport Network)
-# QZipReader/QZipWriter (для .xlsx) - приватный, но экспортируемый API QtGui.
+# QZipReader/QZipWriter (для .xlsx) - приватный, но экспортируемый API Qt
+# (в QtGui до 6.6, в QtCore начиная с 6.6; GuiPrivate тянет и CorePrivate).
 find_package(Qt6 QUIET OPTIONAL_COMPONENTS GuiPrivate)
 if(NOT TARGET Qt6::GuiPrivate)
     message(FATAL_ERROR "Нужны приватные заголовки QtGui (Qt6::GuiPrivate) для работы с Excel-файлами")

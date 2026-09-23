@@ -1,7 +1,13 @@
 #include "xlsx.h"
 
+// QZipReader/QZipWriter: до Qt 6.6 лежали в QtGui, с Qt 6.6 - в QtCore.
+#if __has_include(<QtCore/private/qzipreader_p.h>)
+#include <QtCore/private/qzipreader_p.h>
+#include <QtCore/private/qzipwriter_p.h>
+#else
 #include <QtGui/private/qzipreader_p.h>
 #include <QtGui/private/qzipwriter_p.h>
+#endif
 
 #include <QFile>
 #include <QHash>
