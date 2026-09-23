@@ -59,6 +59,10 @@ ProductDialog::ProductDialog(QWidget *parent)
     m_customCode->setPlaceholderText(tr("оставьте пустым - в QR пойдёт артикул"));
     form->addRow(tr("Свой код маркировки"), m_customCode);
 
+    m_marketSku = new QLineEdit(this);
+    m_marketSku->setPlaceholderText(tr("оставьте пустым, если совпадает с артикулом"));
+    form->addRow(tr("Артикул на Маркете"), m_marketSku);
+
     m_photoStatus = new QLabel(this);
     m_photoStatus->setStyleSheet("color: gray; font-size: 11px;");
     layout->addWidget(m_photoStatus);
@@ -102,6 +106,7 @@ void ProductDialog::setData(const ProductData &data)
     m_price->setValue(data.price);
     m_photoPath->setText(data.photoPath);
     m_customCode->setText(data.customCode);
+    m_marketSku->setText(data.marketSku);
 }
 
 ProductDialog::ProductData ProductDialog::data() const
@@ -113,5 +118,6 @@ ProductDialog::ProductData ProductDialog::data() const
     d.price = m_price->value();
     d.photoPath = m_photoPath->text();
     d.customCode = m_customCode->text().trimmed();
+    d.marketSku = m_marketSku->text().trimmed();
     return d;
 }

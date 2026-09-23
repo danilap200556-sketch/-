@@ -14,7 +14,7 @@ if(MSVC)
     add_compile_definitions(_HAS_DEPRECATED_ITERATOR_HELPERS=1)
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Sql PrintSupport)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Sql PrintSupport Network)
 
 # Neon (и, видимо, некоторые другие serverless/pooled Postgres) обрывает
 # соединение после пятого запроса подряд без паузы - экспериментально
@@ -109,6 +109,10 @@ add_executable(inventory_manager
     src/formdialog.cpp
     src/csvimport.cpp
     src/importtab.cpp
+    src/userstab.cpp
+    src/marketapi.cpp
+    src/marketaccountdialog.cpp
+    src/markettab.cpp
 )
 
 target_include_directories(inventory_manager PRIVATE ${QRENCODE_INCLUDE_DIRS})
@@ -117,6 +121,7 @@ target_link_libraries(inventory_manager PRIVATE
     Qt6::Widgets
     Qt6::Sql
     Qt6::PrintSupport
+    Qt6::Network
     ${QRENCODE_LIBRARIES}
 )
 

@@ -14,7 +14,9 @@
 #include <QVBoxLayout>
 
 namespace {
-enum Column { ColId = 0, ColSku, ColName, ColDescription, ColPhotoPath, ColPrice, ColCustomCode, ColCreatedAt };
+// market_sku добавлен в таблицу через ALTER TABLE, поэтому всегда последний.
+enum Column { ColId = 0, ColSku, ColName, ColDescription, ColPhotoPath, ColPrice, ColCustomCode, ColCreatedAt,
+              ColMarketSku };
 }
 
 ProductsTab::ProductsTab(QWidget *parent)
@@ -65,6 +67,7 @@ void ProductsTab::refresh()
     m_model->setHeaderData(ColName, Qt::Horizontal, tr("Название"));
     m_model->setHeaderData(ColPrice, Qt::Horizontal, tr("Цена"));
     m_model->setHeaderData(ColCustomCode, Qt::Horizontal, tr("Свой код"));
+    m_model->setHeaderData(ColMarketSku, Qt::Horizontal, tr("Артикул на Маркете"));
     m_table->setColumnHidden(ColId, true);
     m_table->setColumnHidden(ColDescription, true);
     m_table->setColumnHidden(ColPhotoPath, true);
@@ -93,6 +96,7 @@ void ProductsTab::addProduct()
     rec.setValue("photo_path", d.photoPath);
     rec.setValue("price", d.price);
     rec.setValue("custom_code", d.customCode);
+    rec.setValue("market_sku", d.marketSku);
     rec.remove(rec.indexOf("id"));
     rec.remove(rec.indexOf("created_at"));
 
@@ -122,6 +126,7 @@ void ProductsTab::editProduct()
     d.photoPath = rec.value("photo_path").toString();
     d.price = rec.value("price").toDouble();
     d.customCode = rec.value("custom_code").toString();
+    d.marketSku = rec.value("market_sku").toString();
     dlg.setData(d);
 
     if (dlg.exec() != QDialog::Accepted)
@@ -134,6 +139,7 @@ void ProductsTab::editProduct()
     m_model->setData(m_model->index(row, ColPhotoPath), nd.photoPath);
     m_model->setData(m_model->index(row, ColPrice), nd.price);
     m_model->setData(m_model->index(row, ColCustomCode), nd.customCode);
+    m_model->setData(m_model->index(row, ColMarketSku), nd.marketSku);
 
     if (!m_model->submitAll()) {
         QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось сохранить изменения:\n%1")

@@ -5,6 +5,9 @@
 #include "labelstab.h"
 #include "importtab.h"
 #include "connectiondialog.h"
+#include "markettab.h"
+#include "userstab.h"
+#include "authservice.h"
 
 #include <QMenuBar>
 #include <QMessageBox>
@@ -27,6 +30,19 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         }
     });
 
+    const bool isAdmin = AuthService::isAdmin(username);
+
+    auto *accountMenu = menuBar()->addMenu(tr("Учётная запись"));
+    auto *passwordAction = accountMenu->addAction(tr("Сменить мой пароль..."));
+    connect(passwordAction, &QAction::triggered, this, [this, username]() {
+        for (const auto &u : AuthService::listUsers()) {
+            if (u.username == username) {
+                UsersTab::changePassword(this, u.id, username);
+                return;
+            }
+        }
+    });
+
     auto *tabs = new QTabWidget(this);
     setCentralWidget(tabs);
 
@@ -35,12 +51,18 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     m_stockTab = new StockTab(this);
     m_labelsTab = new LabelsTab(this);
     m_importTab = new ImportTab(this);
+    m_marketTab = new MarketTab(isAdmin, this);
 
     tabs->addTab(m_productsTab, tr("Товары"));
     tabs->addTab(m_warehousesTab, tr("Склады"));
     tabs->addTab(m_stockTab, tr("Остатки и движения"));
     tabs->addTab(m_labelsTab, tr("Этикетки"));
     tabs->addTab(m_importTab, tr("Импорт"));
+    tabs->addTab(m_marketTab, tr("Яндекс Маркет"));
+    if (isAdmin) {
+        m_usersTab = new UsersTab(username, this);
+        tabs->addTab(m_usersTab, tr("Пользователи"));
+    }
 
     // Изменения товаров/складов должны сразу отражаться там, где на них
     // ссылаются другие вкладки (комбобоксы, сводные таблицы).
@@ -52,13 +74,17 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     connect(m_importTab, &ImportTab::dataImported, m_stockTab, &StockTab::refresh);
     connect(m_importTab, &ImportTab::dataImported, m_productsTab, &ProductsTab::refresh);
     connect(m_importTab, &ImportTab::dataImported, m_labelsTab, &LabelsTab::refresh);
+    connect(m_warehousesTab, &WarehousesTab::warehousesChanged, m_marketTab, &MarketTab::refresh);
 
-    connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
-        if (index == 2)
+    connect(tabs, &QTabWidget::currentChanged, this, [this, tabs](int index) {
+        QWidget *w = tabs->widget(index);
+        if (w == m_stockTab)
             m_stockTab->refresh();
-        else if (index == 3)
+        else if (w == m_labelsTab)
             m_labelsTab->refresh();
-        else if (index == 4)
+        else if (w == m_importTab)
             m_importTab->refresh();
+        else if (w == m_usersTab)
+            m_usersTab->refresh();
     });
 }

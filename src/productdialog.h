@@ -21,6 +21,7 @@ public:
         QString photoPath;
         double price = 0.0;
         QString customCode;
+        QString marketSku;
     };
 
     explicit ProductDialog(QWidget *parent = nullptr);
@@ -39,5 +40,6 @@ private:
     QDoubleSpinBox *m_price;
     QLineEdit *m_photoPath;
     QLineEdit *m_customCode;
+    QLineEdit *m_marketSku;
     QLabel *m_photoStatus;
 };

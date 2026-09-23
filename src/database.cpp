@@ -74,6 +74,32 @@ const QStringList &schemaDdl()
             comment TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         ))",
+        // --- Пользователи: права администратора. Если админа ещё нет (база
+        // создана до появления этого поля) - им становится первый пользователь.
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE",
+        "UPDATE users SET is_admin = TRUE WHERE id = (SELECT MIN(id) FROM users) "
+        "AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin)",
+        // --- Яндекс Маркет ---
+        // Артикул товара в каталоге Маркета (offerId), если он отличается от
+        // нашего sku. Пусто - используется sku.
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS market_sku TEXT",
+        R"(CREATE TABLE IF NOT EXISTS market_accounts (
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            name TEXT NOT NULL,
+            api_key TEXT NOT NULL,
+            business_id BIGINT NOT NULL,
+            campaign_id BIGINT NOT NULL,
+            warehouse_groups BOOLEAN NOT NULL DEFAULT FALSE,
+            market_warehouse_id BIGINT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        ))",
+        // Наши склады, остатки которых суммируются и передаются в кабинет.
+        // Пусто - берутся все склады.
+        R"(CREATE TABLE IF NOT EXISTS market_account_warehouses (
+            account_id INTEGER NOT NULL REFERENCES market_accounts(id) ON DELETE CASCADE,
+            warehouse_id INTEGER NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,
+            PRIMARY KEY (account_id, warehouse_id)
+        ))",
     };
     return ddl;
 }

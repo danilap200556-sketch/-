@@ -80,6 +80,15 @@ jobs:
         run: |
           windeployqt.exe dist\inventory_manager.exe
 
+      # Without a TLS backend plugin every HTTPS request to the Market API fails
+      # with "TLS initialization failed", so don't ship a build that lacks it.
+      - name: Check TLS plugin for Market API (HTTPS)
+        shell: pwsh
+        run: |
+          $tls = Get-ChildItem dist\tls -Filter *.dll -ErrorAction SilentlyContinue
+          if (-not $tls) { throw "windeployqt did not deploy any TLS backend plugin into dist\tls" }
+          $tls | ForEach-Object { Write-Host "TLS plugin: $($_.Name)" }
+
       - name: Copy vcpkg runtime DLLs (qrencode, libpq + its deps)
         shell: pwsh
         run: |

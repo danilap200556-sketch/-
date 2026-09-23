@@ -69,7 +69,9 @@ void LoginDialog::trySubmit()
             m_error->setText(tr("Пароли не совпадают"));
             return;
         }
-        if (!AuthService::createUser(m_username->text(), m_password->text(), &err)) {
+        // Первая учётная запись всегда администраторская - иначе заводить
+        // остальных пользователей было бы некому.
+        if (!AuthService::createUser(m_username->text(), m_password->text(), true, &err)) {
             m_error->setText(err);
             return;
         }
