@@ -1,0 +1,29 @@
+# Сайт + Caddy (сам получает и обновляет HTTPS-сертификат Let's Encrypt).
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TRUST_PROXY: "1"          # перед сайтом стоит Caddy
+    volumes:
+      - ./certs:/certs:ro       # сюда кладётся сертификат Яндекса (root.crt), см. README
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+
+volumes:
+  caddy_data:

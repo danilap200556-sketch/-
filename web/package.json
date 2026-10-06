@@ -1,0 +1,16 @@
+{
+  "name": "inventory-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Веб-интерфейс склада: та же база PostgreSQL, что и у настольного приложения",
+  "main": "server.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test --test-concurrency=1 \"test/*.test.js\""
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "pg": "^8.23.1"
+  }
+}

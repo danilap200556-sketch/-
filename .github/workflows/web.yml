@@ -1,0 +1,47 @@
+name: Web tests
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'web/**'
+      - 'src/database.cpp'
+      - '.github/workflows/web.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DB_HOST: 127.0.0.1
+      TEST_DB_PASSWORD: postgres
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Схема в тестах совпадает с schemaDdl() приложения
+        working-directory: .
+        run: |
+          python3 web/test/extract-schema.py
+          git diff --exit-code web/test/schema.sql
+      - run: npm test
+      - name: Тесты под пользователем БД с минимальными правами (grants.sql)
+        run: npm test
+        env:
+          WEB_TEST_RESTRICTED: '1'
+      - name: Сборка Docker-образа
+        run: docker build -t inventory-web .
