@@ -30,3 +30,22 @@ th { font-size:.85em; color:var(--muted); font-weight:600; white-space:nowrap; }
 .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start; } @media (max-width:800px) { .grid2 { grid-template-columns:1fr; } }
 .codes { list-style:none; padding:0; margin:0 0 12px; } .codes li { display:flex; gap:10px; align-items:center; padding:4px 0; }
 .pager { display:flex; gap:16px; justify-content:center; } [hidden] { display:none !important; }
+.thumb { width:56px; height:56px; object-fit:contain; background:#fff; border:1px solid var(--line); border-radius:6px; display:inline-block; vertical-align:middle; cursor:zoom-in; }
+.thumb.big { width:160px; height:160px; }
+.thumb.none { display:inline-flex; align-items:center; justify-content:center; font-size:.7rem; color:var(--muted); background:var(--bg); cursor:default; text-align:center; }
+.cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:12px; margin-bottom:12px; }
+.pcard { position:relative; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px; display:flex; flex-direction:column; gap:4px; align-items:center; text-align:center; }
+.pcard .sel { position:absolute; top:10px; left:10px; width:18px; height:18px; }
+.pcard .sku { font-weight:600; } .pcard .pname { font-size:.92em; }
+.gallery { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; } .gallery figure { margin:0; text-align:center; } .gallery figcaption { font-size:.85em; display:flex; gap:8px; justify-content:center; }
+.sel-bar { align-items:center; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:8px 12px; }
+td.chk, th.chk { width:28px; }
+fieldset { border:1px solid var(--line); border-radius:10px; margin:0 0 12px; padding:8px 12px 12px; } legend { padding:0 6px; }
+.lightbox { position:fixed; inset:0; background:rgba(0,0,0,.85); display:flex; align-items:center; justify-content:center; z-index:50; }
+.lightbox img { max-width:92vw; max-height:88vh; background:#fff; border-radius:6px; }
+.lightbox button { position:absolute; background:rgba(255,255,255,.18); color:#fff; border:0; font-size:2rem; line-height:1; width:48px; height:48px; border-radius:24px; cursor:pointer; }
+.lb-prev { left:12px; top:50%; } .lb-next { right:12px; top:50%; } .lb-close { right:12px; top:12px; }
+.lightbox-counter { position:absolute; bottom:14px; color:#fff; font-size:.95rem; }
+input[type=file] { max-width:100%; }
+pre.log { white-space:pre-wrap; margin:0; font:13px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+tr.hdr td { background:rgba(31,111,235,.12); font-weight:600; }

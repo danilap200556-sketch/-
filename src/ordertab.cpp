@@ -3,7 +3,9 @@
 
 #include <QApplication>
 #include <QColor>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QDateEdit>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -107,6 +109,44 @@ OrdersTab::OrdersTab(QWidget *parent)
     filterRow->addWidget(loadBtn);
     filterRow->addStretch();
     layout->addLayout(filterRow);
+
+    // Дата отгрузки: Маркет сам отдаёт только заказы на выбранные даты.
+    auto *dateRow = new QHBoxLayout();
+    m_dateOn = new QCheckBox(tr("Только отгрузка с"), this);
+    m_dateFrom = new QDateEdit(QDate::currentDate(), this);
+    m_dateTo = new QDateEdit(QDate::currentDate(), this);
+    for (auto *d : {m_dateFrom, m_dateTo}) {
+        d->setCalendarPopup(true);
+        d->setDisplayFormat("dd.MM.yyyy");
+    }
+    auto *todayBtn = new QPushButton(tr("Сегодня"), this);
+    auto *tomorrowBtn = new QPushButton(tr("Завтра"), this);
+    dateRow->addWidget(m_dateOn);
+    dateRow->addWidget(m_dateFrom);
+    dateRow->addWidget(new QLabel(tr("по"), this));
+    dateRow->addWidget(m_dateTo);
+    dateRow->addWidget(todayBtn);
+    dateRow->addWidget(tomorrowBtn);
+    dateRow->addStretch();
+    layout->addLayout(dateRow);
+    auto pickDay = [this](int offset) {
+        m_dateOn->setChecked(true);
+        m_dateFrom->setDate(QDate::currentDate().addDays(offset));
+        m_dateTo->setDate(QDate::currentDate().addDays(offset));
+    };
+    connect(todayBtn, &QPushButton::clicked, this, [pickDay]() { pickDay(0); });
+    connect(tomorrowBtn, &QPushButton::clicked, this, [pickDay]() { pickDay(1); });
+    connect(m_dateFrom, &QDateEdit::dateChanged, this, [this](const QDate &d) {
+        // Выбрали одну дату - значит нужен один день; период задаётся уже изменением "по".
+        if (!m_dateOn->isChecked() || m_dateTo->date() < d)
+            m_dateTo->setDate(d);
+        m_dateOn->setChecked(true);
+    });
+    connect(m_dateTo, &QDateEdit::dateChanged, this, [this](const QDate &d) {
+        m_dateOn->setChecked(true);
+        if (m_dateFrom->date() > d)
+            m_dateFrom->setDate(d);
+    });
 
     auto *actionRow = new QHBoxLayout();
     auto *excelBtn = new QPushButton(tr("Сохранить список в Excel..."), this);
@@ -213,6 +253,23 @@ void OrdersTab::loadOrders()
     }
     const int accountId = m_accountCombo->currentData().toInt();
     const StatusFilter &filter = statusFilters()[m_statusCombo->currentIndex()];
+    QDate shipFrom, shipTo;
+    if (m_dateOn->isChecked()) {
+        shipFrom = m_dateFrom->date();
+        shipTo = m_dateTo->date();
+        if (shipTo < shipFrom) {
+            QMessageBox::warning(this, tr("Даты"), tr("Дата «по» раньше даты «с»."));
+            return;
+        }
+        if (shipFrom.daysTo(shipTo) + 1 > 30) {
+            QMessageBox::warning(this, tr("Даты"), tr("Маркет отдаёт заказы по дате отгрузки не больше чем за 30 дней - "
+                                                      "сократите период."));
+            return;
+        }
+    }
+    m_dateLabel = !shipFrom.isValid() ? QString()
+                  : shipFrom == shipTo ? shipFrom.toString("yyyy-MM-dd")
+                                       : shipFrom.toString("yyyy-MM-dd") + "_" + shipTo.toString("yyyy-MM-dd");
 
     // Магазины с одним ключом и кабинетом запрашиваются одним запросом.
     struct Group { QString apiKey; qint64 businessId; QHash<qint64, QString> nameByCampaign; };
@@ -239,14 +296,22 @@ void OrdersTab::loadOrders()
         MarketApi api(g.apiKey, [this](const QString &s) { log(s); });
         QList<MarketOrder> orders;
         QString err;
-        if (!api.orders(g.businessId, g.nameByCampaign.keys(), filter.statuses, filter.substatuses, &orders, &err)) {
+        if (!api.orders(g.businessId, g.nameByCampaign.keys(), filter.statuses, filter.substatuses, &orders, &err,
+                        shipFrom, shipTo)) {
             log(tr("«%1»: ошибка - %2").arg(names, err));
             failed << QStringLiteral("%1: %2").arg(names, err);
             continue;
         }
-        for (const auto &o : orders)
+        for (const auto &o : orders) {
+            // Страховка: заказ с другой датой отгрузки не попадёт ни в список, ни в ярлыки.
+            if (shipFrom.isValid()) {
+                const QDate d = QDate::fromString(o.shipmentDate, Qt::ISODate);
+                if (!d.isValid() || d < shipFrom || d > shipTo)
+                    continue;
+            }
             m_orders.append({o, g.nameByCampaign.value(o.campaignId, tr("магазин %1").arg(o.campaignId)), g.apiKey,
                              g.businessId});
+        }
         log(tr("«%1»: заказов %2").arg(names).arg(orders.size()));
     }
     QApplication::restoreOverrideCursor();
@@ -289,7 +354,9 @@ void OrdersTab::loadOrders()
     }
     m_table->setSortingEnabled(true);
     m_table->resizeColumnsToContents();
-    m_summary->setText(tr("Заказов: %1, товаров: %2 шт").arg(m_orders.size()).arg(items));
+    m_summary->setText(tr("Заказов: %1, товаров: %2 шт%3").arg(m_orders.size()).arg(items)
+                           .arg(m_dateLabel.isEmpty() ? QString()
+                                                      : tr(". Отгрузка: %1").arg(QString(m_dateLabel).replace('_', " — "))));
     if (!failed.isEmpty())
         QMessageBox::warning(this, tr("Маркет"), tr("Не удалось загрузить заказы:\n%1").arg(failed.join('\n')));
 }
@@ -408,7 +475,8 @@ void OrdersTab::downloadLabels()
     const QString stamp = QDateTime::currentDateTime().toString("yyyy-MM-dd_HHmm");
     const QString format = m_formatCombo->currentData().toString();
     auto fileNameFor = [&](const Batch &b, int part, int parts) {
-        QString name = tr("Ярлыки_%1_%2").arg(safeFileName(b.names.join("+")), stamp);
+        QString name = m_dateLabel.isEmpty() ? tr("Ярлыки_%1_%2").arg(safeFileName(b.names.join("+")), stamp)
+                                             : tr("Ярлыки_%1_отгрузка_%2").arg(safeFileName(b.names.join("+")), m_dateLabel);
         if (parts > 1)
             name += tr("_часть%1").arg(part);
         return name + QStringLiteral(".pdf");

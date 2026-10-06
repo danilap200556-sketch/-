@@ -4,13 +4,18 @@
   "private": true,
   "description": "Веб-интерфейс склада: та же база PostgreSQL, что и у настольного приложения",
   "main": "server.js",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
     "test": "node --test --test-concurrency=1 \"test/*.test.js\""
   },
   "dependencies": {
+    "busboy": "^1.6.0",
     "express": "^5.2.1",
-    "pg": "^8.23.1"
+    "fflate": "^0.8.3",
+    "pg": "^8.23.1",
+    "sharp": "^0.35.5"
   }
 }

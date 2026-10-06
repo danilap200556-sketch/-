@@ -4,7 +4,9 @@
 
 #include <QWidget>
 
+class QCheckBox;
 class QComboBox;
+class QDateEdit;
 class QLabel;
 class QPlainTextEdit;
 class QTableWidget;
@@ -41,10 +43,14 @@ private:
     QList<MarketAccount> m_accounts;
     QList<LoadedOrder> m_orders;
     QHash<QString, QString> m_locations; // offerId -> где лежит у нас
+    QString m_dateLabel; // дата отгрузки загруженного списка ("2026-09-25" или "2026-09-25_2026-09-27"), для имён файлов
 
     QComboBox *m_accountCombo;
     QComboBox *m_statusCombo;
     QComboBox *m_formatCombo;
+    QCheckBox *m_dateOn;
+    QDateEdit *m_dateFrom;
+    QDateEdit *m_dateTo;
     QTableWidget *m_table;
     QLabel *m_summary;
     QPlainTextEdit *m_log;

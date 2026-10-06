@@ -57,7 +57,9 @@ async function startSite({ schema = true, env = {} } = {}) {
     if (roleName) await admin.query(`DROP ROLE ${roleName}`);
     await admin.end();
   }
-  return { base, db, cfg, addUser, stop, client: () => new Client(base) };
+  // Запросы от имени владельца базы (в режиме WEB_TEST_RESTRICTED у сайта нет прав менять market_accounts).
+  const sys = (...a) => (db.adminQuery ? db.adminQuery(...a) : db.query(...a));
+  return { base, db, cfg, addUser, stop, sys, restricted: Boolean(db.adminQuery), client: () => new Client(base) };
 }
 
 // Мини-браузер: хранит cookie, не ходит по редиректам сам, достаёт CSRF-токен со страницы.
@@ -69,6 +71,11 @@ class Client {
     let body;
     if (form) { body = new URLSearchParams(form).toString(); h['content-type'] = 'application/x-www-form-urlencoded'; }
     const res = await fetch(this.base + url, { method, headers: h, body, redirect: 'manual' });
+    this.store(res);
+    const raw = Buffer.from(await res.arrayBuffer());
+    return { status: res.status, headers: res.headers, text: raw.toString('utf8'), raw, location: res.headers.get('location') };
+  }
+  store(res) {
     for (const c of res.headers.getSetCookie()) {
       const [pair, ...attrs] = c.split(';');
       const i = pair.indexOf('=');
@@ -77,10 +84,23 @@ class Client {
       const expired = attrs.some((a) => /^\s*max-age=0/i.test(a)) || attrs.some((a) => /^\s*expires=Thu, 01 Jan 1970/i.test(a));
       if (expired || value === '') this.jar.delete(name); else this.jar.set(name, value);
     }
+  }
+  get(url, o) { return this.req('GET', url, o); }
+  // multipart: files = [{ name, data(Buffer), field }]; csrf: 'field' (по умолчанию), 'header' или false.
+  async multipart(url, fields, files, { csrf = 'field', from = '/account', headers = {} } = {}) {
+    const fd = new FormData();
+    const token = csrf ? await this.csrf(from) : null;
+    if (csrf === 'field') fd.append('_csrf', token);
+    for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+    for (const f of files) fd.append(f.field || 'photos', new Blob([f.data]), f.name);
+    const h = { ...headers };
+    if (csrf === 'header') h['x-csrf-token'] = token;
+    if (this.jar.size) h.cookie = [...this.jar].map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('; ');
+    const res = await fetch(this.base + url, { method: 'POST', headers: h, body: fd, redirect: 'manual' });
+    this.store(res);
     const raw = Buffer.from(await res.arrayBuffer());
     return { status: res.status, headers: res.headers, text: raw.toString('utf8'), raw, location: res.headers.get('location') };
   }
-  get(url, o) { return this.req('GET', url, o); }
   async csrf(url = '/account') {
     const r = await this.get(url);
     const m = /name="_csrf" value="([^"]+)"/.exec(r.text);

@@ -5,16 +5,17 @@ const bc = require('../barcode');
 const ops = require('../stock');
 const { searchSql } = require('./products');
 const { parseId, fmtDate, str, csvCell } = require('../util');
+const { thumbImg, COVER_SQL } = require('../views');
 
 const PAGE = 100;
 
-module.exports = (app, { db, send, requireLogin }) => {
+module.exports = (app, { db, send, requireLogin, requireEditor }) => {
   const warehouses = async () => (await db.query('SELECT id, name FROM warehouses ORDER BY name')).rows;
 
   async function stockRows(q, wid, limit, offset) {
     const s = searchSql(q, 2);
     const { rows } = await db.query(
-      `SELECT p.id AS pid, p.sku, p.name, s.warehouse_id AS wid, w.name AS wname, l.code AS location, s.quantity
+      `SELECT p.id AS pid, p.sku, p.name, s.warehouse_id AS wid, w.name AS wname, l.code AS location, s.quantity, ${COVER_SQL} AS cover_id
          FROM stock s JOIN products p ON p.id = s.product_id JOIN warehouses w ON w.id = s.warehouse_id
          LEFT JOIN locations l ON l.id = s.location_id
         WHERE ($1::int IS NULL OR s.warehouse_id = $1) AND ${s.sql}
@@ -36,16 +37,18 @@ module.exports = (app, { db, send, requireLogin }) => {
         <select name="w"><option value="">Все склады</option>
           ${whs.map((w) => html`<option value="${w.id}" ${w.id === wid ? html`selected` : ''}>${w.name}</option>`)}</select>
         <button>Показать</button>
-        <a class="button primary" href="/operation">Приход / списание / перемещение</a>
-        <a class="button" href="/stock.csv?${new URLSearchParams(params).toString()}">Скачать для Excel</a>
+        ${req.ctx.user.read_only ? '' : html`<a class="button primary" href="/operation">Приход / списание / перемещение</a>`}
+        <a class="button" href="/export/stock.xlsx?${new URLSearchParams(params).toString()}">Скачать в Excel</a>
+        <a class="button" href="/stock.csv?${new URLSearchParams(params).toString()}">CSV</a>
       </form>
       <div class="table-wrap"><table>
-        <thead><tr><th>Артикул</th><th>Название</th><th>Склад</th><th>Место</th><th class="num">Остаток</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Артикул</th><th>Название</th><th>Склад</th><th>Место</th><th class="num">Остаток</th><th></th></tr></thead>
         <tbody>${rows.slice(0, PAGE).map((r) => html`<tr>
+          <td>${thumbImg(r.pid, r.cover_id)}</td>
           <td><a href="/products/${r.pid}">${r.sku}</a></td><td>${r.name}</td><td>${r.wname}</td><td>${r.location}</td>
           <td class="num"><b>${r.quantity}</b></td>
-          <td><a href="/operation?product=${encodeURIComponent(r.sku)}&warehouse=${r.wid}">операция</a></td></tr>`)}
-          ${rows.length ? '' : html`<tr><td colspan="6" class="muted">Остатков не найдено</td></tr>`}</tbody>
+          <td>${req.ctx.user.read_only ? '' : html`<a href="/operation?product=${encodeURIComponent(r.sku)}&warehouse=${r.wid}">операция</a>`}</td></tr>`)}
+          ${rows.length ? '' : html`<tr><td colspan="7" class="muted">Остатков не найдено</td></tr>`}</tbody>
       </table></div>
       ${pager('/stock', params, pg, rows.length > PAGE)}`,
     });
@@ -87,7 +90,7 @@ module.exports = (app, { db, send, requireLogin }) => {
     }, status);
   }
 
-  app.get('/operation', requireLogin, (req, res) =>
+  app.get('/operation', requireLogin, requireEditor, (req, res) =>
     operationView(req, res, { f: { product: str(req.query.product, 100), warehouse: str(req.query.warehouse, 10), kind: str(req.query.kind, 20) } }));
 
   app.post('/operation', requireLogin, async (req, res) => {

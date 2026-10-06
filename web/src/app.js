@@ -25,7 +25,7 @@ function createApp(cfg, db) {
   // --- Заголовки безопасности. Скрипты и стили - только свои файлы (без inline).
   app.use((req, res, next) => {
     res.set({
-      'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
+      'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; " +
         "form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY',
@@ -39,7 +39,7 @@ function createApp(cfg, db) {
   app.get('/healthz', (req, res) => res.type('text').send('ok'));
   app.get('/favicon.ico', (req, res) => res.status(204).end());
   app.use('/static', express.static(path.join(__dirname, '..', 'public'), { maxAge: '1h', index: false }));
-  app.use(express.urlencoded({ extended: false, limit: '100kb', parameterLimit: 200 }));
+  app.use(express.urlencoded({ extended: false, limit: '512kb', parameterLimit: 6000 }));
   app.use((req, res, next) => { req.body ??= {}; next(); }); // POST без тела / не того типа
 
   // Таблицы создаёт настольное приложение; пока база недоступна или не подготовлена - 503.
@@ -86,10 +86,11 @@ function createApp(cfg, db) {
     const s = sec.unsign(cfg.secret, cookies[sessionName]);
     if (s && typeof s.uid === 'number' && s.exp > Date.now()) {
       const { rows } = await db.query(
-        'SELECT id, username, is_admin, password_hash, salt FROM users WHERE id = $1', [s.uid]);
+        'SELECT id, username, is_admin, read_only, password_hash, salt FROM users WHERE id = $1', [s.uid]);
       const u = rows[0];
       if (u && s.v === sec.passwordVersion(u)) {
-        req.ctx.user = { id: u.id, username: u.username, is_admin: u.is_admin };
+        // Администратор всегда редактирует; read_only у него (мог остаться от старой роли) не действует.
+        req.ctx.user = { id: u.id, username: u.username, is_admin: u.is_admin, read_only: u.read_only && !u.is_admin };
         req.ctx.session = s;
         req.ctx.csrf = sec.csrfToken(cfg.secret, s);
         // Скользящий срок: продлеваем, когда прошла половина.
@@ -111,7 +112,12 @@ function createApp(cfg, db) {
   };
   app.locals.send = send;
 
-  // CSRF-токен обязателен для каждого POST вошедшего пользователя.
+  // POST, которые можно и в режиме "только просмотр".
+  const VIEWER_POSTS = new Set(['/logout', '/account/password']);
+
+  // CSRF-токен обязателен для каждого POST вошедшего пользователя. Для multipart-форм
+  // (загрузка файлов) тело разбирается в readMultipart(), который сам проверяет токен
+  // (заголовок X-CSRF-Token или поле _csrf) - здесь такие запросы только помечаются.
   const requireLogin = (req, res, next) => {
     if (!req.ctx.user) {
       if (req.method === 'GET') {
@@ -121,9 +127,26 @@ function createApp(cfg, db) {
       return res.redirect('/login');
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      if (!sec.safeEqual(req.body?._csrf ?? '', req.ctx.csrf)) {
+      if (req.is('multipart/form-data')) {
+        req.csrfPending = !sec.safeEqual(req.get('x-csrf-token') ?? '', req.ctx.csrf);
+      } else if (!sec.safeEqual(req.body?._csrf ?? '', req.ctx.csrf)) {
         return res.status(403).type('text').send('Страница устарела. Вернитесь назад, обновите её и повторите.');
       }
+      // Роль "только просмотр": на сервере запрещены все изменения, а не только спрятаны кнопки.
+      if (req.ctx.user.read_only && !VIEWER_POSTS.has(req.path)) {
+        const msg = 'У вас доступ только для просмотра - изменять данные нельзя';
+        if (req.accepts(['html', 'json']) === 'json') return res.status(403).json({ error: msg });
+        res.flash('err', msg);
+        return res.redirect('/');
+      }
+    }
+    next();
+  };
+  // Страницы с формами изменения: пользователю "только просмотр" они не нужны.
+  const requireEditor = (req, res, next) => {
+    if (req.ctx.user.read_only) {
+      res.flash('err', 'У вас доступ только для просмотра');
+      return res.redirect('/');
     }
     next();
   };
@@ -169,7 +192,7 @@ function createApp(cfg, db) {
     if (ipLimit.blocked(ipKey) || userLimit.blocked(userKey)) {
       return loginView(req, res, { error: 'Слишком много неудачных попыток. Подождите 15 минут.', username, next: nextUrl }, 429);
     }
-    const { rows } = await db.query('SELECT id, username, is_admin, password_hash, salt FROM users WHERE username = $1', [username]);
+    const { rows } = await db.query('SELECT id, username, is_admin, read_only, password_hash, salt FROM users WHERE username = $1', [username]);
     const u = rows[0];
     // Для несуществующего логина считаем хеш тоже - чтобы по времени ответа логины не подбирались.
     const ok = u ? pw.verifyPassword(password, u.salt, u.password_hash)
@@ -192,11 +215,15 @@ function createApp(cfg, db) {
   // --- Дальше только для вошедших
   app.get('/', requireLogin, (req, res) => res.redirect('/stock'));
 
-  const ctxFor = { cfg, db, send, requireLogin, requireAdmin, startSession, flashName, sessionName };
+  const ctxFor = { cfg, db, send, requireLogin, requireAdmin, requireEditor, startSession, flashName, sessionName };
   require('./routes/account')(app, ctxFor);
   require('./routes/products')(app, ctxFor);
   require('./routes/warehouses')(app, ctxFor);
   require('./routes/stock')(app, ctxFor);
+  require('./routes/photos')(app, ctxFor);
+  require('./routes/bulk')(app, ctxFor);
+  require('./routes/import')(app, ctxFor);
+  require('./routes/orders')(app, ctxFor);
   require('./routes/users')(app, ctxFor);
 
   app.use((req, res) => {
@@ -208,7 +235,7 @@ function createApp(cfg, db) {
   app.use((err, req, res, next) => {
     // Ошибки разбора запроса (слишком большое тело, битая кодировка) - вина клиента, а не сервера.
     if (err.status >= 400 && err.status < 500 && !res.headersSent) {
-      return res.status(err.status).type('text').send('Некорректный запрос');
+      return res.status(err.status).type('text').send(err.expose ? err.message : 'Некорректный запрос');
     }
     console.error('[error]', req.method, req.path, err);
     const dbDown = !err.code || /^(08|57P0|53300|28)/.test(err.code) || /ECONN|ETIMEDOUT|terminated|timeout|ENOTFOUND/i.test(err.message || '');

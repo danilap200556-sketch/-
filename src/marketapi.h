@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDate>
 #include <QHash>
 #include <QJsonDocument>
 #include <QList>
@@ -121,8 +122,11 @@ public:
     bool updatePrices(qint64 businessId, const QList<MarketPriceUpdate> &items, QString *error);
 
     // Заказы магазинов кабинета (последние 30 дней). Пустой statuses - любые.
+    // shipmentFrom/shipmentTo - дата отгрузки в службу доставки, обе включительно (не больше
+    // 30 дней между ними); невалидная shipmentFrom - без фильтра по дате.
     bool orders(qint64 businessId, const QList<qint64> &campaignIds, const QStringList &statuses,
-                const QStringList &substatuses, QList<MarketOrder> *out, QString *error);
+                const QStringList &substatuses, QList<MarketOrder> *out, QString *error,
+                QDate shipmentFrom = QDate(), QDate shipmentTo = QDate());
 
     // Один PDF с ярлыками на все коробки переданных заказов одного кабинета.
     // Маркет готовит файл асинхронно - метод ждёт готовности (до нескольких минут).

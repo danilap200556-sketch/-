@@ -13,13 +13,13 @@ module.exports = (app, { db, send, requireLogin, requireAdmin }) => {
     send(req, res, {
       title: 'Склады', active: 'warehouses',
       body: html`
-      <form method="post" action="/warehouses" class="card">
+      ${req.ctx.user.read_only ? '' : html`<form method="post" action="/warehouses" class="card">
         <h2>Новый склад</h2>
         ${error ? html`<div class="flash err">${error}</div>` : ''}
         ${csrfField(req.ctx)}
         <div class="row">${field('Название', 'name', form.name, { required: true, max: 200 })}
           ${field('Адрес', 'address', form.address, { max: 500 })}<button class="primary">Создать</button></div>
-      </form>
+      </form>`}
       <div class="table-wrap"><table>
         <thead><tr><th>Склад</th><th>Адрес</th><th class="num">Мест хранения</th><th class="num">Всего шт</th></tr></thead>
         <tbody>${rows.map((w) => html`<tr><td><a href="/warehouses/${w.id}">${w.name}</a></td><td>${w.address}</td>
@@ -58,14 +58,14 @@ module.exports = (app, { db, send, requireLogin, requireAdmin }) => {
       title: `Склад: ${w.name}`, active: 'warehouses',
       body: html`
       <div class="grid2">
-        <form method="post" action="/warehouses/${id}" class="card">
+        ${ctx.user.read_only ? html`<div class="card"><h2>Данные склада</h2><p><b>${f.name}</b></p><p>${f.address}</p></div>` : html`<form method="post" action="/warehouses/${id}" class="card">
           <h2>Данные склада</h2>
           ${error ? html`<div class="flash err">${error}</div>` : ''}
           ${csrfField(ctx)}
           ${field('Название', 'name', f.name, { required: true, max: 200 })}
           ${field('Адрес', 'address', f.address, { max: 500 })}
           <button class="primary">Сохранить</button>
-        </form>
+        </form>`}
         <div class="card">
           <h2>Места хранения</h2>
           <p class="muted">Ячейки, стеллажи, полки: код вида A1-03.</p>
@@ -73,13 +73,13 @@ module.exports = (app, { db, send, requireLogin, requireAdmin }) => {
           <div class="table-wrap"><table>
             <thead><tr><th>Код</th><th>Описание</th><th class="num">Товаров</th><th></th></tr></thead>
             <tbody>${locs.map((l) => html`<tr><td>${l.code}</td><td>${l.description}</td><td class="num">${l.used}</td>
-              <td><form method="post" action="/warehouses/${id}/locations/${l.id}/delete" class="inline" data-confirm="Удалить место ${l.code}?">
-                ${csrfField(ctx)}<button class="link danger">удалить</button></form></td></tr>`)}
+              <td>${ctx.user.read_only ? '' : html`<form method="post" action="/warehouses/${id}/locations/${l.id}/delete" class="inline" data-confirm="Удалить место ${l.code}?">
+                ${csrfField(ctx)}<button class="link danger">удалить</button></form>`}</td></tr>`)}
               ${locs.length ? '' : html`<tr><td colspan="4" class="muted">Мест пока нет</td></tr>`}</tbody>
           </table></div>
-          <form method="post" action="/warehouses/${id}/locations" class="inline-row">${csrfField(ctx)}
+          ${ctx.user.read_only ? '' : html`<form method="post" action="/warehouses/${id}/locations" class="inline-row">${csrfField(ctx)}
             <input name="code" placeholder="Код места, например A1-03" required maxlength="50">
-            <input name="description" placeholder="Описание (необязательно)" maxlength="200"><button>Добавить</button></form>
+            <input name="description" placeholder="Описание (необязательно)" maxlength="200"><button>Добавить</button></form>`}
         </div>
       </div>
       ${ctx.user.is_admin ? html`<form method="post" action="/warehouses/${id}/delete"

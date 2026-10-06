@@ -64,7 +64,7 @@ function createDb(cfg) {
   // только проверяет, что приложение уже подготовило эту базу.
   const required = [
     ['products', 'sku'], ['products', 'market_sku'], ['warehouses', 'name'], ['locations', 'code'],
-    ['stock', 'quantity'], ['stock_movements', 'delta'], ['users', 'is_admin'], ['product_barcodes', 'barcode'],
+    ['stock', 'quantity'], ['stock_movements', 'delta'], ['users', 'is_admin'], ['users', 'read_only'], ['product_barcodes', 'barcode'], ['product_photos', 'data'],
   ];
   async function checkSchema() {
     const { rows } = await pool.query(

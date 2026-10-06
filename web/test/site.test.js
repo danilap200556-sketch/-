@@ -249,14 +249,14 @@ test('пользователи: создание, дубликат, админ-�
   const bossId = (await q("SELECT id FROM users WHERE username = 'boss'"))[0].id;
   const newbieId = (await q("SELECT id FROM users WHERE username = 'newbie'"))[0].id;
   // последнего админа нельзя ни разжаловать, ни удалить
-  r = await admin.post(`/users/${bossId}/admin`, { admin: '0' }, { from: '/users' });
+  r = await admin.post(`/users/${bossId}/role`, { role: 'editor' }, { from: '/users' });
   assert.match(await flashOf(admin, r), /без администратора/);
   assert.equal((await q('SELECT is_admin FROM users WHERE id = $1', [bossId]))[0].is_admin, true);
   r = await admin.post(`/users/${bossId}/delete`, {}, { from: '/users' });
   assert.equal((await q('SELECT COUNT(*)::int AS n FROM users WHERE id = $1', [bossId]))[0].n, 1);
   // два админа: теперь можно разжаловать одного
-  await admin.post(`/users/${newbieId}/admin`, { admin: '1' }, { from: '/users' });
-  r = await admin.post(`/users/${newbieId}/admin`, { admin: '0' }, { from: '/users' });
+  await admin.post(`/users/${newbieId}/role`, { role: 'admin' }, { from: '/users' });
+  r = await admin.post(`/users/${newbieId}/role`, { role: 'editor' }, { from: '/users' });
   assert.equal((await q('SELECT is_admin FROM users WHERE id = $1', [newbieId]))[0].is_admin, false);
   // сброс пароля чужому пользователю -> старый не подходит, новый подходит
   await admin.post(`/users/${newbieId}/password`, { password: 'resetpass99' }, { from: '/users' });

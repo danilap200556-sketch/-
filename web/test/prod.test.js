@@ -67,7 +67,7 @@ test('мусорные запросы не роняют сайт: POST без т
     const c = site.client();
     assert.equal((await c.req('POST', '/login')).status, 401);
     assert.equal((await c.req('POST', '/login', { headers: { 'content-type': 'application/json' } })).status, 401);
-    const big = await fetch(site.base + '/login', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'username=' + 'a'.repeat(200_000) });
+    const big = await fetch(site.base + '/login', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'username=' + 'a'.repeat(700_000) });
     assert.equal(big.status, 413);
     assert.equal((await c.get('/%E0%A4%A')).status < 500, true);
     await c.login('boss', 'bosspass1');

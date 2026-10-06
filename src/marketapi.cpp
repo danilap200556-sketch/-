@@ -519,11 +519,18 @@ bool MarketApi::updatePrices(qint64 businessId, const QList<MarketPriceUpdate> &
 // Заказы и ярлыки
 
 bool MarketApi::orders(qint64 businessId, const QList<qint64> &campaignIds, const QStringList &statuses,
-                       const QStringList &substatuses, QList<MarketOrder> *out, QString *error)
+                       const QStringList &substatuses, QList<MarketOrder> *out, QString *error,
+                       QDate shipmentFrom, QDate shipmentTo)
 {
     out->clear();
     QJsonObject body;
     body.insert("fake", false);
+    if (shipmentFrom.isValid()) {
+        // В API конечная дата в интервал не входит, поэтому "по" - это следующий день.
+        const QDate last = shipmentTo.isValid() ? shipmentTo : shipmentFrom;
+        body.insert("dates", QJsonObject{{"shipmentDateFrom", shipmentFrom.toString(Qt::ISODate)},
+                                         {"shipmentDateTo", last.addDays(1).toString(Qt::ISODate)}});
+    }
     if (!statuses.isEmpty())
         body.insert("statuses", QJsonArray::fromStringList(statuses));
     if (!substatuses.isEmpty())
