@@ -36,6 +36,7 @@ WarehousesTab::WarehousesTab(QWidget *parent)
     warehouseToolbar->addWidget(editWhBtn);
     warehouseToolbar->addWidget(delWhBtn);
     warehouseToolbar->addStretch();
+    m_editWidgets << addWhBtn << editWhBtn << delWhBtn;
     warehouseLayout->addLayout(warehouseToolbar);
 
     m_warehouseModel = new QSqlTableModel(this);
@@ -63,6 +64,7 @@ WarehousesTab::WarehousesTab(QWidget *parent)
     locationToolbar->addWidget(editLocBtn);
     locationToolbar->addWidget(delLocBtn);
     locationToolbar->addStretch();
+    m_editWidgets << addLocBtn << editLocBtn << delLocBtn;
     locationLayout->addLayout(locationToolbar);
 
     m_locationModel = new QSqlTableModel(this);
@@ -89,6 +91,12 @@ WarehousesTab::WarehousesTab(QWidget *parent)
     connect(delLocBtn, &QPushButton::clicked, this, &WarehousesTab::deleteLocation);
     connect(m_warehouseTable->selectionModel(), &QItemSelectionModel::selectionChanged,
             this, &WarehousesTab::onWarehouseSelectionChanged);
+}
+
+void WarehousesTab::setReadOnly(bool readOnly)
+{
+    for (QWidget *w : m_editWidgets)
+        w->setVisible(!readOnly);
 }
 
 void WarehousesTab::refresh()

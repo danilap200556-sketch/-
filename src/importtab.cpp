@@ -78,9 +78,11 @@ ImportTab::ImportTab(QWidget *parent)
     fileRow->addWidget(pickBtn);
     fileRow->addWidget(exportBtn);
     layout->addLayout(fileRow);
+    m_importWidgets << hint << m_fileLabel << pickBtn;
 
     auto *splitter = new QSplitter(this);
     layout->addWidget(splitter, 1);
+    m_importWidgets << splitter;
 
     // --- Левая часть: сырой предпросмотр + номер строки заголовков ---
     auto *previewBox = new QGroupBox(tr("Предпросмотр файла"), this);
@@ -154,6 +156,12 @@ ImportTab::ImportTab(QWidget *parent)
     });
     connect(m_headerRow, &QSpinBox::valueChanged, this, &ImportTab::onHeaderRowChanged);
     connect(importBtn, &QPushButton::clicked, this, &ImportTab::runImport);
+}
+
+void ImportTab::setReadOnly(bool readOnly)
+{
+    for (QWidget *w : m_importWidgets)
+        w->setVisible(!readOnly);
 }
 
 void ImportTab::refresh()

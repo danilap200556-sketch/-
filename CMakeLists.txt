@@ -122,6 +122,10 @@ add_executable(inventory_manager
     src/xlsx.cpp
     src/ordertab.cpp
     src/barcode.cpp
+    src/photostore.cpp
+    src/photoviewer.cpp
+    src/bulkphotosdialog.cpp
+    src/bulkeditdialog.cpp
 )
 
 target_include_directories(inventory_manager PRIVATE ${QRENCODE_INCLUDE_DIRS})

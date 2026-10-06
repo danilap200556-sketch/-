@@ -1,22 +1,27 @@
 #include "productstab.h"
 #include "productdialog.h"
 #include "barcode.h"
+#include "bulkeditdialog.h"
+#include "bulkphotosdialog.h"
+#include "photostore.h"
+#include "photoviewer.h"
 
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QSqlQuery>
 
-#include <QDesktopServices>
+#include <QBuffer>
+#include <QScrollBar>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlRecord>
 #include <QSqlTableModel>
 #include <QTableView>
-#include <QUrl>
 #include <QVBoxLayout>
 
 namespace {
@@ -24,6 +29,31 @@ namespace {
 enum Column { ColId = 0, ColSku, ColName, ColDescription, ColPhotoPath, ColPrice, ColCustomCode, ColCreatedAt,
               ColMarketSku };
 }
+
+namespace {
+
+// Таблица товаров с миниатюрой фото слева от артикула и крупной подсказкой при наведении.
+class ProductsModel : public QSqlTableModel
+{
+public:
+    using QSqlTableModel::QSqlTableModel;
+
+    QVariant data(const QModelIndex &idx, int role) const override
+    {
+        if (idx.isValid() && idx.column() == ColSku && (role == Qt::DecorationRole || role == Qt::ToolTipRole)) {
+            const int id = QSqlTableModel::data(index(idx.row(), ColId)).toInt();
+            if (role == Qt::DecorationRole)
+                return PhotoCache::thumb(id);
+            if (!PhotoCache::hasPhoto(id))
+                return QVariant();
+            const QByteArray jpeg = PhotoCache::coverJpeg(id);
+            return QStringLiteral("<img src=\"data:image/jpeg;base64,%1\" width=\"320\">").arg(QString::fromLatin1(jpeg.toBase64()));
+        }
+        return QSqlTableModel::data(idx, role);
+    }
+};
+
+} // namespace
 
 ProductsTab::ProductsTab(QWidget *parent)
     : QWidget(parent)
@@ -36,11 +66,17 @@ ProductsTab::ProductsTab(QWidget *parent)
     auto *addBtn = new QPushButton(tr("Добавить"), toolbar);
     auto *editBtn = new QPushButton(tr("Изменить"), toolbar);
     auto *deleteBtn = new QPushButton(tr("Удалить"), toolbar);
-    auto *photoBtn = new QPushButton(tr("Открыть фото"), toolbar);
+    auto *photoBtn = new QPushButton(tr("Фото..."), toolbar);
+    auto *bulkEditBtn = new QPushButton(tr("Массовое редактирование..."), toolbar);
+    auto *bulkPhotoBtn = new QPushButton(tr("Фото пачкой..."), toolbar);
     toolbarLayout->addWidget(addBtn);
     toolbarLayout->addWidget(editBtn);
     toolbarLayout->addWidget(deleteBtn);
     toolbarLayout->addWidget(photoBtn);
+    toolbarLayout->addWidget(bulkEditBtn);
+    toolbarLayout->addWidget(bulkPhotoBtn);
+    m_editWidgets << addBtn << deleteBtn << bulkEditBtn << bulkPhotoBtn;
+    editBtn->setToolTip(tr("Открыть карточку товара"));
     toolbarLayout->addSpacing(20);
     m_search = new QLineEdit(toolbar);
     m_search->setPlaceholderText(tr("Поиск: артикул, название или штрихкод (можно сканером)"));
@@ -52,7 +88,7 @@ ProductsTab::ProductsTab(QWidget *parent)
     m_searchStatus->setStyleSheet("color: gray;");
     layout->addWidget(m_searchStatus);
 
-    m_model = new QSqlTableModel(this);
+    m_model = new ProductsModel(this);
     m_model->setTable("products");
     m_model->setEditStrategy(QSqlTableModel::OnManualSubmit);
     m_model->setSort(ColSku, Qt::AscendingOrder);
@@ -60,9 +96,11 @@ ProductsTab::ProductsTab(QWidget *parent)
     m_table = new QTableView(this);
     m_table->setModel(m_model);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_table->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_table->setSelectionMode(QAbstractItemView::ExtendedSelection); // Ctrl/Shift - несколько товаров
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->horizontalHeader()->setStretchLastSection(true);
+    m_table->setIconSize(QSize(PhotoCache::kIconSize, PhotoCache::kIconSize));
+    m_table->verticalHeader()->setDefaultSectionSize(PhotoCache::kIconSize + 6);
     layout->addWidget(m_table);
 
     refresh();
@@ -71,6 +109,9 @@ ProductsTab::ProductsTab(QWidget *parent)
     connect(editBtn, &QPushButton::clicked, this, &ProductsTab::editProduct);
     connect(deleteBtn, &QPushButton::clicked, this, &ProductsTab::deleteProduct);
     connect(photoBtn, &QPushButton::clicked, this, &ProductsTab::openSelectedPhoto);
+    connect(bulkEditBtn, &QPushButton::clicked, this, &ProductsTab::bulkEdit);
+    connect(bulkPhotoBtn, &QPushButton::clicked, this, &ProductsTab::bulkPhotos);
+    connect(m_table->verticalScrollBar(), &QScrollBar::valueChanged, this, &ProductsTab::prefetchVisible);
     connect(m_table, &QTableView::doubleClicked, this, &ProductsTab::editProduct);
     connect(m_search, &QLineEdit::textChanged, this, &ProductsTab::applySearch);
     connect(m_search, &QLineEdit::returnPressed, this, &ProductsTab::onSearchEntered);
@@ -90,6 +131,66 @@ void ProductsTab::refresh()
     m_table->setColumnHidden(ColDescription, true);
     m_table->setColumnHidden(ColPhotoPath, true);
     m_table->setColumnHidden(ColCreatedAt, true);
+    m_table->setColumnWidth(ColSku, 210);
+    m_table->setColumnWidth(ColName, 330);
+    m_table->setColumnWidth(ColPrice, 90);
+    prefetchVisible();
+}
+
+void ProductsTab::prefetchVisible()
+{
+    if (m_model->rowCount() == 0)
+        return;
+    const int first = qMax(0, m_table->rowAt(0));
+    int last = m_table->rowAt(m_table->viewport()->height());
+    if (last < 0)
+        last = qMin(m_model->rowCount() - 1, first + 40);
+    QList<int> ids;
+    for (int r = qMax(0, first - 10); r <= qMin(m_model->rowCount() - 1, last + 20); ++r)
+        ids << m_model->data(m_model->index(r, ColId)).toInt();
+    PhotoCache::prefetch(ids);
+    m_table->viewport()->update();
+}
+
+void ProductsTab::setReadOnly(bool readOnly)
+{
+    m_readOnly = readOnly;
+    for (QWidget *w : m_editWidgets)
+        w->setVisible(!readOnly);
+}
+
+QList<int> ProductsTab::selectedProductIds() const
+{
+    QList<int> ids;
+    for (const QModelIndex &idx : m_table->selectionModel()->selectedRows())
+        ids << m_model->data(m_model->index(idx.row(), ColId)).toInt();
+    return ids;
+}
+
+void ProductsTab::bulkEdit()
+{
+    const QList<int> ids = selectedProductIds();
+    if (ids.isEmpty()) {
+        QMessageBox::information(this, tr("Выделите товары"),
+                                 tr("Выделите несколько товаров в списке (Ctrl или Shift + клик, Ctrl+A - все) "
+                                    "и нажмите кнопку ещё раз."));
+        return;
+    }
+    BulkEditDialog dlg(ids, this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    refresh();
+    emit productsChanged();
+}
+
+void ProductsTab::bulkPhotos()
+{
+    BulkPhotosDialog dlg(selectedProductIds(), this);
+    dlg.exec();
+    if (dlg.changed()) {
+        PhotoCache::clear();
+        refresh();
+    }
 }
 
 int ProductsTab::selectedProductId() const
@@ -127,8 +228,10 @@ void ProductsTab::addProduct()
     QSqlQuery idQuery;
     idQuery.prepare("SELECT id FROM products WHERE sku = ?");
     idQuery.addBindValue(d.sku);
-    if (idQuery.exec() && idQuery.next())
+    if (idQuery.exec() && idQuery.next()) {
         saveBarcodes(idQuery.value(0).toInt(), d.barcodes);
+        savePhotos(idQuery.value(0).toInt(), dlg.photoChanges());
+    }
     refresh();
     emit productsChanged();
 }
@@ -136,9 +239,9 @@ void ProductsTab::addProduct()
 void ProductsTab::editProduct()
 {
     const auto sel = m_table->selectionModel()->selectedRows();
-    if (sel.isEmpty())
+    if (sel.isEmpty() && !m_table->currentIndex().isValid())
         return;
-    const int row = sel.first().row();
+    const int row = m_table->currentIndex().isValid() ? m_table->currentIndex().row() : sel.first().row();
     const QSqlRecord rec = m_model->record(row);
 
     const int productId = rec.value("id").toInt();
@@ -154,6 +257,11 @@ void ProductsTab::editProduct()
     d.customCode = rec.value("custom_code").toString();
     d.marketSku = rec.value("market_sku").toString();
     dlg.setData(d);
+    if (m_readOnly) {
+        dlg.setReadOnly(true);
+        dlg.exec();
+        return;
+    }
 
     if (dlg.exec() != QDialog::Accepted)
         return;
@@ -174,42 +282,74 @@ void ProductsTab::editProduct()
         return;
     }
     saveBarcodes(productId, nd.barcodes);
+    savePhotos(productId, dlg.photoChanges());
     refresh();
     emit productsChanged();
 }
 
+void ProductsTab::savePhotos(int productId, const PhotoStore::Changes &changes)
+{
+    QString err;
+    if (!PhotoStore::apply(productId, changes, &err))
+        QMessageBox::warning(this, tr("Фото не сохранены"), err);
+}
+
 void ProductsTab::deleteProduct()
 {
-    const auto sel = m_table->selectionModel()->selectedRows();
-    if (sel.isEmpty())
+    const QList<int> ids = selectedProductIds();
+    if (ids.isEmpty())
         return;
-    if (QMessageBox::question(this, tr("Удалить товар"),
-                               tr("Удалить выбранный товар и все связанные остатки/движения?"))
+    if (QMessageBox::question(this, tr("Удалить товары"),
+                               ids.size() == 1 ? tr("Удалить выбранный товар и все связанные остатки/движения?")
+                                               : tr("Удалить выбранные товары (%1 шт.) и все связанные остатки, "
+                                                    "движения и фото?").arg(ids.size()))
         != QMessageBox::Yes)
         return;
 
-    m_model->removeRow(sel.first().row());
-    if (!m_model->submitAll()) {
-        QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось удалить товар:\n%1")
-                                                       .arg(m_model->lastError().text()));
-        m_model->revertAll();
+    QSqlDatabase db = QSqlDatabase::database();
+    db.transaction();
+    bool ok = true;
+    QString err;
+    for (int i = 0; i < ids.size() && ok; i += 400) {
+        const QList<int> chunk = ids.mid(i, 400);
+        QStringList marks;
+        for (int k = 0; k < chunk.size(); ++k)
+            marks << QStringLiteral("?");
+        QSqlQuery q;
+        q.prepare(QStringLiteral("DELETE FROM products WHERE id IN (%1)").arg(marks.join(',')));
+        for (int id : chunk)
+            q.addBindValue(id);
+        ok = q.exec();
+        if (!ok)
+            err = q.lastError().text();
+    }
+    if (!ok || !db.commit()) {
+        db.rollback();
+        QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось удалить товары:\n%1").arg(err));
         return;
     }
+    for (int id : ids)
+        PhotoCache::invalidate(id);
     refresh();
     emit productsChanged();
 }
 
 void ProductsTab::openSelectedPhoto()
 {
-    const auto sel = m_table->selectionModel()->selectedRows();
-    if (sel.isEmpty())
-        return;
-    const QString path = m_model->record(sel.first().row()).value("photo_path").toString();
-    if (path.isEmpty()) {
-        QMessageBox::information(this, tr("Нет фото"), tr("У этого товара не указано фото."));
+    const int row = m_table->currentIndex().isValid() ? m_table->currentIndex().row() : -1;
+    if (row < 0) {
+        QMessageBox::information(this, tr("Выберите товар"), tr("Выберите товар в списке."));
         return;
     }
-    QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+    const QSqlRecord rec = m_model->record(row);
+    const QList<int> ids = PhotoStore::ids(rec.value("id").toInt());
+    if (ids.isEmpty()) {
+        QMessageBox::information(this, tr("Нет фото"), tr("У этого товара пока нет фото. Добавьте их в карточке "
+                                                          "товара или кнопкой «Фото пачкой»."));
+        return;
+    }
+    PhotoViewer viewer(ids, QStringLiteral("%1 — %2").arg(rec.value("sku").toString(), rec.value("name").toString()), this);
+    viewer.exec();
 }
 
 void ProductsTab::saveBarcodes(int productId, const QStringList &codes)

@@ -32,6 +32,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     });
 
     const bool isAdmin = AuthService::isAdmin(username);
+    const bool canEdit = AuthService::canEdit(username); // false - роль "только просмотр"
 
     auto *accountMenu = menuBar()->addMenu(tr("Учётная запись"));
     auto *passwordAction = accountMenu->addAction(tr("Сменить мой пароль..."));
@@ -59,9 +60,20 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     tabs->addTab(m_warehousesTab, tr("Склады"));
     tabs->addTab(m_stockTab, tr("Остатки и движения"));
     tabs->addTab(m_labelsTab, tr("Этикетки"));
-    tabs->addTab(m_importTab, tr("Импорт"));
-    tabs->addTab(m_marketTab, tr("Яндекс Маркет"));
-    tabs->addTab(m_ordersTab, tr("Заказы Маркета"));
+    tabs->addTab(m_importTab, canEdit ? tr("Импорт") : tr("Экспорт"));
+    if (canEdit) {
+        // Яндекс Маркет (ключи кабинетов, отправка остатков) и заказы - только для тех, кто может редактировать.
+        tabs->addTab(m_marketTab, tr("Яндекс Маркет"));
+        tabs->addTab(m_ordersTab, tr("Заказы Маркета"));
+    } else {
+        setWindowTitle(windowTitle() + tr(" (только просмотр)"));
+        m_productsTab->setReadOnly(true);
+        m_warehousesTab->setReadOnly(true);
+        m_stockTab->setReadOnly(true);
+        m_importTab->setReadOnly(true);
+        m_marketTab->hide();
+        m_ordersTab->hide();
+    }
     if (isAdmin) {
         m_usersTab = new UsersTab(username, this);
         tabs->addTab(m_usersTab, tr("Пользователи"));

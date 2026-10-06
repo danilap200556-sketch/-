@@ -20,7 +20,7 @@ public slots:
 private slots:
     void addUser();
     void changeSelectedPassword();
-    void toggleAdmin();
+    void changeRole();
     void deleteUser();
 
 private:

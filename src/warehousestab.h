@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QList>
 #include <QWidget>
 
 class QTableView;
@@ -15,6 +16,8 @@ public:
     explicit WarehousesTab(QWidget *parent = nullptr);
 
     void refresh();
+    // Роль "только просмотр": кнопки изменения скрыты.
+    void setReadOnly(bool readOnly);
 
 signals:
     void warehousesChanged();
@@ -32,6 +35,7 @@ private:
     int selectedWarehouseId() const;
     void refreshLocations();
 
+    QList<QWidget *> m_editWidgets;
     QTableView *m_warehouseTable;
     QSqlTableModel *m_warehouseModel;
 

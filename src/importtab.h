@@ -28,6 +28,8 @@ public:
     explicit ImportTab(QWidget *parent = nullptr);
 
     void refresh(); // перечитать список складов
+    // Роль "только просмотр": загрузка файлов отключена, остаётся выгрузка остатков в Excel.
+    void setReadOnly(bool readOnly);
 
 signals:
     void dataImported();
@@ -61,4 +63,5 @@ private:
     QCheckBox *m_createMissing;
 
     QPlainTextEdit *m_log;
+    QList<QWidget *> m_importWidgets; // всё, что нужно только для загрузки
 };

@@ -108,6 +108,21 @@ const QStringList &schemaDdl()
             warehouse_id INTEGER NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,
             PRIMARY KEY (account_id, warehouse_id)
         ))",
+        // --- Роль "только просмотр": пользователь видит данные, но ничего не меняет.
+        // Администратор всегда может редактировать (read_only для него не действует).
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS read_only BOOLEAN NOT NULL DEFAULT FALSE",
+        // --- Фото товаров лежат в общей базе (а не в файлах на конкретном компьютере),
+        // чтобы их видели все компьютеры и сайт. data - фото до 1280 px, thumb - миниатюра
+        // до 240 px; обе всегда JPEG. Первое по position - "обложка" товара.
+        R"(CREATE TABLE IF NOT EXISTS product_photos (
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL DEFAULT 0,
+            data BYTEA NOT NULL,
+            thumb BYTEA NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        ))",
+        "CREATE INDEX IF NOT EXISTS product_photos_product_idx ON product_photos (product_id, position, id)",
     };
     return ddl;
 }

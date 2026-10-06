@@ -44,6 +44,11 @@ bool AuthService::validatePassword(const QString &password, QString *error)
 bool AuthService::createUser(const QString &username, const QString &password, bool isAdmin,
                              QString *error)
 {
+    return createUser(username, password, isAdmin ? Role::Admin : Role::Editor, error);
+}
+
+bool AuthService::createUser(const QString &username, const QString &password, Role role, QString *error)
+{
     const QString trimmed = username.trimmed();
     if (trimmed.isEmpty()) {
         if (error)
@@ -57,11 +62,12 @@ bool AuthService::createUser(const QString &username, const QString &password, b
     const QString hash = hashPassword(password, salt);
 
     QSqlQuery q;
-    q.prepare("INSERT INTO users (username, password_hash, salt, is_admin) VALUES (?, ?, ?, ?)");
+    q.prepare("INSERT INTO users (username, password_hash, salt, is_admin, read_only) VALUES (?, ?, ?, ?, ?)");
     q.addBindValue(trimmed);
     q.addBindValue(hash);
     q.addBindValue(salt);
-    q.addBindValue(isAdmin);
+    q.addBindValue(role == Role::Admin);
+    q.addBindValue(role == Role::Viewer);
     if (!q.exec()) {
         if (error)
             *error = q.lastError().nativeErrorCode() == QLatin1String("23505")
@@ -75,10 +81,10 @@ bool AuthService::createUser(const QString &username, const QString &password, b
 QList<AuthService::User> AuthService::listUsers()
 {
     QList<User> users;
-    QSqlQuery q("SELECT id, username, is_admin, created_at FROM users ORDER BY username");
+    QSqlQuery q("SELECT id, username, is_admin, read_only AND NOT is_admin, created_at FROM users ORDER BY username");
     while (q.next())
-        users.append({q.value(0).toInt(), q.value(1).toString(), q.value(2).toBool(),
-                      q.value(3).toDateTime()});
+        users.append({q.value(0).toInt(), q.value(1).toString(), q.value(2).toBool(), q.value(3).toBool(),
+                      q.value(4).toDateTime()});
     return users;
 }
 
@@ -135,9 +141,14 @@ bool execGuarded(QSqlQuery &q, QString *error)
 
 bool AuthService::setAdmin(int userId, bool admin, QString *error)
 {
+    return setRole(userId, admin ? Role::Admin : Role::Editor, error);
+}
+
+bool AuthService::setRole(int userId, Role role, QString *error)
+{
     QSqlQuery q;
-    if (admin) {
-        q.prepare("UPDATE users SET is_admin = TRUE WHERE id = ?");
+    if (role == Role::Admin) {
+        q.prepare("UPDATE users SET is_admin = TRUE, read_only = FALSE WHERE id = ?");
         q.addBindValue(userId);
         if (!q.exec()) {
             if (error)
@@ -146,10 +157,35 @@ bool AuthService::setAdmin(int userId, bool admin, QString *error)
         }
         return true;
     }
-    q.prepare(QStringLiteral("UPDATE users SET is_admin = FALSE WHERE id = ? AND %1")
-                  .arg(QLatin1String(kOtherAdminExists)));
+    // Лишить прав администратора можно, только если останется другой администратор.
+    q.prepare(QStringLiteral("UPDATE users SET is_admin = FALSE, read_only = ? WHERE id = ? AND "
+                             "(NOT is_admin OR %1)").arg(QLatin1String(kOtherAdminExists)));
+    q.addBindValue(role == Role::Viewer);
     q.addBindValue(userId);
     return execGuarded(q, error);
+}
+
+QString AuthService::roleName(Role role)
+{
+    switch (role) {
+    case Role::Admin: return QStringLiteral("Администратор");
+    case Role::Editor: return QStringLiteral("Сотрудник");
+    case Role::Viewer: return QStringLiteral("Только просмотр");
+    }
+    return QString();
+}
+
+AuthService::Role AuthService::roleOf(const User &user)
+{
+    return user.isAdmin ? Role::Admin : (user.readOnly ? Role::Viewer : Role::Editor);
+}
+
+bool AuthService::canEdit(const QString &username)
+{
+    QSqlQuery q;
+    q.prepare("SELECT NOT (read_only AND NOT is_admin) FROM users WHERE username = ?");
+    q.addBindValue(username.trimmed());
+    return q.exec() && q.next() && q.value(0).toBool();
 }
 
 bool AuthService::deleteUser(int userId, QString *error)

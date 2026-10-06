@@ -1,7 +1,8 @@
 #include "userstab.h"
 #include "authservice.h"
 
-#include <QCheckBox>
+#include <QComboBox>
+#include <QInputDialog>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -18,13 +19,13 @@ namespace {
 
 enum Col { ColLogin = 0, ColRole, ColCreated };
 
-// Диалог с логином (опционально), паролем с подтверждением и галкой
-// "администратор" (опционально). Проверки выполняются до закрытия окна,
+// Диалог с логином (опционально), паролем с подтверждением и выбором роли
+// (опционально). Проверки выполняются до закрытия окна,
 // чтобы при ошибке не приходилось вводить всё заново.
 class UserDialog : public QDialog
 {
 public:
-    UserDialog(const QString &title, const QString &fixedUsername, bool askAdmin, QWidget *parent)
+    UserDialog(const QString &title, const QString &fixedUsername, bool askRole, QWidget *parent)
         : QDialog(parent)
     {
         setWindowTitle(title);
@@ -45,9 +46,12 @@ public:
         m_confirm->setEchoMode(QLineEdit::Password);
         form->addRow(tr("Повторите пароль"), m_confirm);
 
-        if (askAdmin) {
-            m_admin = new QCheckBox(tr("Администратор (может управлять пользователями и кабинетами Маркета)"), this);
-            layout->addWidget(m_admin);
+        if (askRole) {
+            m_role = new QComboBox(this);
+            m_role->addItem(tr("Сотрудник - редактирует данные"), int(AuthService::Role::Editor));
+            m_role->addItem(tr("Только просмотр - ничего не меняет"), int(AuthService::Role::Viewer));
+            m_role->addItem(tr("Администратор - ещё и пользователи, кабинеты Маркета"), int(AuthService::Role::Admin));
+            form->addRow(tr("Роль"), m_role);
         }
 
         m_error = new QLabel(this);
@@ -65,7 +69,10 @@ public:
 
     QString username() const { return m_username->text().trimmed(); }
     QString password() const { return m_password->text(); }
-    bool isAdmin() const { return m_admin && m_admin->isChecked(); }
+    AuthService::Role role() const
+    {
+        return m_role ? AuthService::Role(m_role->currentData().toInt()) : AuthService::Role::Editor;
+    }
 
 private:
     void validateAndAccept()
@@ -87,7 +94,7 @@ private:
     QLineEdit *m_username;
     QLineEdit *m_password;
     QLineEdit *m_confirm;
-    QCheckBox *m_admin = nullptr;
+    QComboBox *m_role = nullptr;
     QLabel *m_error;
 };
 
@@ -101,7 +108,7 @@ UsersTab::UsersTab(const QString &currentUsername, QWidget *parent)
     auto *toolbar = new QHBoxLayout();
     auto *addBtn = new QPushButton(tr("Добавить пользователя"), this);
     auto *passwordBtn = new QPushButton(tr("Сменить пароль"), this);
-    auto *adminBtn = new QPushButton(tr("Дать / снять права администратора"), this);
+    auto *adminBtn = new QPushButton(tr("Изменить роль"), this);
     auto *deleteBtn = new QPushButton(tr("Удалить"), this);
     toolbar->addWidget(addBtn);
     toolbar->addWidget(passwordBtn);
@@ -120,7 +127,8 @@ UsersTab::UsersTab(const QString &currentUsername, QWidget *parent)
     layout->addWidget(m_table);
 
     auto *hint = new QLabel(tr("Пользователи общие для всех компьютеров, подключённых к этому серверу. "
-                               "Последнего администратора удалить или лишить прав нельзя."),
+                               "Последнего администратора удалить или лишить прав нельзя. Роль «Только просмотр» "
+                               "действует и в приложении, и на сайте (изменения вступят в силу при следующем входе)."),
                             this);
     hint->setWordWrap(true);
     hint->setStyleSheet("color: gray;");
@@ -128,7 +136,7 @@ UsersTab::UsersTab(const QString &currentUsername, QWidget *parent)
 
     connect(addBtn, &QPushButton::clicked, this, &UsersTab::addUser);
     connect(passwordBtn, &QPushButton::clicked, this, &UsersTab::changeSelectedPassword);
-    connect(adminBtn, &QPushButton::clicked, this, &UsersTab::toggleAdmin);
+    connect(adminBtn, &QPushButton::clicked, this, &UsersTab::changeRole);
     connect(deleteBtn, &QPushButton::clicked, this, &UsersTab::deleteUser);
     connect(m_table, &QTableWidget::cellDoubleClicked, this, &UsersTab::changeSelectedPassword);
 
@@ -144,12 +152,12 @@ void UsersTab::refresh()
         m_table->insertRow(row);
         auto *login = new QTableWidgetItem(u.username);
         login->setData(Qt::UserRole, u.id);
-        login->setData(Qt::UserRole + 1, u.isAdmin);
+        login->setData(Qt::UserRole + 1, int(AuthService::roleOf(u)));
         login->setData(Qt::UserRole + 2, u.username);
         if (u.username == m_currentUsername)
             login->setText(tr("%1 (вы)").arg(u.username));
         m_table->setItem(row, ColLogin, login);
-        m_table->setItem(row, ColRole, new QTableWidgetItem(u.isAdmin ? tr("Администратор") : tr("Пользователь")));
+        m_table->setItem(row, ColRole, new QTableWidgetItem(AuthService::roleName(AuthService::roleOf(u))));
         m_table->setItem(row, ColCreated,
                          new QTableWidgetItem(u.createdAt.toLocalTime().toString("dd.MM.yyyy HH:mm")));
     }
@@ -182,7 +190,7 @@ void UsersTab::addUser()
     if (dlg.exec() != QDialog::Accepted)
         return;
     QString err;
-    if (!AuthService::createUser(dlg.username(), dlg.password(), dlg.isAdmin(), &err)) {
+    if (!AuthService::createUser(dlg.username(), dlg.password(), dlg.role(), &err)) {
         QMessageBox::warning(this, tr("Ошибка"), err);
         return;
     }
@@ -199,16 +207,26 @@ void UsersTab::changeSelectedPassword()
     changePassword(this, item->data(Qt::UserRole).toInt(), username);
 }
 
-void UsersTab::toggleAdmin()
+void UsersTab::changeRole()
 {
     const int row = selectedRow();
     if (row < 0)
         return;
     const auto *item = m_table->item(row, ColLogin);
     const int id = item->data(Qt::UserRole).toInt();
-    const bool wasAdmin = item->data(Qt::UserRole + 1).toBool();
+    const auto current = AuthService::Role(item->data(Qt::UserRole + 1).toInt());
+    const QList<AuthService::Role> roles{AuthService::Role::Editor, AuthService::Role::Viewer, AuthService::Role::Admin};
+    QStringList names;
+    for (auto r : roles)
+        names << AuthService::roleName(r);
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(this, tr("Роль пользователя"),
+                                                 tr("Роль для %1:").arg(item->data(Qt::UserRole + 2).toString()),
+                                                 names, int(roles.indexOf(current)), false, &ok);
+    if (!ok)
+        return;
     QString err;
-    if (!AuthService::setAdmin(id, !wasAdmin, &err)) {
+    if (!AuthService::setRole(id, roles.value(names.indexOf(choice)), &err)) {
         QMessageBox::warning(this, tr("Ошибка"), err);
         return;
     }
