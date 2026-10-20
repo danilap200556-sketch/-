@@ -1,4 +1,5 @@
 #include "markettab.h"
+#include "productfinder.h"
 #include "marketaccountdialog.h"
 
 #include <QApplication>
@@ -10,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -139,6 +141,10 @@ MarketTab::MarketTab(bool isAdmin, QWidget *parent)
     m_onlyDiffs = new QCheckBox(tr("Показывать только расхождения"), this);
     m_onlyDiffs->setChecked(true);
     layout->insertWidget(2, m_onlyDiffs);
+    m_search = new QLineEdit(this);
+    m_search->setPlaceholderText(tr("Найти в таблицах: штрихкод (сканером), артикул или название"));
+    m_search->setClearButtonEnabled(true);
+    layout->insertWidget(3, m_search);
 
     // --- Журнал ---
     auto *logBox = new QGroupBox(tr("Журнал обмена с Маркетом"), splitter);
@@ -159,6 +165,7 @@ MarketTab::MarketTab(bool isAdmin, QWidget *parent)
     connect(pushPricesBtn, &QPushButton::clicked, this, &MarketTab::pushPrices);
     connect(pullPricesBtn, &QPushButton::clicked, this, &MarketTab::pullPrices);
     connect(m_onlyDiffs, &QCheckBox::toggled, this, &MarketTab::applyFilter);
+    connect(m_search, &QLineEdit::textChanged, this, &MarketTab::applyFilter);
     connect(m_accountCombo, &QComboBox::currentIndexChanged, this, &MarketTab::updateAccountInfo);
 
     refresh();
@@ -674,12 +681,20 @@ void MarketTab::pullPrices()
 void MarketTab::applyFilter()
 {
     const bool only = m_onlyDiffs->isChecked();
-    auto apply = [only](QTableWidget *t, int statusCol) {
+    const QString term = m_search->text().trimmed();
+    // Штрихкод или артикул превращаем в артикулы на Маркете (по ним строятся таблицы).
+    QSet<QString> offers;
+    if (!term.isEmpty())
+        offers = ProductFinder::offerIds(term);
+    auto apply = [&](QTableWidget *t, int statusCol, int offerCol, int nameCol) {
         for (int row = 0; row < t->rowCount(); ++row) {
             const auto status = Status(t->item(row, statusCol)->data(Qt::UserRole).toInt());
-            t->setRowHidden(row, only && status == Status::Match);
+            bool match = term.isEmpty() || offers.contains(t->item(row, offerCol)->text())
+                         || t->item(row, offerCol)->text().contains(term, Qt::CaseInsensitive)
+                         || t->item(row, nameCol)->text().contains(term, Qt::CaseInsensitive);
+            t->setRowHidden(row, (only && status == Status::Match) || !match);
         }
     };
-    apply(m_stockTable, SColStatus);
-    apply(m_priceTable, PColStatus);
+    apply(m_stockTable, SColStatus, SColOffer, SColName);
+    apply(m_priceTable, PColStatus, PColOffer, PColName);
 }

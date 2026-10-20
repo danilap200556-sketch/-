@@ -97,7 +97,7 @@ void ConnectionDialog::testConnection()
         m_status->setText(tr("Соединение установлено успешно."));
     } else {
         m_status->setStyleSheet("color: #c0392b;");
-        m_status->setText(tr("Не удалось подключиться:\n%1").arg(error));
+        m_status->setText(tr("Не удалось подключиться:\n%1").arg(Database::explainConnectionError(error)));
     }
 }
 

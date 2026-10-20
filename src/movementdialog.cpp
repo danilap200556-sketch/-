@@ -1,5 +1,6 @@
 #include "movementdialog.h"
 #include "database.h"
+#include "scanfield.h"
 
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -47,6 +48,8 @@ MovementDialog::MovementDialog(Kind kind, QWidget *parent)
     auto *form = new QFormLayout();
     layout->addLayout(form);
 
+    auto *scan = new ScanField(this);
+    form->addRow(tr("Найти по штрихкоду"), scan);
     m_product = new QComboBox(this);
     fillProducts(m_product);
     form->addRow(tr("Товар"), m_product);
@@ -91,6 +94,18 @@ MovementDialog::MovementDialog(Kind kind, QWidget *parent)
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
 
+    connect(scan, &ScanField::found, this, [this](int id, int matches) {
+        const int idx = m_product->findData(id);
+        if (idx >= 0)
+            m_product->setCurrentIndex(idx);
+        updateStockHint();
+        if (matches > 1)
+            m_stockHint->setText(tr("Найдено товаров: %1 - выбран первый, остальные - в списке «Товар». %2")
+                                     .arg(matches).arg(m_stockHint->text()));
+    });
+    connect(scan, &ScanField::notFound, this, [this](const QString &text) {
+        m_stockHint->setText(tr("«%1» не найден ни по штрихкоду, ни по артикулу.").arg(text));
+    });
     connect(m_product, &QComboBox::currentIndexChanged, this, &MovementDialog::updateStockHint);
     connect(m_warehouse, &QComboBox::currentIndexChanged, this, &MovementDialog::updateStockHint);
     updateStockHint();

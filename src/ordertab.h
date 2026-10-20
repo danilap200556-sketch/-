@@ -8,6 +8,8 @@ class QCheckBox;
 class QComboBox;
 class QDateEdit;
 class QLabel;
+class QLineEdit;
+class QTimer;
 class QPlainTextEdit;
 class QTableWidget;
 
@@ -23,10 +25,16 @@ public:
 public slots:
     void refresh();
 
+signals:
+    // Карточку товара поправили прямо из списка заказов.
+    void productEdited();
+
 private slots:
     void loadOrders();
     void exportExcel();
     void downloadLabels();
+    void applyFilter();
+    void editProductOfRow(int row);
 
 private:
     struct LoadedOrder {
@@ -37,6 +45,7 @@ private:
     };
 
     QList<const LoadedOrder *> selectedOrders() const;
+    bool orderVisible(int orderIndex) const;
     QHash<QString, QString> loadLocations() const;
     void log(const QString &text);
 
@@ -48,6 +57,8 @@ private:
     QComboBox *m_accountCombo;
     QComboBox *m_statusCombo;
     QComboBox *m_formatCombo;
+    QLineEdit *m_search;
+    QTimer *m_searchTimer;
     QCheckBox *m_dateOn;
     QDateEdit *m_dateFrom;
     QDateEdit *m_dateTo;

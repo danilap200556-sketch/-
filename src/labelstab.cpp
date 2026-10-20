@@ -2,7 +2,10 @@
 #include "barcode.h"
 #include "qrlabel.h"
 
+#include "scanfield.h"
+
 #include <QComboBox>
+#include <QTimer>
 #include <QFileDialog>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -43,7 +46,20 @@ LabelsTab::LabelsTab(QWidget *parent)
     productRowLayout->setContentsMargins(0, 0, 0, 0);
     m_product = new QComboBox(m_productRow);
     productRowLayout->addWidget(new QLabel(tr("Товар:"), m_productRow));
+    auto *scan = new ScanField(m_productRow);
+    productRowLayout->addWidget(scan);
     productRowLayout->addWidget(m_product);
+    connect(scan, &ScanField::found, this, [this](int id, int) {
+        for (int i = 0; i < m_product->count(); ++i)
+            if (m_product->itemData(i).toStringList().value(0).toInt() == id) {
+                m_product->setCurrentIndex(i);
+                break;
+            }
+    });
+    connect(scan, &ScanField::notFound, scan, [scan](const QString &) {
+        scan->setStyleSheet("color: #c0392b;");
+        QTimer::singleShot(1200, scan, [scan]() { scan->setStyleSheet(QString()); });
+    });
     formLayout->addWidget(m_productRow);
 
     m_barcodeRow = new QWidget(formBox);

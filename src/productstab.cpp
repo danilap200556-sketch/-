@@ -1,5 +1,7 @@
 #include "productstab.h"
 #include "productdialog.h"
+#include "producteditor.h"
+#include "productfinder.h"
 #include "barcode.h"
 #include "bulkeditdialog.h"
 #include "bulkphotosdialog.h"
@@ -238,52 +240,14 @@ void ProductsTab::addProduct()
 
 void ProductsTab::editProduct()
 {
-    const auto sel = m_table->selectionModel()->selectedRows();
-    if (sel.isEmpty() && !m_table->currentIndex().isValid())
+    const QModelIndex cur = m_table->currentIndex();
+    if (!cur.isValid())
         return;
-    const int row = m_table->currentIndex().isValid() ? m_table->currentIndex().row() : sel.first().row();
-    const QSqlRecord rec = m_model->record(row);
-
-    const int productId = rec.value("id").toInt();
-    ProductDialog dlg(this);
-    dlg.setProductId(productId);
-    ProductDialog::ProductData d;
-    d.barcodes = Barcode::forProduct(productId);
-    d.sku = rec.value("sku").toString();
-    d.name = rec.value("name").toString();
-    d.description = rec.value("description").toString();
-    d.photoPath = rec.value("photo_path").toString();
-    d.price = rec.value("price").toDouble();
-    d.customCode = rec.value("custom_code").toString();
-    d.marketSku = rec.value("market_sku").toString();
-    dlg.setData(d);
-    if (m_readOnly) {
-        dlg.setReadOnly(true);
-        dlg.exec();
+    const int productId = m_model->data(m_model->index(cur.row(), ColId)).toInt();
+    if (!ProductEditor::edit(productId, this, m_readOnly))
         return;
-    }
-
-    if (dlg.exec() != QDialog::Accepted)
-        return;
-
-    const auto nd = dlg.data();
-    m_model->setData(m_model->index(row, ColSku), nd.sku);
-    m_model->setData(m_model->index(row, ColName), nd.name);
-    m_model->setData(m_model->index(row, ColDescription), nd.description);
-    m_model->setData(m_model->index(row, ColPhotoPath), nd.photoPath);
-    m_model->setData(m_model->index(row, ColPrice), nd.price);
-    m_model->setData(m_model->index(row, ColCustomCode), nd.customCode);
-    m_model->setData(m_model->index(row, ColMarketSku), nd.marketSku);
-
-    if (!m_model->submitAll()) {
-        QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось сохранить изменения:\n%1")
-                                                       .arg(m_model->lastError().text()));
-        m_model->revertAll();
-        return;
-    }
-    saveBarcodes(productId, nd.barcodes);
-    savePhotos(productId, dlg.photoChanges());
     refresh();
+    selectProduct(productId);
     emit productsChanged();
 }
 
@@ -380,6 +344,12 @@ void ProductsTab::applySearch()
         m_model->fetchMore();
     if (!term.isEmpty())
         m_searchStatus->setText(tr("Найдено товаров: %1").arg(m_model->rowCount()));
+}
+
+void ProductsTab::searchFor(const QString &text)
+{
+    m_search->setText(text);
+    onSearchEntered();
 }
 
 void ProductsTab::selectProduct(int productId)

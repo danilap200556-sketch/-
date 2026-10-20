@@ -2,7 +2,12 @@
 #include "barcode.h"
 #include "photoviewer.h"
 
+#include <QComboBox>
 #include <QFileInfo>
+#include <QHeaderView>
+#include <QSpinBox>
+#include <QSqlQuery>
+#include <QTableWidget>
 #include <QPixmap>
 
 #include <QKeyEvent>
@@ -24,7 +29,7 @@ ProductDialog::ProductDialog(QWidget *parent)
     : QDialog(parent)
 {
     setWindowTitle(tr("Товар"));
-    setMinimumWidth(420);
+    setMinimumWidth(580);
 
     auto *layout = new QVBoxLayout(this);
     auto *form = new QFormLayout();
@@ -38,7 +43,7 @@ ProductDialog::ProductDialog(QWidget *parent)
     form->addRow(tr("Название"), m_name);
 
     m_description = new QTextEdit(this);
-    m_description->setFixedHeight(80);
+    m_description->setFixedHeight(54);
     form->addRow(tr("Описание"), m_description);
 
     m_price = new QDoubleSpinBox(this);
@@ -118,6 +123,28 @@ ProductDialog::ProductDialog(QWidget *parent)
     connect(genBarcodeBtn, &QPushButton::clicked, this, &ProductDialog::generateBarcode);
     connect(delBarcodeBtn, &QPushButton::clicked, this, &ProductDialog::removeBarcode);
 
+    // --- Остатки по складам: быстрое исправление "косяков" (появляется у существующего товара) ---
+    m_stockBox = new QWidget(this);
+    auto *stockLayout = new QVBoxLayout(m_stockBox);
+    stockLayout->setContentsMargins(0, 0, 0, 0);
+    auto *stockTitle = new QLabel(tr("<b>Остатки по складам</b> - если на полке иначе, впишите сколько реально "
+                                     "(в журнал уйдёт инвентаризация)"), m_stockBox);
+    stockTitle->setWordWrap(true);
+    stockLayout->addWidget(stockTitle);
+    m_stockTable = new QTableWidget(0, 4, m_stockBox);
+    m_stockTable->setHorizontalHeaderLabels({tr("Склад"), tr("Сейчас"), tr("Фактически"), tr("Место хранения")});
+    m_stockTable->verticalHeader()->setVisible(false);
+    m_stockTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_stockTable->setSelectionMode(QAbstractItemView::NoSelection);
+    m_stockTable->horizontalHeader()->setStretchLastSection(true);
+    m_stockTable->setMaximumHeight(104);
+    stockLayout->addWidget(m_stockTable);
+    m_stockComment = new QLineEdit(m_stockBox);
+    m_stockComment->setPlaceholderText(tr("причина исправления (необязательно, попадёт в журнал движений)"));
+    stockLayout->addWidget(m_stockComment);
+    m_stockBox->hide();
+    layout->addWidget(m_stockBox);
+
     m_photoStatus = new QLabel(this);
     m_photoStatus->setStyleSheet("color: gray; font-size: 11px;");
     layout->addWidget(m_photoStatus);
@@ -149,6 +176,80 @@ void ProductDialog::setProductId(int id)
 {
     m_productId = id;
     loadExistingPhotos();
+    loadStock();
+}
+
+void ProductDialog::loadStock()
+{
+    m_stockTable->setRowCount(0);
+    m_stockBox->setVisible(m_productId > 0);
+    if (m_productId <= 0)
+        return;
+    QSqlQuery q;
+    q.prepare("SELECT w.id, w.name, COALESCE(s.quantity, 0), COALESCE(s.location_id, 0) "
+              "FROM warehouses w LEFT JOIN stock s ON s.warehouse_id = w.id AND s.product_id = ? ORDER BY w.name");
+    q.addBindValue(m_productId);
+    if (!q.exec())
+        return;
+    while (q.next()) {
+        const int row = m_stockTable->rowCount();
+        m_stockTable->insertRow(row);
+        const int whId = q.value(0).toInt();
+        const int qty = q.value(2).toInt();
+        const int locId = q.value(3).toInt();
+        auto *name = new QTableWidgetItem(q.value(1).toString());
+        name->setData(Qt::UserRole, whId);
+        m_stockTable->setItem(row, 0, name);
+        auto *now = new QTableWidgetItem(QString::number(qty));
+        now->setData(Qt::UserRole, qty);
+        m_stockTable->setItem(row, 1, now);
+        auto *spin = new QSpinBox(m_stockTable);
+        spin->setRange(0, 1'000'000);
+        spin->setValue(qty);
+        m_stockTable->setCellWidget(row, 2, spin);
+        auto *loc = new QComboBox(m_stockTable);
+        loc->addItem(tr("— не указано —"), 0);
+        QSqlQuery lq;
+        lq.prepare("SELECT id, code FROM locations WHERE warehouse_id = ? ORDER BY code");
+        lq.addBindValue(whId);
+        if (lq.exec())
+            while (lq.next())
+                loc->addItem(lq.value(1).toString(), lq.value(0).toInt());
+        loc->setCurrentIndex(qMax(0, loc->findData(locId)));
+        loc->setProperty("was", locId);
+        m_stockTable->setCellWidget(row, 3, loc);
+    }
+    m_stockTable->resizeColumnsToContents();
+}
+
+QList<ProductDialog::StockEdit> ProductDialog::stockEdits() const
+{
+    QList<StockEdit> edits;
+    if (!m_stockTable)
+        return edits;
+    for (int row = 0; row < m_stockTable->rowCount(); ++row) {
+        StockEdit e;
+        e.warehouseId = m_stockTable->item(row, 0)->data(Qt::UserRole).toInt();
+        const int was = m_stockTable->item(row, 1)->data(Qt::UserRole).toInt();
+        const auto *spin = qobject_cast<QSpinBox *>(m_stockTable->cellWidget(row, 2));
+        const auto *loc = qobject_cast<QComboBox *>(m_stockTable->cellWidget(row, 3));
+        if (spin && spin->value() != was) {
+            e.setCount = true;
+            e.counted = spin->value();
+        }
+        if (loc && loc->currentData().toInt() != loc->property("was").toInt()) {
+            e.setLocation = true;
+            e.locationId = loc->currentData().toInt();
+        }
+        if (e.setCount || e.setLocation)
+            edits << e;
+    }
+    return edits;
+}
+
+QString ProductDialog::stockComment() const
+{
+    return m_stockComment ? m_stockComment->text().trimmed() : QString();
 }
 
 void ProductDialog::addGalleryItem(const QByteArray &thumbJpeg, int existingId, int addedIndex, bool atFront)
@@ -261,6 +362,13 @@ void ProductDialog::setReadOnly(bool readOnly)
     m_price->setButtonSymbols(readOnly ? QAbstractSpinBox::NoButtons : QAbstractSpinBox::UpDownArrows);
     for (auto *b : m_editButtons)
         b->setVisible(!readOnly);
+    if (m_stockTable) {
+        for (int row = 0; row < m_stockTable->rowCount(); ++row)
+            for (int col : {2, 3})
+                if (QWidget *w = m_stockTable->cellWidget(row, col))
+                    w->setEnabled(!readOnly);
+        m_stockComment->setVisible(!readOnly);
+    }
     m_barcodeInput->setVisible(!readOnly);
     m_buttons->button(QDialogButtonBox::Ok)->setVisible(!readOnly);
     m_buttons->button(QDialogButtonBox::Cancel)->setText(readOnly ? tr("Закрыть") : tr("Отмена"));

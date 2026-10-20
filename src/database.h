@@ -16,6 +16,10 @@ class Database
 public:
     static bool open(const ServerConfig &config, QString *error = nullptr);
 
+    // Добавляет к тексту ошибки подключения понятную подсказку, что проверить (адрес не находится,
+    // сервер не отвечает, неверный пароль, подключились к реплике и т. п.).
+    static QString explainConnectionError(const QString &error);
+
     // Только проверяет, что к серверу можно подключиться (без создания схемы
     // и без регистрации соединения для остального приложения).
     static bool testConnection(const ServerConfig &config, QString *error = nullptr);
@@ -45,6 +49,11 @@ public:
     // функция сама считает и применяет разницу с текущим остатком.
     static bool inventoryAdjust(int productId, int warehouseId, int countedQuantity,
                                  const QString &comment, QString *error = nullptr);
+
+    // То же, но без собственной транзакции: вызывать только внутри уже открытой
+    // (чтобы несколько правок карточки применялись все вместе или ни одной).
+    static bool inventorySetInTransaction(int productId, int warehouseId, int countedQuantity,
+                                          const QString &comment, QString *error = nullptr);
 
     static int currentStock(int productId, int warehouseId);
 

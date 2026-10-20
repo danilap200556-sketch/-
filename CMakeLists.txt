@@ -122,6 +122,9 @@ add_executable(inventory_manager
     src/xlsx.cpp
     src/ordertab.cpp
     src/barcode.cpp
+    src/productfinder.cpp
+    src/producteditor.cpp
+    src/scanfield.cpp
     src/photostore.cpp
     src/photoviewer.cpp
     src/bulkphotosdialog.cpp

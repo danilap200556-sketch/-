@@ -19,6 +19,9 @@ public:
     explicit ProductsTab(QWidget *parent = nullptr);
 
     void refresh();
+    // Вписывает текст в строку поиска и обрабатывает как Enter (сканер штрихкодов):
+    // известный штрихкод выделяет товар, незнакомый предлагает привязать к товару.
+    void searchFor(const QString &text);
     // Роль "только просмотр": убирает кнопки изменения, карточка открывается без редактирования.
     void setReadOnly(bool readOnly);
 

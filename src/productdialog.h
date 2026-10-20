@@ -12,6 +12,7 @@ class QLabel;
 class QListWidget;
 class QDialogButtonBox;
 class QPushButton;
+class QTableWidget;
 
 // Форма добавления/редактирования товара: артикул, название, описание,
 // цена, фото (лежат в общей базе, до 12 штук, первое - главное), штрихкоды и
@@ -32,12 +33,24 @@ public:
         QStringList barcodes;
     };
 
+    // Что исправили в остатках на одном складе (только изменённое).
+    struct StockEdit {
+        int warehouseId = 0;
+        bool setCount = false;
+        int counted = 0;
+        bool setLocation = false;
+        int locationId = 0; // 0 - место не указано
+    };
+
     explicit ProductDialog(QWidget *parent = nullptr);
 
     void setData(const ProductData &data);
     // id редактируемого товара (0 - новый), нужен для проверки штрихкодов.
     void setProductId(int id);
     ProductData data() const;
+    // Исправления остатков и мест хранения (пустой список - не трогали).
+    QList<StockEdit> stockEdits() const;
+    QString stockComment() const;
     // Что сделали с фото в диалоге (применяется после сохранения товара).
     PhotoStore::Changes photoChanges() const { return m_changes; }
     // Режим просмотра: ничего нельзя менять (роль "только просмотр").
@@ -59,6 +72,7 @@ private:
     bool addBarcodeCode(const QString &input);
     void addGalleryItem(const QByteArray &thumbJpeg, int existingId, int addedIndex, bool atFront = false);
     void loadExistingPhotos();
+    void loadStock();
 
     int m_productId = 0;
     QListWidget *m_barcodes;
@@ -72,6 +86,9 @@ private:
     QListWidget *m_gallery;
     QList<QPushButton *> m_editButtons; // кнопки, скрываемые в режиме просмотра
     QDialogButtonBox *m_buttons;
+    QTableWidget *m_stockTable = nullptr;
+    QLineEdit *m_stockComment = nullptr;
+    QWidget *m_stockBox = nullptr;
     QLineEdit *m_customCode;
     QLineEdit *m_marketSku;
     QLabel *m_photoStatus;

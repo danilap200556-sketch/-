@@ -24,7 +24,7 @@ int main(int argc, char *argv[])
         while (askServer || !config.isComplete() || !Database::open(config, &error)) {
             if (!error.isEmpty()) {
                 QMessageBox::warning(nullptr, QObject::tr("Не удалось подключиться"),
-                                      QObject::tr("Не удалось подключиться к серверу:\n%1").arg(error));
+                                      QObject::tr("Не удалось подключиться к серверу:\n%1").arg(Database::explainConnectionError(error)));
             }
             ConnectionDialog dlg(nullptr, &config);
             if (dlg.exec() != QDialog::Accepted)

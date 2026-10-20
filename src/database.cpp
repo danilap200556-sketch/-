@@ -254,6 +254,36 @@ bool tryConnectViaQtDriver(const ServerConfig &config, QString *error)
 
 } // namespace
 
+QString Database::explainConnectionError(const QString &error)
+{
+    auto has = [&](const char *needle) { return error.contains(QLatin1String(needle), Qt::CaseInsensitive); };
+    QString hint;
+    if (has("could not translate host name") || has("Name or service not known") || has("Unknown host")
+        || has("No such host") || has("Temporary failure in name resolution")) {
+        hint = QStringLiteral(
+            "Компьютер не может найти такой адрес сервера - это не пароль и не брандмауэр. Проверьте:\n"
+            "• адрес написан без опечаток;\n"
+            "• для сервера в Яндекс Облаке у ЭТОГО хоста включён «Публичный доступ» (кластер → Хосты → ⋮ → Изменить). "
+            "Настройка своя у каждого хоста: перешли на хост в другой зоне (rc1a → rc1e) - включите её и на нём;\n"
+            "• надёжнее указать адрес вида c-<идентификатор кластера>.rw.mdb.yandexcloud.net - он всегда ведёт на текущий "
+            "основной хост и не меняется при переключении между зонами (идентификатор кластера - на странице кластера).");
+    } else if (has("timeout") || has("timed out") || has("Connection refused") || has("could not connect to server")) {
+        hint = QStringLiteral(
+            "Сервер не отвечает. Проверьте: включён ли публичный доступ у хоста, разрешён ли входящий порт (6432 для "
+            "Яндекс Облака) в группе безопасности кластера, есть ли интернет, и не мешает ли антивирус или брандмауэр.");
+    } else if (has("password authentication failed")) {
+        hint = QStringLiteral("Неверное имя пользователя или пароль (проверьте раскладку и регистр).");
+    } else if (has("read-only transaction") || has("in a read-only")) {
+        hint = QStringLiteral("Вы подключены к реплике (только чтение). Нужен основной хост - адрес c-<идентификатор "
+                              "кластера>.rw.mdb.yandexcloud.net.");
+    } else if (has("SSL") || has("pg_hba.conf")) {
+        hint = QStringLiteral("Проверьте галочку «Использовать SSL»: для облачных серверов она нужна.");
+    } else if (has("does not exist") && has("database")) {
+        hint = QStringLiteral("Такой базы на сервере нет - проверьте название базы (с учётом регистра).");
+    }
+    return hint.isEmpty() ? error : error + QStringLiteral("\n\n") + hint;
+}
+
 bool Database::open(const ServerConfig &config, QString *error)
 {
     // У serverless-провайдеров (Neon и т.п.) соединение иногда обрывается
@@ -453,8 +483,8 @@ bool Database::transferStock(int productId, int srcWarehouseId, int dstWarehouse
     return true;
 }
 
-bool Database::inventoryAdjust(int productId, int warehouseId, int countedQuantity,
-                                const QString &comment, QString *error)
+bool Database::inventorySetInTransaction(int productId, int warehouseId, int countedQuantity,
+                                         const QString &comment, QString *error)
 {
     if (countedQuantity < 0) {
         if (error)
@@ -466,24 +496,35 @@ bool Database::inventoryAdjust(int productId, int warehouseId, int countedQuanti
     if (delta == 0)
         return true; // расхождений нет, ничего писать не нужно
 
+    QString fullComment = comment;
+    if (!fullComment.isEmpty())
+        fullComment += " ";
+    fullComment += QStringLiteral("(инвентаризация: было %1, стало %2)").arg(current).arg(countedQuantity);
+    return applyMovementInternal(productId, warehouseId, delta, MovementType::InventoryAdjust, std::nullopt,
+                                 fullComment, error);
+}
+
+bool Database::inventoryAdjust(int productId, int warehouseId, int countedQuantity,
+                                const QString &comment, QString *error)
+{
+    if (countedQuantity < 0) {
+        if (error)
+            *error = QStringLiteral("Посчитанное количество не может быть отрицательным");
+        return false;
+    }
+    if (currentStock(productId, warehouseId) == countedQuantity)
+        return true;
+
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.transaction()) {
         if (error)
             *error = db.lastError().text();
         return false;
     }
-
-    QString fullComment = comment;
-    if (!fullComment.isEmpty())
-        fullComment += " ";
-    fullComment += QStringLiteral("(инвентаризация: было %1, стало %2)").arg(current).arg(countedQuantity);
-
-    if (!applyMovementInternal(productId, warehouseId, delta, MovementType::InventoryAdjust,
-                                std::nullopt, fullComment, error)) {
+    if (!inventorySetInTransaction(productId, warehouseId, countedQuantity, comment, error)) {
         db.rollback();
         return false;
     }
-
     if (!db.commit()) {
         if (error)
             *error = db.lastError().text();

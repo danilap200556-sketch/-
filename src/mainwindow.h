@@ -10,6 +10,8 @@ class ImportTab;
 class MarketTab;
 class OrdersTab;
 class UsersTab;
+class QLineEdit;
+class QTabWidget;
 
 class MainWindow : public QMainWindow
 {
@@ -17,7 +19,17 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(const QString &username, QWidget *parent = nullptr);
 
+private slots:
+    void scanEntered();
+    void openSite();
+    void editSiteUrl();
+
 private:
+    void refreshAfterProductEdit();
+
+    QTabWidget *m_tabs = nullptr;
+    QLineEdit *m_scan = nullptr;
+    bool m_canEdit = true;
     ProductsTab *m_productsTab;
     WarehousesTab *m_warehousesTab;
     StockTab *m_stockTab;

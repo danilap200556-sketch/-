@@ -5,6 +5,7 @@
 #include <QWidget>
 
 class QCheckBox;
+class QLineEdit;
 class QComboBox;
 class QLabel;
 class QPlainTextEdit;
@@ -80,6 +81,7 @@ private:
     QComboBox *m_accountCombo;
     QLabel *m_accountInfo;
     QCheckBox *m_onlyDiffs;
+    QLineEdit *m_search;
     QCheckBox *m_zeroMissing;
     QTableWidget *m_stockTable;
     QLabel *m_stockSummary;

@@ -1,5 +1,7 @@
 #include "ordertab.h"
 #include "xlsx.h"
+#include "producteditor.h"
+#include "productfinder.h"
 
 #include <QApplication>
 #include <QColor>
@@ -14,6 +16,8 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLineEdit>
+#include <QTimer>
 #include <QMap>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -164,8 +168,21 @@ OrdersTab::OrdersTab(QWidget *parent)
     actionRow->addStretch();
     layout->addLayout(actionRow);
 
+    // Поиск по загруженным заказам: № заказа, артикул, название, кабинет или штрихкод товара (сканером).
+    auto *searchRow = new QHBoxLayout();
+    m_search = new QLineEdit(this);
+    m_search->setPlaceholderText(tr("Найти в заказах: штрихкод (сканером), артикул, название или № заказа"));
+    m_search->setClearButtonEnabled(true);
+    searchRow->addWidget(m_search, 1);
+    layout->addLayout(searchRow);
+    m_searchTimer = new QTimer(this);
+    m_searchTimer->setSingleShot(true);
+    m_searchTimer->setInterval(250);
+
     auto *hint = new QLabel(tr("Ярлыки и Excel делаются по выделенным в таблице заказам, а если ничего не "
-                               "выделено - по всем загруженным. Ярлыки есть только у заказов в обработке."),
+                               "выделено - по всем показанным (с учётом поиска). Ярлыки есть только у заказов в обработке. "
+                               "Двойной клик по строке открывает карточку товара - там можно сразу поправить цену, "
+                               "штрихкод или остаток."),
                             this);
     hint->setWordWrap(true);
     hint->setStyleSheet("color: gray;");
@@ -197,6 +214,10 @@ OrdersTab::OrdersTab(QWidget *parent)
     splitter->setStretchFactor(0, 4);
     splitter->setStretchFactor(1, 1);
 
+    connect(m_search, &QLineEdit::textChanged, m_searchTimer, qOverload<>(&QTimer::start));
+    connect(m_searchTimer, &QTimer::timeout, this, &OrdersTab::applyFilter);
+    connect(m_search, &QLineEdit::returnPressed, this, [this]() { m_searchTimer->stop(); applyFilter(); });
+    connect(m_table, &QTableWidget::cellDoubleClicked, this, &OrdersTab::editProductOfRow);
     connect(loadBtn, &QPushButton::clicked, this, &OrdersTab::loadOrders);
     connect(excelBtn, &QPushButton::clicked, this, &OrdersTab::exportExcel);
     connect(labelsBtn, &QPushButton::clicked, this, &OrdersTab::downloadLabels);
@@ -357,6 +378,7 @@ void OrdersTab::loadOrders()
     m_summary->setText(tr("Заказов: %1, товаров: %2 шт%3").arg(m_orders.size()).arg(items)
                            .arg(m_dateLabel.isEmpty() ? QString()
                                                       : tr(". Отгрузка: %1").arg(QString(m_dateLabel).replace('_', " — "))));
+    applyFilter();
     if (!failed.isEmpty())
         QMessageBox::warning(this, tr("Маркет"), tr("Не удалось загрузить заказы:\n%1").arg(failed.join('\n')));
 }
@@ -367,8 +389,10 @@ QList<const OrdersTab::LoadedOrder *> OrdersTab::selectedOrders() const
     QSet<int> seen;
     const auto rows = m_table->selectionModel()->selectedRows();
     if (rows.isEmpty()) {
-        for (const auto &o : m_orders)
-            result.append(&o);
+        // Ничего не выделено - все показанные заказы (поиск скрывает лишние).
+        for (int i = 0; i < m_orders.size(); ++i)
+            if (orderVisible(i))
+                result.append(&m_orders[i]);
         return result;
     }
     for (const auto &idx : rows) {
@@ -537,4 +561,68 @@ void OrdersTab::downloadLabels()
         QMessageBox::warning(this, tr("Ярлыки"), text);
     else
         QMessageBox::information(this, tr("Ярлыки"), text);
+}
+
+bool OrdersTab::orderVisible(int orderIndex) const
+{
+    for (int row = 0; row < m_table->rowCount(); ++row)
+        if (m_table->item(row, ColAccount)->data(Qt::UserRole).toInt() == orderIndex && !m_table->isRowHidden(row))
+            return true;
+    return false;
+}
+
+void OrdersTab::applyFilter()
+{
+    const QString term = m_search->text().trimmed();
+    // Штрихкод или артикул товара превращаем в артикулы на Маркете (как они стоят в заказах).
+    QSet<QString> offers;
+    if (!term.isEmpty())
+        offers = ProductFinder::offerIds(term);
+    int shown = 0;
+    QSet<int> shownOrders;
+    for (int row = 0; row < m_table->rowCount(); ++row) {
+        bool match = term.isEmpty();
+        if (!match) {
+            if (offers.contains(m_table->item(row, ColOffer)->text())) {
+                match = true;
+            } else {
+                for (int col : {ColAccount, ColOrder, ColOffer, ColName})
+                    if (m_table->item(row, col)->text().contains(term, Qt::CaseInsensitive)) {
+                        match = true;
+                        break;
+                    }
+            }
+        }
+        m_table->setRowHidden(row, !match);
+        if (match) {
+            ++shown;
+            shownOrders.insert(m_table->item(row, ColAccount)->data(Qt::UserRole).toInt());
+        }
+    }
+    if (!term.isEmpty())
+        m_summary->setText(tr("Найдено строк: %1, заказов: %2 (из %3 загруженных)")
+                               .arg(shown).arg(shownOrders.size()).arg(m_orders.size()));
+}
+
+void OrdersTab::editProductOfRow(int row)
+{
+    const QString offer = m_table->item(row, ColOffer)->text();
+    const int productId = ProductFinder::productForOffer(offer);
+    if (productId < 0) {
+        QMessageBox::information(this, tr("Нет такого товара"),
+                                 tr("Товара с артикулом «%1» нет в базе приложения. Добавьте его на вкладке «Товары» "
+                                    "(если у него другой артикул на Маркете - укажите его в карточке).").arg(offer));
+        return;
+    }
+    if (ProductEditor::edit(productId, this)) {
+        // Место хранения и остатки могли измениться - обновляем колонку на месте, без повторного запроса к Маркету.
+        m_locations = loadLocations();
+        for (int r = 0; r < m_table->rowCount(); ++r) {
+            const QString where = m_locations.value(m_table->item(r, ColOffer)->text());
+            auto *loc = m_table->item(r, ColLocation);
+            loc->setText(where.isEmpty() ? tr("нет в наличии у нас") : where);
+            loc->setForeground(where.isEmpty() ? QBrush(QColor("#c62828")) : QBrush());
+        }
+        emit productEdited();
+    }
 }
