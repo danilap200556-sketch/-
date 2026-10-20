@@ -84,10 +84,14 @@ QR-этикеток и штрихкодов.
 
 ### 4. Запуск
 
+**Команды выполняются на самой виртуальной машине** (подключитесь к ней по SSH: `ssh ЛОГИН@IP-ВМ`), а не в Cloud Shell на странице консоли -
+Cloud Shell временный, сайт в нём работать не будет. Обратите внимание: в команде нет многоточий, её нужно вставить целиком.
+
 **Быстро (скрипт сам поставит Docker, скачает сертификат Яндекса, создаст `.env` и запустит сайт):**
 
 ```bash
-git clone https://github.com/danilap200556-sketch/-.git склад && cd склад/web
+git clone https://github.com/danilap200556-sketch/-.git sklad
+cd sklad/web
 sudo ./install.sh
 ```
 
@@ -130,7 +134,7 @@ sudo docker compose logs -f web        # должна быть строка «С
 ### Обновление и обслуживание
 
 ```bash
-cd ~/склад && git pull && cd web && sudo docker compose up -d --build   # обновить сайт
+cd ~/sklad && git pull && cd web && sudo docker compose up -d --build   # обновить сайт
 sudo docker compose logs --tail 100 web                                   # логи
 sudo docker compose restart web                                           # перезапуск
 ```
