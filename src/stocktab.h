@@ -33,6 +33,7 @@ private slots:
     void doWriteOff();
     void doTransfer();
     void doInventoryAdjust();
+    void doBatch();
     void prefetchVisible();
 
 private:

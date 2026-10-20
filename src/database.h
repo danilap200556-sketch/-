@@ -1,6 +1,8 @@
 #pragma once
 
+#include <QList>
 #include <QString>
+#include <QStringList>
 #include <optional>
 
 struct ServerConfig;
@@ -39,6 +41,16 @@ public:
     static bool adjustStock(int productId, int warehouseId, int delta,
                              MovementType type, const QString &comment,
                              QString *error = nullptr);
+
+    // Приход или списание сразу многих позиций одной транзакцией: либо проходят все, либо ни одной.
+    // Повторы одного товара складываются. При отказе в *problems - по строке на каждую проблемную
+    // позицию (например, не хватает остатка), в *error - общая причина (ошибка базы).
+    struct BatchItem {
+        int productId = 0;
+        qint64 qty = 0; // всегда положительное
+    };
+    static bool adjustStockBatch(const QList<BatchItem> &items, int warehouseId, bool writeOff,
+                                 const QString &comment, QStringList *problems, QString *error = nullptr);
 
     // Перемещение между двумя складами внутри одной транзакции.
     static bool transferStock(int productId, int srcWarehouseId, int dstWarehouseId,

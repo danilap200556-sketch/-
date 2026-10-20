@@ -1,4 +1,5 @@
 #include "stocktab.h"
+#include "batchdialog.h"
 #include "database.h"
 #include "movementdialog.h"
 #include "producteditor.h"
@@ -53,7 +54,11 @@ StockTab::StockTab(QWidget *parent)
     toolbar->addWidget(writeOffBtn);
     toolbar->addWidget(transferBtn);
     toolbar->addWidget(inventoryBtn);
-    m_editWidgets << receiptBtn << writeOffBtn << transferBtn << inventoryBtn;
+    auto *batchBtn = new QPushButton(tr("Много позиций сразу"), this);
+    batchBtn->setToolTip(tr("Приход или списание списком: сканируйте штрихкоды или вставьте список из Excel, "
+                            "всё проводится одним документом"));
+    toolbar->addWidget(batchBtn);
+    m_editWidgets << receiptBtn << writeOffBtn << transferBtn << inventoryBtn << batchBtn;
     toolbar->addSpacing(16);
     auto *cardBtn = new QPushButton(tr("Карточка / быстрая правка"), this);
     cardBtn->setToolTip(tr("Открыть карточку выбранного товара: название, цену, штрихкоды и остатки можно поправить сразу"));
@@ -104,6 +109,7 @@ StockTab::StockTab(QWidget *parent)
     connect(writeOffBtn, &QPushButton::clicked, this, &StockTab::doWriteOff);
     connect(transferBtn, &QPushButton::clicked, this, &StockTab::doTransfer);
     connect(inventoryBtn, &QPushButton::clicked, this, &StockTab::doInventoryAdjust);
+    connect(batchBtn, &QPushButton::clicked, this, &StockTab::doBatch);
     connect(cardBtn, &QPushButton::clicked, this, &StockTab::editSelectedProduct);
     connect(m_stockTable, &QTableView::doubleClicked, this, &StockTab::editSelectedProduct);
     connect(m_search, &QLineEdit::textChanged, m_searchTimer, qOverload<>(&QTimer::start));
@@ -282,4 +288,12 @@ void StockTab::doInventoryAdjust()
         return;
     }
     refresh();
+}
+
+void StockTab::doBatch()
+{
+    BatchDialog dlg(BatchDialog::Kind::Receipt, this);
+    dlg.exec();
+    if (dlg.applied())
+        refresh();
 }

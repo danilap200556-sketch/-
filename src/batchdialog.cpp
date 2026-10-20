@@ -1,0 +1,429 @@
+#include "batchdialog.h"
+#include "photostore.h"
+#include "productfinder.h"
+
+#include <algorithm>
+#include <functional>
+
+#include <QApplication>
+#include <QClipboard>
+#include <QComboBox>
+#include <QFormLayout>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QShortcut>
+#include <QSpinBox>
+#include <QSqlQuery>
+#include <QTableWidget>
+#include <QVBoxLayout>
+
+namespace {
+
+enum Column { ColSku, ColName, ColCurrent, ColQty, ColAfter, ColCount };
+
+QString kindText(bool writeOff) { return writeOff ? QObject::tr("Списание") : QObject::tr("Приход"); }
+
+} // namespace
+
+BatchDialog::BatchDialog(Kind kind, QWidget *parent)
+    : QDialog(parent)
+{
+    setWindowTitle(tr("Приход / списание списком"));
+    resize(860, 600);
+
+    auto *layout = new QVBoxLayout(this);
+    auto *form = new QFormLayout();
+    layout->addLayout(form);
+
+    m_kind = new QComboBox(this);
+    m_kind->addItem(tr("Приход (добавить на склад)"), false);
+    m_kind->addItem(tr("Списание (убрать со склада)"), true);
+    form->addRow(tr("Операция"), m_kind);
+
+    m_warehouse = new QComboBox(this);
+    QSqlQuery wq("SELECT id, name FROM warehouses ORDER BY name");
+    while (wq.next())
+        m_warehouse->addItem(wq.value(1).toString(), wq.value(0).toInt());
+    form->addRow(tr("Склад"), m_warehouse);
+
+    m_comment = new QLineEdit(this);
+    m_comment->setPlaceholderText(tr("Например: поставка №12, возврат, брак"));
+    form->addRow(tr("Комментарий"), m_comment);
+
+    auto *hint = new QLabel(tr("Отсканируйте штрихкоды (каждый скан - 1 шт) или введите «артикул количество» и нажмите Enter. "
+                               "Список из Excel или файла можно вставить кнопкой ниже: колонки «артикул» и «количество»."), this);
+    hint->setWordWrap(true);
+    hint->setStyleSheet("color: gray;");
+    layout->addWidget(hint);
+
+    auto *scanRow = new QHBoxLayout();
+    m_scan = new QLineEdit(this);
+    m_scan->setPlaceholderText(tr("Штрихкод или артикул [количество] и Enter"));
+    m_scan->setClearButtonEnabled(true);
+    scanRow->addWidget(m_scan, 1);
+    auto *pasteBtn = new QPushButton(tr("Вставить список из буфера"), this);
+    auto *removeBtn = new QPushButton(tr("Убрать выбранные"), this);
+    auto *clearBtn = new QPushButton(tr("Очистить"), this);
+    scanRow->addWidget(pasteBtn);
+    scanRow->addWidget(removeBtn);
+    scanRow->addWidget(clearBtn);
+    layout->addLayout(scanRow);
+
+    m_table = new QTableWidget(0, ColCount, this);
+    m_table->setHorizontalHeaderLabels({tr("Артикул"), tr("Название"), tr("Сейчас"), tr("Кол-во"), tr("Станет")});
+    m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_table->setIconSize(QSize(PhotoCache::kIconSize, PhotoCache::kIconSize));
+    m_table->verticalHeader()->setDefaultSectionSize(PhotoCache::kIconSize + 6);
+    m_table->horizontalHeader()->setSectionResizeMode(ColName, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setSectionResizeMode(ColSku, QHeaderView::ResizeToContents);
+    layout->addWidget(m_table, 1);
+
+    m_problemsLabel = new QLabel(this);
+    m_problemsLabel->setWordWrap(true);
+    m_problemsLabel->setTextFormat(Qt::PlainText);
+    m_problemsLabel->setStyleSheet("color: #b00020;");
+    m_problemsLabel->hide();
+    layout->addWidget(m_problemsLabel);
+
+    m_summary = new QLabel(this);
+    layout->addWidget(m_summary);
+
+    auto *buttons = new QHBoxLayout();
+    buttons->addStretch(1);
+    m_commitButton = new QPushButton(this);
+    m_commitButton->setDefault(false);
+    auto *closeBtn = new QPushButton(tr("Закрыть"), this);
+    buttons->addWidget(m_commitButton);
+    buttons->addWidget(closeBtn);
+    layout->addLayout(buttons);
+
+    connect(m_scan, &QLineEdit::returnPressed, this, &BatchDialog::scanEntered);
+    connect(pasteBtn, &QPushButton::clicked, this, &BatchDialog::pasteFromClipboard);
+    connect(removeBtn, &QPushButton::clicked, this, &BatchDialog::removeSelectedRows);
+    connect(clearBtn, &QPushButton::clicked, this, &BatchDialog::clearAll);
+    connect(m_commitButton, &QPushButton::clicked, this, &BatchDialog::commit);
+    connect(closeBtn, &QPushButton::clicked, this, &BatchDialog::reject);
+    connect(m_kind, &QComboBox::currentIndexChanged, this, &BatchDialog::recompute);
+    connect(m_warehouse, &QComboBox::currentIndexChanged, this, &BatchDialog::recompute);
+    auto *del = new QShortcut(QKeySequence::Delete, m_table);
+    del->setContext(Qt::WidgetShortcut);
+    connect(del, &QShortcut::activated, this, &BatchDialog::removeSelectedRows);
+
+    setKind(kind);
+    m_scan->setFocus();
+}
+
+bool BatchDialog::writeOff() const { return m_kind->currentData().toBool(); }
+int BatchDialog::warehouseId() const { return m_warehouse->currentData().toInt(); }
+
+void BatchDialog::setKind(Kind kind)
+{
+    m_kind->setCurrentIndex(kind == Kind::WriteOff ? 1 : 0);
+    recompute();
+}
+
+void BatchDialog::setWarehouse(int warehouseId)
+{
+    const int idx = m_warehouse->findData(warehouseId);
+    if (idx >= 0)
+        m_warehouse->setCurrentIndex(idx);
+}
+
+void BatchDialog::setComment(const QString &comment) { m_comment->setText(comment); }
+
+int BatchDialog::rowCount() const { return m_table->rowCount(); }
+
+qint64 BatchDialog::totalQty() const
+{
+    qint64 total = 0;
+    for (int r = 0; r < m_table->rowCount(); ++r)
+        if (auto *spin = qobject_cast<QSpinBox *>(m_table->cellWidget(r, ColQty)))
+            total += spin->value();
+    return total;
+}
+
+int BatchDialog::rowOf(int productId) const
+{
+    for (int r = 0; r < m_table->rowCount(); ++r)
+        if (m_table->item(r, ColSku)->data(Qt::UserRole).toInt() == productId)
+            return r;
+    return -1;
+}
+
+void BatchDialog::addQuantity(int productId, qint64 qty)
+{
+    int row = rowOf(productId);
+    if (row < 0) {
+        QSqlQuery q;
+        q.prepare("SELECT sku, name FROM products WHERE id = ?");
+        q.addBindValue(productId);
+        if (!q.exec() || !q.next())
+            return;
+        row = m_table->rowCount();
+        m_table->insertRow(row);
+        auto *sku = new QTableWidgetItem(q.value(0).toString());
+        sku->setData(Qt::UserRole, productId);
+        sku->setIcon(PhotoCache::thumb(productId));
+        m_table->setItem(row, ColSku, sku);
+        m_table->setItem(row, ColName, new QTableWidgetItem(q.value(1).toString()));
+        for (int c : {ColCurrent, ColAfter}) {
+            auto *it = new QTableWidgetItem();
+            it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            m_table->setItem(row, c, it);
+        }
+        auto *spin = new QSpinBox(m_table);
+        spin->setRange(1, int(BatchParser::kMaxQty));
+        spin->setValue(int(qMin<qint64>(qty, BatchParser::kMaxQty)));
+        spin->setGroupSeparatorShown(true);
+        connect(spin, &QSpinBox::valueChanged, this, &BatchDialog::recompute);
+        m_table->setCellWidget(row, ColQty, spin);
+        return;
+    }
+    auto *spin = qobject_cast<QSpinBox *>(m_table->cellWidget(row, ColQty));
+    const qint64 sum = qint64(spin->value()) + qty;
+    if (sum > BatchParser::kMaxQty)
+        m_problems << tr("%1: слишком большое количество, оставлено %2")
+                          .arg(m_table->item(row, ColSku)->text()).arg(BatchParser::kMaxQty);
+    spin->setValue(int(qMin<qint64>(sum, BatchParser::kMaxQty)));
+}
+
+int BatchDialog::addText(const QString &text)
+{
+    m_problems.clear();
+    const QList<BatchParser::Line> lines = BatchParser::parse(text);
+    if (lines.isEmpty()) {
+        m_problems << tr("Список пуст: впишите или отсканируйте хотя бы одну позицию");
+    } else if (lines.size() > BatchParser::kMaxLines) {
+        m_problems << tr("Слишком много строк (больше %1) - разбейте список на части").arg(BatchParser::kMaxLines);
+    } else {
+        QStringList keys;
+        for (const BatchParser::Line &l : lines)
+            if (l.error.isEmpty())
+                keys << l.key;
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        QHash<QString, int> ids;
+        QHash<QString, QString> errors;
+        ProductFinder::findExactMany(keys, &ids, &errors);
+
+        QList<int> order;
+        QHash<int, qint64> qtyById;
+        for (const BatchParser::Line &l : lines) {
+            if (!l.error.isEmpty()) {
+                m_problems << tr("строка %1: %2: %3").arg(l.n).arg(l.key.isEmpty() ? tr("(пусто)") : l.key, l.error);
+            } else if (!ids.contains(l.key)) {
+                m_problems << tr("строка %1: %2").arg(l.n).arg(errors.value(l.key));
+            } else {
+                const int id = ids.value(l.key);
+                if (!qtyById.contains(id))
+                    order << id;
+                qtyById[id] += l.qty;
+            }
+        }
+        PhotoCache::prefetch(order);
+        m_updating = true;
+        for (int id : std::as_const(order))
+            addQuantity(id, qtyById.value(id));
+        m_updating = false;
+        QApplication::restoreOverrideCursor();
+        if (!order.isEmpty()) {
+            const int row = rowOf(order.last());
+            if (row >= 0) {
+                m_table->selectRow(row);
+                m_table->scrollToItem(m_table->item(row, ColSku));
+            }
+        }
+    }
+    recompute();
+    return int(m_problems.size());
+}
+
+void BatchDialog::scanEntered()
+{
+    const QString text = m_scan->text().trimmed();
+    if (text.isEmpty())
+        return;
+    if (addText(text) == 0)
+        m_scan->clear();
+    else
+        m_scan->selectAll();
+}
+
+void BatchDialog::pasteFromClipboard()
+{
+    const QString text = QApplication::clipboard()->text();
+    if (text.trimmed().isEmpty()) {
+        m_problems = {tr("В буфере обмена нет текста: скопируйте колонки «артикул» и «количество» из Excel")};
+        showProblems();
+        return;
+    }
+    addText(text);
+}
+
+void BatchDialog::removeSelectedRows()
+{
+    QList<int> rows;
+    for (const QModelIndex &i : m_table->selectionModel()->selectedRows())
+        rows << i.row();
+    std::sort(rows.begin(), rows.end(), std::greater<int>());
+    for (int r : std::as_const(rows))
+        m_table->removeRow(r);
+    m_problems.clear();
+    recompute();
+}
+
+void BatchDialog::clearAll()
+{
+    m_table->setRowCount(0);
+    m_problems.clear();
+    recompute();
+}
+
+void BatchDialog::showProblems()
+{
+    if (m_problems.isEmpty()) {
+        m_problemsLabel->hide();
+        return;
+    }
+    QStringList shown = m_problems.mid(0, 8);
+    if (m_problems.size() > shown.size())
+        shown << tr("...и ещё %1").arg(m_problems.size() - shown.size());
+    m_problemsLabel->setText(tr("Нужно исправить:\n") + shown.join(QLatin1Char('\n')));
+    m_problemsLabel->show();
+}
+
+void BatchDialog::recompute()
+{
+    if (m_updating)
+        return;
+    const bool out = writeOff();
+    const int wh = warehouseId();
+
+    // Остатки всех строк одним запросом
+    QHash<int, qint64> have;
+    QStringList idList;
+    for (int r = 0; r < m_table->rowCount(); ++r)
+        idList << QString::number(m_table->item(r, ColSku)->data(Qt::UserRole).toInt());
+    if (!idList.isEmpty()) {
+        QSqlQuery q;
+        q.prepare(QStringLiteral("SELECT product_id, quantity FROM stock WHERE warehouse_id = ? AND product_id IN (%1)")
+                      .arg(idList.join(QLatin1Char(','))));
+        q.addBindValue(wh);
+        if (q.exec())
+            while (q.next())
+                have[q.value(0).toInt()] = q.value(1).toLongLong();
+    }
+
+    int short_ = 0;
+    qint64 total = 0;
+    for (int r = 0; r < m_table->rowCount(); ++r) {
+        const int id = m_table->item(r, ColSku)->data(Qt::UserRole).toInt();
+        const qint64 now = have.value(id, 0);
+        const qint64 qty = qobject_cast<QSpinBox *>(m_table->cellWidget(r, ColQty))->value();
+        const qint64 after = out ? now - qty : now + qty;
+        total += qty;
+        m_table->item(r, ColCurrent)->setText(QString::number(now));
+        m_table->item(r, ColAfter)->setText(QString::number(after));
+        const bool bad = after < 0;
+        if (bad)
+            ++short_;
+        for (int c : {int(ColSku), int(ColName), int(ColCurrent), int(ColAfter)}) {
+            m_table->item(r, c)->setBackground(bad ? QBrush(QColor(255, 205, 205)) : QBrush());
+            m_table->item(r, c)->setForeground(bad ? QBrush(Qt::black) : QBrush());
+        }
+    }
+
+    QString s = tr("Позиций: %1, всего %2 шт").arg(m_table->rowCount()).arg(total);
+    if (short_)
+        s += tr(" - не хватает остатка у позиций: %1 (красные строки)").arg(short_);
+    m_summary->setText(s);
+    m_summary->setStyleSheet(short_ ? "color: #b00020;" : QString());
+    m_commitButton->setText(out ? tr("Провести списание") : tr("Провести приход"));
+    m_commitButton->setEnabled(m_table->rowCount() > 0);
+    showProblems();
+}
+
+QList<Database::BatchItem> BatchDialog::itemsFromTable() const
+{
+    QList<Database::BatchItem> items;
+    for (int r = 0; r < m_table->rowCount(); ++r) {
+        Database::BatchItem it;
+        it.productId = m_table->item(r, ColSku)->data(Qt::UserRole).toInt();
+        it.qty = qobject_cast<QSpinBox *>(m_table->cellWidget(r, ColQty))->value();
+        items << it;
+    }
+    return items;
+}
+
+bool BatchDialog::apply()
+{
+    m_lastError.clear();
+    if (m_warehouse->count() == 0) {
+        m_lastError = tr("Сначала добавьте склад.");
+        m_problems = {m_lastError};
+        showProblems();
+        return false;
+    }
+    if (m_table->rowCount() == 0) {
+        m_lastError = tr("Список пуст");
+        m_problems = {m_lastError};
+        showProblems();
+        return false;
+    }
+    QStringList problems;
+    QString err;
+    if (!Database::adjustStockBatch(itemsFromTable(), warehouseId(), writeOff(), m_comment->text().trimmed(), &problems, &err)) {
+        m_lastError = err;
+        m_problems = problems.isEmpty() ? QStringList{err} : problems;
+        recompute();
+        return false;
+    }
+    m_applied = true;
+    return true;
+}
+
+void BatchDialog::commit()
+{
+    // Красные строки (не хватает остатка) видно сразу - не отправляем заведомо неудачный документ.
+    if (writeOff()) {
+        QStringList lacking;
+        for (int r = 0; r < m_table->rowCount(); ++r)
+            if (m_table->item(r, ColAfter)->text().toLongLong() < 0)
+                lacking << tr("%1: на складе %2 шт, а списать нужно %3 шт").arg(
+                    m_table->item(r, ColSku)->text(), m_table->item(r, ColCurrent)->text(),
+                    QString::number(qobject_cast<QSpinBox *>(m_table->cellWidget(r, ColQty))->value()));
+        if (!lacking.isEmpty()) {
+            m_problems = lacking;
+            recompute();
+            QMessageBox::warning(this, tr("Не хватает остатка"),
+                                 tr("Ничего не списано. Исправьте количество в красных строках или уберите их:\n\n%1")
+                                     .arg(lacking.mid(0, 10).join(QLatin1Char('\n'))));
+            return;
+        }
+    }
+    const QString question = tr("%1: позиций %2, всего %3 шт, склад «%4». Провести одним документом?")
+                                 .arg(kindText(writeOff())).arg(m_table->rowCount()).arg(totalQty()).arg(m_warehouse->currentText());
+    if (QMessageBox::question(this, windowTitle(), question) != QMessageBox::Yes)
+        return;
+    if (!apply()) {
+        QMessageBox::warning(this, tr("Не проведено"),
+                             tr("Ничего не изменилось.\n\n%1").arg(m_problems.mid(0, 10).join(QLatin1Char('\n'))));
+        return;
+    }
+    QMessageBox::information(this, windowTitle(), tr("Готово: %1, позиций %2, всего %3 шт.")
+                                                    .arg(kindText(writeOff())).arg(m_table->rowCount()).arg(totalQty()));
+    accept();
+}
+
+void BatchDialog::reject()
+{
+    if (!m_applied && m_table->rowCount() > 0) {
+        if (QMessageBox::question(this, windowTitle(), tr("Список не проведён и будет потерян. Закрыть?")) != QMessageBox::Yes)
+            return;
+    }
+    QDialog::reject();
+}

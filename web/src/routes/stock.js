@@ -38,7 +38,8 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
         <select name="w"><option value="">Все склады</option>
           ${whs.map((w) => html`<option value="${w.id}" ${w.id === wid ? html`selected` : ''}>${w.name}</option>`)}</select>
         <button>Показать</button>
-        ${req.ctx.user.read_only ? '' : html`<a class="button primary" href="/operation">Приход / списание / перемещение</a>`}
+        ${req.ctx.user.read_only ? '' : html`<a class="button primary" href="/operation">Приход / списание / перемещение</a>
+          <a class="button" href="/batch">Много позиций сразу</a>`}
         <a class="button" href="/export/stock.xlsx?${new URLSearchParams(params).toString()}">Скачать в Excel</a>
         <a class="button" href="/stock.csv?${new URLSearchParams(params).toString()}">CSV</a>
       </form>
@@ -86,6 +87,7 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
           <input name="quantity" value="${f.quantity ?? ''}" required inputmode="numeric" maxlength="10" autocomplete="off" ${f.product ? html`autofocus` : ''}></label>
         <label class="field"><span>Комментарий</span><input name="comment" value="${f.comment ?? ''}" maxlength="300"></label>
         <button class="primary">Выполнить</button>
+        <p class="muted">Много позиций сразу (например, приёмка поставки или отгрузка): <a href="/batch">приход / списание списком</a>.</p>
         ${whs.length ? '' : html`<p class="flash err">Сначала <a href="/warehouses">создайте склад</a>.</p>`}
       </form>`,
     }, status);

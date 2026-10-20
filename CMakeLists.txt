@@ -129,6 +129,8 @@ add_executable(inventory_manager
     src/photoviewer.cpp
     src/bulkphotosdialog.cpp
     src/bulkeditdialog.cpp
+    src/batchparser.cpp
+    src/batchdialog.cpp
 )
 
 target_include_directories(inventory_manager PRIVATE ${QRENCODE_INCLUDE_DIRS})

@@ -442,6 +442,84 @@ bool Database::adjustStock(int productId, int warehouseId, int delta, MovementTy
     return true;
 }
 
+bool Database::adjustStockBatch(const QList<BatchItem> &items, int warehouseId, bool writeOff,
+                                const QString &comment, QStringList *problems, QString *error)
+{
+    if (problems)
+        problems->clear();
+    // Повторы складываем, порядок - по возрастанию товара: две партии одновременно не зайдут в тупик.
+    QMap<int, qint64> total;
+    for (const BatchItem &it : items) {
+        if (it.qty <= 0 || it.productId <= 0) {
+            if (error)
+                *error = QStringLiteral("Количество должно быть больше нуля");
+            return false;
+        }
+        total[it.productId] += it.qty;
+    }
+    if (total.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Список пуст");
+        return false;
+    }
+
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.transaction()) {
+        if (error)
+            *error = db.lastError().text();
+        return false;
+    }
+    auto fail = [&](const QString &msg) {
+        db.rollback();
+        if (error)
+            *error = msg;
+        return false;
+    };
+
+    // Сначала читаем и блокируем строки остатков, проверяем все позиции, и только потом пишем.
+    QStringList bad;
+    for (auto it = total.cbegin(); it != total.cend(); ++it) {
+        QSqlQuery q;
+        q.prepare("SELECT p.sku, COALESCE((SELECT quantity FROM stock s WHERE s.product_id = p.id AND s.warehouse_id = ? "
+                  "FOR UPDATE), 0) FROM products p WHERE p.id = ?");
+        q.addBindValue(warehouseId);
+        q.addBindValue(it.key());
+        if (!q.exec())
+            return fail(q.lastError().text());
+        if (!q.next()) {
+            bad << QStringLiteral("товар №%1 уже удалён").arg(it.key());
+            continue;
+        }
+        const QString sku = q.value(0).toString();
+        const qint64 have = q.value(1).toLongLong();
+        if (it.value() > 100'000'000)
+            bad << QStringLiteral("%1: слишком большое количество (%2)").arg(sku).arg(it.value());
+        else if (writeOff && have < it.value())
+            bad << QStringLiteral("%1: на складе %2 шт, а списать нужно %3 шт").arg(sku).arg(have).arg(it.value());
+        else if (!writeOff && have + it.value() > 2'000'000'000LL)
+            bad << QStringLiteral("%1: остаток получится слишком большим").arg(sku);
+    }
+    if (!bad.isEmpty()) {
+        db.rollback();
+        if (problems)
+            *problems = bad;
+        if (error)
+            *error = QStringLiteral("Ничего не выполнено: %1").arg(bad.join(QStringLiteral("; ")));
+        return false;
+    }
+
+    const MovementType type = writeOff ? MovementType::WriteOff : MovementType::Receipt;
+    for (auto it = total.cbegin(); it != total.cend(); ++it) {
+        QString err;
+        const int delta = int(writeOff ? -it.value() : it.value());
+        if (!applyMovementInternal(it.key(), warehouseId, delta, type, std::nullopt, comment, &err))
+            return fail(err);
+    }
+    if (!db.commit())
+        return fail(db.lastError().text());
+    return true;
+}
+
 bool Database::transferStock(int productId, int srcWarehouseId, int dstWarehouseId,
                               int quantity, const QString &comment, QString *error)
 {
