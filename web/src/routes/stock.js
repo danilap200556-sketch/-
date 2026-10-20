@@ -5,7 +5,8 @@ const bc = require('../barcode');
 const ops = require('../stock');
 const { searchSql } = require('./products');
 const { parseId, fmtDate, str, csvCell } = require('../util');
-const { thumbImg, COVER_SQL } = require('../views');
+const { thumbImg, editLink, COVER_SQL } = require('../views');
+const { findExact } = require('../finder');
 
 const PAGE = 100;
 
@@ -45,7 +46,7 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
         <thead><tr><th></th><th>Артикул</th><th>Название</th><th>Склад</th><th>Место</th><th class="num">Остаток</th><th></th></tr></thead>
         <tbody>${rows.slice(0, PAGE).map((r) => html`<tr>
           <td>${thumbImg(r.pid, r.cover_id)}</td>
-          <td><a href="/products/${r.pid}">${r.sku}</a></td><td>${r.name}</td><td>${r.wname}</td><td>${r.location}</td>
+          <td><a href="/products/${r.pid}">${r.sku}</a> ${editLink(req.ctx, r.pid, req.originalUrl)}</td><td>${r.name}</td><td>${r.wname}</td><td>${r.location}</td>
           <td class="num"><b>${r.quantity}</b></td>
           <td>${req.ctx.user.read_only ? '' : html`<a href="/operation?product=${encodeURIComponent(r.sku)}&warehouse=${r.wid}">операция</a>`}</td></tr>`)}
           ${rows.length ? '' : html`<tr><td colspan="7" class="muted">Остатков не найдено</td></tr>`}</tbody>
@@ -104,12 +105,10 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
       const wid = parseId(f.warehouse);
       if (!wid) return fail('Выберите склад');
       const n = ops.qty(f.quantity, { allowZero: f.kind === 'inventory' });
-      // Товар - по точному артикулу, иначе по штрихкоду (в т.ч. из сканера).
-      const found = (await db.query(
-        `SELECT id, sku, name FROM products WHERE sku = $1
-         UNION ALL SELECT p.id, p.sku, p.name FROM product_barcodes b JOIN products p ON p.id = b.product_id WHERE b.barcode = $2
-         LIMIT 1`, [f.product, bc.normalize(f.product)])).rows[0];
-      if (!found) return fail(`Товар «${f.product}» не найден: нет такого артикула или штрихкода`, 404);
+      // Товар - по штрихкоду (в т.ч. из сканера), артикулу или артикулу на Маркете; только точное совпадение.
+      const hit = await findExact(db, f.product);
+      if (hit.error) return fail(hit.error, 404);
+      const found = (await db.query('SELECT id, sku, name FROM products WHERE id = $1', [hit.id])).rows[0];
       const dest = f.kind === 'transfer' ? parseId(f.dest) : null;
       if (f.kind === 'transfer' && !dest) return fail('Выберите склад назначения');
 
@@ -150,7 +149,7 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
         <input type="search" name="q" value="${q}" placeholder="Артикул, название или штрихкод"><button>Найти</button></form>
       <div class="table-wrap"><table>
         <thead><tr><th>Дата</th><th>Артикул</th><th>Склад</th><th>Тип</th><th class="num">Изменение</th><th>Комментарий</th></tr></thead>
-        <tbody>${rows.slice(0, PAGE).map((m) => html`<tr><td>${fmtDate(m.created_at)}</td><td><a href="/products/${m.pid}">${m.sku}</a></td>
+        <tbody>${rows.slice(0, PAGE).map((m) => html`<tr><td>${fmtDate(m.created_at)}</td><td><a href="/products/${m.pid}">${m.sku}</a> ${editLink(req.ctx, m.pid, req.originalUrl)}</td>
           <td>${m.wname}</td><td>${ops.TYPE_LABELS[m.type] || m.type}</td>
           <td class="num ${m.delta < 0 ? 'neg' : 'pos'}">${m.delta > 0 ? '+' : ''}${m.delta}</td><td>${m.comment}</td></tr>`)}
           ${rows.length ? '' : html`<tr><td colspan="6" class="muted">Движений не найдено</td></tr>`}</tbody>

@@ -5,7 +5,8 @@ const { csrfField } = require('../layout');
 const { MarketApi, MarketError } = require('../market');
 const xlsx = require('../xlsx');
 const { fmtDate, parseId, str } = require('../util');
-const { thumbImg, COVER_SQL } = require('../views');
+const { thumbImg, editLink, COVER_SQL } = require('../views');
+const { offerIdsFor } = require('./../finder');
 
 const TTL_MS = 20 * 60_000;
 const MAX_BATCH = 1000; // заказов в одном файле ярлыков (лимит API)
@@ -100,6 +101,8 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
         <label class="field"><span>по (включительно)</span><input type="date" name="to" value="${q.to}"></label>
         <button class="primary">Загрузить заказы</button>
       </div>
+      <label class="field"><span>Найти среди заказов (необязательно)</span>
+        <input type="search" name="s" value="${q.s}" placeholder="Штрихкод товара (сканером), артикул, название или № заказа" maxlength="100" autocomplete="off"></label>
       <p class="toolbar">Быстро: ${link('Отгрузка сегодня', today, today)} ${link('Отгрузка завтра', plusDays(today, 1), plusDays(today, 1))}
         ${link('Любая дата', '', '')}</p>
       <p class="muted">Заказы нужной даты отгрузки загружаются сразу с Маркета; без дат - за последние 30 дней. Окно дат - не больше 30 дней.
@@ -112,8 +115,9 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
     const q = {
       acc: String(parseId(req.query.acc) || ''), status: String(Math.min(Math.max(parseInt(req.query.status, 10) || 0, 0), STATUS_FILTERS.length - 1)),
       from: isoDate(str(req.query.from, 10)) || '', to: isoDate(str(req.query.to, 10)) || '',
+      s: str(req.query.s, 100),
     };
-    q.base = { acc: q.acc, status: q.status };
+    q.base = { acc: q.acc, status: q.status, s: q.s };
     const head = (extra) => ({ title: 'Заказы Маркета', active: 'orders', body: html`${form(req, q, accounts)}${extra}` });
     if (req.query.go !== '1') {
       return send(req, res, head(accounts.length ? '' : html`<p class="flash err">Кабинеты Маркета не настроены. Добавьте их во вкладке «Яндекс Маркет» в приложении на компьютере.</p>`));
@@ -142,8 +146,17 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
       }
     }));
     // Страховка: если Маркет вернул заказы вне выбранных дат, они не попадут ни в список, ни в ярлыки.
-    const orders = loaded.filter((o) => !q.from || (o.shipmentDate >= q.from && o.shipmentDate <= q.to))
+    const allOrders = loaded.filter((o) => !q.from || (o.shipmentDate >= q.from && o.shipmentDate <= q.to))
       .sort((a, b) => a.shipmentDate.localeCompare(b.shipmentDate) || a.id - b.id);
+    // Поиск: заказ остаётся целиком, если в нём есть товар с этим штрихкодом/артикулом, либо совпал № заказа,
+    // кабинет, артикул или название. Ярлыки и Excel ниже строятся уже по найденным заказам.
+    let orders = allOrders;
+    if (q.s) {
+      const needle = q.s.toLowerCase();
+      const offers = await offerIdsFor(db, q.s);
+      orders = allOrders.filter((o) => String(o.id).includes(needle) || o.account.toLowerCase().includes(needle)
+        || o.items.some((i) => offers.has(i.offerId) || i.offerId.toLowerCase().includes(needle) || i.name.toLowerCase().includes(needle)));
+    }
 
     const [locations, products] = await Promise.all([loadLocations(), loadProductInfo()]);
     const rid = crypto.randomBytes(12).toString('hex');
@@ -164,7 +177,7 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
       title: 'Заказы Маркета', active: 'orders', scripts: ['/static/orders.js'],
       body: html`${form(req, q, accounts)}
       ${problems.map((p) => html`<div class="flash err">Не удалось загрузить: ${p}</div>`)}
-      <p>Заказов: <b>${orders.length}</b>, товаров: <b>${itemsTotal}</b> шт${q.from ? html`. Отгрузка ${q.from === q.to ? humanShip(q.from) : `${humanShip(q.from)} — ${humanShip(q.to)}`}` : ''}</p>
+      <p>Заказов: <b>${orders.length}</b>${q.s ? html` из ${allOrders.length} загруженных (поиск «${q.s}»)` : ''}, товаров: <b>${itemsTotal}</b> шт${q.from ? html`. Отгрузка ${q.from === q.to ? humanShip(q.from) : `${humanShip(q.from)} — ${humanShip(q.to)}`}` : ''}</p>
       ${orders.length ? html`<div class="card">
         <div class="toolbar"><a class="button" href="/orders/export.xlsx?r=${rid}">Сохранить список в Excel</a>
           <label>Формат ярлыков: <select id="label-format">${FORMATS.map(([v, l]) => html`<option value="${v}">${l}</option>`)}</select></label></div>
@@ -176,7 +189,7 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
         <tbody>${rows.map(({ o, i }) => {
           const p = products.get(i.offerId);
           const where = locations.get(i.offerId);
-          return html`<tr><td>${p ? html`<a href="/products/${p.id}">${thumbImg(p.id, p.cover_id)}</a>` : ''}</td><td>${o.account}</td><td>${o.id}</td>
+          return html`<tr><td>${p ? html`<a href="/products/${p.id}">${thumbImg(p.id, p.cover_id)}</a> ${editLink(req.ctx, p.id, req.originalUrl)}` : ''}</td><td>${o.account}</td><td>${o.id}</td>
             <td>${humanStatus(o.status, o.substatus)}</td><td>${humanShip(o.shipmentDate)}</td><td>${i.offerId}</td><td>${i.name}</td>
             <td class="num">${i.count}</td><td class="${where ? '' : 'neg'}">${where || NO_STOCK}</td></tr>`;
         })}

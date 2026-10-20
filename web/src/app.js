@@ -223,6 +223,8 @@ function createApp(cfg, db) {
   require('./routes/photos')(app, ctxFor);
   require('./routes/bulk')(app, ctxFor);
   require('./routes/import')(app, ctxFor);
+  require('./routes/find')(app, ctxFor);
+  require('./routes/quick')(app, ctxFor);
   require('./routes/orders')(app, ctxFor);
   require('./routes/users')(app, ctxFor);
 

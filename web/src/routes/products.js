@@ -4,7 +4,7 @@ const { csrfField, pager } = require('../layout');
 const bc = require('../barcode');
 const { TYPE_LABELS } = require('../stock');
 const { parseId, likeEscape, fmtDate, fmtMoney, parsePrice, str, field } = require('../util');
-const { thumbImg, COVER_SQL } = require('../views');
+const { thumbImg, editLink, COVER_SQL } = require('../views');
 
 const PAGE = 50;
 
@@ -75,12 +75,12 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
     const list = cards
       ? html`<div class="cards">${items.map((p) => html`<div class="pcard">${check(p)}
           <a href="/products/${p.id}">${thumbImg(p.id, p.cover_id, true)}</a>
-          <a href="/products/${p.id}" class="sku">${p.sku}</a><div class="pname">${p.name}</div>
+          <a href="/products/${p.id}" class="sku">${p.sku}</a> ${editLink(ctx, p.id, req.originalUrl)}<div class="pname">${p.name}</div>
           <div class="muted">${fmtMoney(p.price)} ₽ · на складах: <b>${p.total}</b></div></div>`)}</div>`
       : html`<div class="table-wrap"><table>
           <thead><tr>${editor ? html`<th class="chk"><input type="checkbox" id="sel-all" aria-label="Выбрать все на странице"></th>` : ''}<th></th><th>Артикул</th><th>Название</th><th class="num">Цена</th><th class="num">Всего на складах</th></tr></thead>
           <tbody>${items.map((p) => html`<tr>${editor ? html`<td class="chk">${check(p)}</td>` : ''}<td>${thumbImg(p.id, p.cover_id)}</td>
-            <td><a href="/products/${p.id}">${p.sku}</a></td><td>${p.name}</td>
+            <td><a href="/products/${p.id}">${p.sku}</a> ${editLink(ctx, p.id, req.originalUrl)}</td><td>${p.name}</td>
             <td class="num">${fmtMoney(p.price)}</td><td class="num">${p.total}</td></tr>`)}
           ${items.length ? '' : html`<tr><td colspan="6" class="muted">Ничего не найдено</td></tr>`}</tbody>
         </table></div>`;
@@ -157,6 +157,7 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
     send(req, res, {
       title: `${p.sku} · ${p.name}`, active: 'products',
       body: html`
+      ${ro ? '' : html`<p><a class="button primary" href="/products/${id}/quick">✎ Быстрая правка: название, цена, штрихкоды, остатки</a></p>`}
       <div class="grid2">
         <div>
           ${productForm(ctx, `/products/${id}`, d, error, 'Сохранить')}

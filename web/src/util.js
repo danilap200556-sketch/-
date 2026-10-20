@@ -48,4 +48,7 @@ const field = (label, name, value, extra = {}) => html`
       ${extra.inputmode ? html`inputmode="${extra.inputmode}"` : ''} ${extra.autocomplete ? html`autocomplete="${extra.autocomplete}"` : ''}>
   </label>`;
 
-module.exports = { parseId, likeEscape, fmtDate, fmtMoney, parsePrice, str, csvCell, field, INT_MAX };
+// Адрес для возврата после правки: только свой путь (без //, без схемы, без переводов строки).
+const safeLocal = (v, fallback = '/') => (typeof v === 'string' && v.length < 2000 && /^\/(?![/\\])[^\r\n]*$/.test(v) ? v : fallback);
+
+module.exports = { safeLocal, parseId, likeEscape, fmtDate, fmtMoney, parsePrice, str, csvCell, field, INT_MAX };

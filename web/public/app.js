@@ -78,3 +78,29 @@ document.addEventListener('submit', function (e) {
       .then(function (d) { open(d.ids, Math.max(0, d.ids.indexOf(photo))); });
   });
 })();
+
+// Поиск товара из любого места: клавиша "/" ставит курсор в строку поиска, а сканер штрихкодов,
+// когда курсор не в поле ввода, работает сам: быстрые цифры + Enter открывают найденный товар.
+(function () {
+  var box = document.getElementById('navsearch');
+  if (!box) return;
+  function typing(el) {
+    return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+  }
+  var buf = '', last = 0;
+  document.addEventListener('keydown', function (e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (typing(document.activeElement)) { buf = ''; return; }
+    if (e.key === '/') { e.preventDefault(); box.focus(); box.select(); return; }
+    var now = Date.now();
+    if (now - last > 100) buf = ''; // человек печатает медленнее сканера - не считаем это сканированием
+    last = now;
+    if (e.key === 'Enter') {
+      if (buf.length >= 6) { e.preventDefault(); window.location.href = '/find?q=' + encodeURIComponent(buf); }
+      buf = '';
+    } else if (e.key.length === 1) {
+      buf += e.key;
+      if (buf.length > 64) buf = '';
+    }
+  });
+})();

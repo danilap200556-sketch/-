@@ -14,6 +14,9 @@ function nav(ctx, active) {
   return html`<nav>
     ${items.map(([href, label, key]) => html`<a href="${href}" class="${key === active ? 'active' : ''}">${label}</a>`)}
     <span class="spacer"></span>
+    <form method="get" action="/find" class="navsearch" role="search">
+      <input type="search" name="q" id="navsearch" placeholder="Штрихкод / артикул" title="Поиск товара. Клавиша / ставит сюда курсор; сканер работает и без клика" aria-label="Найти товар по штрихкоду или артикулу" maxlength="100" autocomplete="off" inputmode="search">
+    </form>
     <a href="/account" class="${active === 'account' ? 'active' : ''}">${ctx.user.username}${ctx.user.read_only ? ' (просмотр)' : ''}</a>
     <form method="post" action="/logout" class="inline"><input type="hidden" name="_csrf" value="${ctx.csrf}"><button class="link">Выйти</button></form>
   </nav>`;
