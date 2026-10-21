@@ -58,3 +58,4 @@ tr.bad td { background:rgba(198,40,40,.10); } ul.problems { margin:0 0 8px; padd
 button.danger-ok { background:var(--ok); border-color:var(--ok); color:#fff; }
 
 .button.small, button.small { padding:3px 9px; font-size:13px; } tr.cancelled td { color:var(--muted); } tr.cancelled td a { color:var(--muted); }
+td.diff div { margin:2px 0; } .old { color:var(--muted); text-decoration:line-through; }

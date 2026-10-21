@@ -8,6 +8,7 @@
 #include "photostore.h"
 #include "photoviewer.h"
 #include "productexport.h"
+#include "productimportdialog.h"
 
 #include <QInputDialog>
 #include <QLabel>
@@ -78,6 +79,11 @@ ProductsTab::ProductsTab(QWidget *parent)
     toolbarLayout->addWidget(photoBtn);
     toolbarLayout->addWidget(bulkEditBtn);
     toolbarLayout->addWidget(bulkPhotoBtn);
+    auto *updateBtn = new QPushButton(tr("Обновить из Excel..."), toolbar);
+    updateBtn->setToolTip(tr("Загрузить изменения карточек из Excel: название, описание, цена, штрихкоды и т.д. - сразу для многих товаров. "
+                             "Остатки не меняются."));
+    toolbarLayout->addWidget(updateBtn);
+    m_editWidgets << updateBtn;
     auto *exportBtn = new QPushButton(tr("Выгрузить в Excel..."), toolbar);
     exportBtn->setToolTip(tr("Полные данные товаров: артикул, название, описание, цена, штрихкоды, остатки по складам, места хранения.\n"
                              "Выгружается то, что сейчас в списке (с учётом поиска); если отмечено несколько товаров - можно выгрузить только их."));
@@ -119,6 +125,7 @@ ProductsTab::ProductsTab(QWidget *parent)
     connect(bulkEditBtn, &QPushButton::clicked, this, &ProductsTab::bulkEdit);
     connect(bulkPhotoBtn, &QPushButton::clicked, this, &ProductsTab::bulkPhotos);
     connect(exportBtn, &QPushButton::clicked, this, &ProductsTab::exportExcel);
+    connect(updateBtn, &QPushButton::clicked, this, &ProductsTab::updateFromExcel);
     connect(m_table->verticalScrollBar(), &QScrollBar::valueChanged, this, &ProductsTab::prefetchVisible);
     connect(m_table, &QTableView::doubleClicked, this, &ProductsTab::editProduct);
     connect(m_search, &QLineEdit::textChanged, this, &ProductsTab::applySearch);
@@ -198,6 +205,17 @@ void ProductsTab::bulkPhotos()
     if (dlg.changed()) {
         PhotoCache::clear();
         refresh();
+    }
+}
+
+void ProductsTab::updateFromExcel()
+{
+    ProductImportDialog dlg(this);
+    dlg.exec();
+    if (dlg.applied()) {
+        PhotoCache::clear();
+        refresh();
+        emit productsChanged();
     }
 }
 

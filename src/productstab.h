@@ -36,6 +36,7 @@ private slots:
     void bulkEdit();
     void bulkPhotos();
     void exportExcel();
+    void updateFromExcel();
     void prefetchVisible();
     void applySearch();
     void onSearchEntered();

@@ -18,19 +18,18 @@ async function productTable(db, { q = '', ids = null } = {}) {
   let cond; let params;
   if (ids) { cond = 'p.id = ANY($1::int[])'; params = [ids]; } else { const s = searchSql(q, 1); cond = s.sql; params = s.params; }
 
-  const [products, whs, stock] = await Promise.all([
-    db.query(
+  // по очереди: db может быть клиентом транзакции, у которого запросы идут друг за другом
+  const products = await db.query(
       `SELECT p.id, p.sku, p.name, COALESCE(p.description, '') AS description, p.price::float8 AS price,
               COALESCE(p.market_sku, '') AS market_sku, COALESCE(p.custom_code, '') AS custom_code, p.created_at,
               COALESCE((SELECT string_agg(b.barcode, '; ' ORDER BY b.created_at, b.barcode) FROM product_barcodes b WHERE b.product_id = p.id), '') AS barcodes,
               (SELECT COUNT(*)::int FROM product_photos ph WHERE ph.product_id = p.id) AS photos
-         FROM products p WHERE ${cond} ORDER BY p.sku LIMIT ${MAX_ROWS + 1}`, params),
-    db.query('SELECT id, name FROM warehouses ORDER BY name'),
-    db.query(
+         FROM products p WHERE ${cond} ORDER BY p.sku LIMIT ${MAX_ROWS + 1}`, params);
+  const whs = await db.query('SELECT id, name FROM warehouses ORDER BY name');
+  const stock = await db.query(
       `SELECT s.product_id, s.warehouse_id, s.quantity, l.code AS location
          FROM stock s LEFT JOIN locations l ON l.id = s.location_id
-        WHERE s.product_id IN (SELECT p.id FROM products p WHERE ${cond})`, params),
-  ]);
+        WHERE s.product_id IN (SELECT p.id FROM products p WHERE ${cond})`, params);
 
   const truncated = products.rows.length > MAX_ROWS;
   const items = products.rows.slice(0, MAX_ROWS);

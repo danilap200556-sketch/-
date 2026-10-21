@@ -50,6 +50,15 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
         </form>
       </div>
       ${editor ? html`<div class="card">
+        <h2>Обновить данные товаров из Excel или CSV</h2>
+        <p class="muted">Название, описание, цена, артикул на Маркете, свой код, штрихкоды - сразу для многих товаров. <b>Остатки не меняются.</b>
+        Подойдёт файл, выгруженный кнопкой «Выгрузить в Excel» на странице «Товары»: измените в нём нужные ячейки и загрузите обратно.
+        Перед записью покажем, что изменится.</p>
+        <form method="post" action="/import/products/upload" enctype="multipart/form-data" class="inline-row">
+          ${csrfField(ctx)}<input type="file" name="file" accept=".xlsx,.csv" required>
+          <button class="primary">Загрузить и посмотреть изменения</button></form>
+      </div>
+      <div class="card">
         <h2>Загрузить остатки из Excel или CSV</h2>
         <p class="muted">Подойдёт файл, выгруженный отсюда или из приложения, и отчёты вроде «Остатки» из МойСклад. На следующем шаге вы укажете, какая колонка что значит.
         Старый формат .xls не читается - сохраните его как .xlsx.</p>
