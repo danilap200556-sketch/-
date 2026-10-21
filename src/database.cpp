@@ -7,11 +7,19 @@
 #include <QVariant>
 #include <QDebug>
 #include <QThread>
+#include <QUuid>
+#include <QMap>
+#include <QSet>
 
 #ifdef QPSQL_EMBEDDED_AVAILABLE
 #include "thirdparty/qpsql/qsql_psql_p.h"
 #include <libpq-fe.h>
 #endif
+
+namespace {
+// Текущий документ (см. Database::Document): записи журнала, сделанные пока он открыт, группируются.
+QString g_document;
+} // namespace
 
 namespace {
 
@@ -123,6 +131,13 @@ const QStringList &schemaDdl()
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         ))",
         "CREATE INDEX IF NOT EXISTS product_photos_product_idx ON product_photos (product_id, position, id)",
+        // --- Отмена операций. doc_id - документ: записи журнала, созданные одной операцией (пакет, перемещение,
+        // импорт, правка карточки); их можно отменить разом. reverts_id - у записи типа cancel: какую запись она
+        // отменяет; уникальный индекс не даёт отменить одну запись дважды (даже одновременно с двух компьютеров).
+        "ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS doc_id TEXT",
+        "ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS reverts_id INTEGER REFERENCES stock_movements(id)",
+        "CREATE INDEX IF NOT EXISTS stock_movements_doc_idx ON stock_movements (doc_id) WHERE doc_id IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS stock_movements_reverts_uq ON stock_movements (reverts_id) WHERE reverts_id IS NOT NULL",
     };
     return ddl;
 }
@@ -348,8 +363,33 @@ QString Database::movementTypeLabel(MovementType type)
     case MovementType::TransferOut: return QStringLiteral("transfer_out");
     case MovementType::TransferIn: return QStringLiteral("transfer_in");
     case MovementType::InventoryAdjust: return QStringLiteral("inventory_adjust");
+    case MovementType::Cancel: return QStringLiteral("cancel");
     }
     return QString();
+}
+
+QString Database::movementTypeTitle(const QString &type)
+{
+    if (type == QLatin1String("receipt")) return QStringLiteral("Приход");
+    if (type == QLatin1String("writeoff")) return QStringLiteral("Списание");
+    if (type == QLatin1String("transfer_out")) return QStringLiteral("Перемещение (расход)");
+    if (type == QLatin1String("transfer_in")) return QStringLiteral("Перемещение (приход)");
+    if (type == QLatin1String("inventory_adjust")) return QStringLiteral("Инвентаризация");
+    if (type == QLatin1String("cancel")) return QStringLiteral("Отмена");
+    return type;
+}
+
+Database::Document::Document()
+    : m_owner(g_document.isEmpty())
+{
+    if (m_owner)
+        g_document = QUuid::createUuid().toString(QUuid::WithoutBraces);
+}
+
+Database::Document::~Document()
+{
+    if (m_owner)
+        g_document.clear();
 }
 
 int Database::currentStock(int productId, int warehouseId)
@@ -383,8 +423,8 @@ bool applyMovementInternal(int productId, int warehouseId, int delta,
     }
 
     QSqlQuery q;
-    q.prepare("INSERT INTO stock_movements (product_id, warehouse_id, related_warehouse_id, type, delta, comment) "
-              "VALUES (?, ?, ?, ?, ?, ?)");
+    q.prepare("INSERT INTO stock_movements (product_id, warehouse_id, related_warehouse_id, type, delta, comment, doc_id) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?)");
     q.addBindValue(productId);
     q.addBindValue(warehouseId);
     if (relatedWarehouseId)
@@ -394,6 +434,10 @@ bool applyMovementInternal(int productId, int warehouseId, int delta,
     q.addBindValue(Database::movementTypeLabel(type));
     q.addBindValue(delta);
     q.addBindValue(comment);
+    if (g_document.isEmpty())
+        q.addBindValue(QVariant(QMetaType(QMetaType::QString)));
+    else
+        q.addBindValue(g_document);
     if (!q.exec()) {
         if (error)
             *error = q.lastError().text();
@@ -509,6 +553,7 @@ bool Database::adjustStockBatch(const QList<BatchItem> &items, int warehouseId, 
     }
 
     const MovementType type = writeOff ? MovementType::WriteOff : MovementType::Receipt;
+    Document doc; // все позиции - один документ: отменяется разом
     for (auto it = total.cbegin(); it != total.cend(); ++it) {
         QString err;
         const int delta = int(writeOff ? -it.value() : it.value());
@@ -541,6 +586,7 @@ bool Database::transferStock(int productId, int srcWarehouseId, int dstWarehouse
         return false;
     }
 
+    Document doc; // расход и приход - один документ: отменяются только вместе
     if (!applyMovementInternal(productId, srcWarehouseId, -quantity, MovementType::TransferOut,
                                 dstWarehouseId, comment, error)) {
         db.rollback();
@@ -607,6 +653,239 @@ bool Database::inventoryAdjust(int productId, int warehouseId, int countedQuanti
         if (error)
             *error = db.lastError().text();
         db.rollback();
+        return false;
+    }
+    return true;
+}
+
+namespace {
+
+// Строка журнала для отмены: всё нужное для проверки и показа.
+const char kCancelRowSql[] =
+    "SELECT m.id, m.product_id, p.sku, p.name, m.warehouse_id, w.name, COALESCE(m.related_warehouse_id, 0), "
+    "       m.type, m.delta, COALESCE(m.comment, ''), "
+    "       COALESCE((SELECT r.id FROM stock_movements r WHERE r.reverts_id = m.id), 0) "
+    "FROM stock_movements m JOIN products p ON p.id = m.product_id JOIN warehouses w ON w.id = m.warehouse_id ";
+
+struct LoadedRow {
+    Database::CancelRow row;
+    int revertedBy = 0;
+};
+
+LoadedRow readCancelRow(const QSqlQuery &q)
+{
+    LoadedRow r;
+    r.row.id = q.value(0).toInt();
+    r.row.productId = q.value(1).toInt();
+    r.row.sku = q.value(2).toString();
+    r.row.name = q.value(3).toString();
+    r.row.warehouseId = q.value(4).toInt();
+    r.row.warehouse = q.value(5).toString();
+    r.row.relatedWarehouseId = q.value(6).toInt();
+    r.row.type = q.value(7).toString();
+    r.row.delta = q.value(8).toInt();
+    r.row.comment = q.value(9).toString();
+    r.revertedBy = q.value(10).toInt();
+    return r;
+}
+
+} // namespace
+
+QList<int> Database::documentMovementIds(int movementId)
+{
+    QList<int> ids;
+    QSqlQuery q;
+    q.prepare("SELECT m.id FROM stock_movements m "
+              "WHERE m.type <> 'cancel' AND (m.id = ? OR m.doc_id = (SELECT doc_id FROM stock_movements WHERE id = ?)) "
+              "ORDER BY m.id");
+    q.addBindValue(movementId);
+    q.addBindValue(movementId);
+    if (q.exec())
+        while (q.next())
+            ids << q.value(0).toInt();
+    if (ids.isEmpty())
+        ids << movementId;
+    return ids;
+}
+
+Database::CancelPlan Database::planCancel(const QList<int> &movementIds, bool lock)
+{
+    CancelPlan plan;
+    QList<int> want;
+    {
+        QSet<int> seen;
+        for (int id : movementIds)
+            if (id > 0 && !seen.contains(id)) {
+                seen.insert(id);
+                want << id;
+            }
+    }
+    if (want.isEmpty()) {
+        plan.problems << QStringLiteral("Не выбрано ни одной записи журнала");
+        return plan;
+    }
+    const QString forUpdate = lock ? QStringLiteral(" FOR UPDATE OF m") : QString();
+
+    QMap<int, LoadedRow> found;
+    {
+        QStringList idList;
+        for (int id : std::as_const(want))
+            idList << QString::number(id);
+        QSqlQuery q;
+        if (!q.exec(QString::fromLatin1(kCancelRowSql) + QStringLiteral("WHERE m.id IN (%1) ORDER BY m.id%2")
+                        .arg(idList.join(QLatin1Char(',')), forUpdate))) {
+            plan.problems << q.lastError().text();
+            return plan;
+        }
+        while (q.next()) {
+            const LoadedRow r = readCancelRow(q);
+            found.insert(r.row.id, r);
+        }
+    }
+    for (int id : std::as_const(want))
+        if (!found.contains(id))
+            plan.problems << QStringLiteral("Запись №%1 не найдена (возможно, товар или склад уже удалены)").arg(id);
+
+    // Перемещение - это две записи: расход и приход. Отменяются только вместе. Время сравнивается в базе
+    // (с точностью до микросекунд) - так находится пара и у старых записей, сделанных до появления документов.
+    const QList<LoadedRow> snapshot = found.values();
+    for (const LoadedRow &r : snapshot) {
+        if (r.row.type != QLatin1String("transfer_out") && r.row.type != QLatin1String("transfer_in"))
+            continue;
+        QSqlQuery q;
+        q.prepare(QString::fromLatin1(kCancelRowSql) +
+                  QStringLiteral("JOIN stock_movements o ON o.id = ? "
+                                 "WHERE m.id <> o.id AND m.type IN ('transfer_out', 'transfer_in') AND ("
+                                 "  (o.doc_id IS NOT NULL AND m.doc_id = o.doc_id) "
+                                 "  OR (o.doc_id IS NULL AND m.doc_id IS NULL AND m.product_id = o.product_id "
+                                 "      AND m.created_at = o.created_at AND m.type <> o.type "
+                                 "      AND m.warehouse_id = o.related_warehouse_id AND m.related_warehouse_id = o.warehouse_id "
+                                 "      AND m.delta = -o.delta)) "
+                                 "ORDER BY m.id%1").arg(forUpdate));
+        q.addBindValue(r.row.id);
+        if (!q.exec())
+            continue;
+        while (q.next()) {
+            const LoadedRow mate = readCancelRow(q);
+            found.insert(mate.row.id, mate);
+        }
+    }
+
+    QList<CancelRow> ok;
+    for (const LoadedRow &r : std::as_const(found)) {
+        if (r.row.type == QLatin1String("cancel"))
+            plan.problems << QStringLiteral("Запись №%1 сама является отменой - отменить её нельзя. Если нужно вернуть "
+                                            "как было, проведите операцию заново").arg(r.row.id);
+        else if (r.revertedBy)
+            plan.problems << QStringLiteral("Запись №%1 (%2, %3) уже отменена записью №%4")
+                                 .arg(r.row.id).arg(r.row.sku, movementTypeTitle(r.row.type)).arg(r.revertedBy);
+        else
+            ok << r.row;
+    }
+
+    // Остаток не должен уйти в минус: итог по каждому товару и складу.
+    struct Key { int pid; int wid; bool operator<(const Key &o) const { return pid != o.pid ? pid < o.pid : wid < o.wid; } };
+    QMap<Key, qint64> net;
+    QMap<Key, QPair<QString, QString>> names;
+    for (const CancelRow &r : std::as_const(ok)) {
+        const Key k{r.productId, r.warehouseId};
+        net[k] -= r.delta;
+        names[k] = {r.sku, r.warehouse};
+    }
+    QMap<Key, QPair<qint64, qint64>> levels; // сейчас / станет
+    for (auto it = net.cbegin(); it != net.cend(); ++it) {
+        QSqlQuery q;
+        q.prepare(QStringLiteral("SELECT quantity FROM stock WHERE product_id = ? AND warehouse_id = ?%1")
+                      .arg(lock ? QStringLiteral(" FOR UPDATE") : QString()));
+        q.addBindValue(it.key().pid);
+        q.addBindValue(it.key().wid);
+        const qint64 cur = (q.exec() && q.next()) ? q.value(0).toLongLong() : 0;
+        const qint64 next = cur + it.value();
+        levels[it.key()] = {cur, next};
+        const auto &nm = names[it.key()];
+        if (next < 0)
+            plan.problems << QStringLiteral("%1, склад «%2»: отмена уберёт %3 шт, а на складе сейчас %4 шт - "
+                                            "товар уже расходован после этой операции").arg(nm.first, nm.second).arg(-it.value()).arg(cur);
+        else if (next > 2'000'000'000LL)
+            plan.problems << QStringLiteral("%1, склад «%2»: остаток получится слишком большим").arg(nm.first, nm.second);
+    }
+    for (CancelRow r : std::as_const(ok)) {
+        const auto lv = levels.value(Key{r.productId, r.warehouseId});
+        r.current = lv.first;
+        r.after = lv.second;
+        plan.rows << r;
+    }
+    return plan;
+}
+
+bool Database::cancelMovements(const QList<int> &movementIds, const QString &reason, QStringList *problems, QString *error)
+{
+    if (problems)
+        problems->clear();
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.transaction()) {
+        if (error)
+            *error = db.lastError().text();
+        return false;
+    }
+    auto refuse = [&](const QStringList &list, const QString &single) {
+        db.rollback();
+        if (problems)
+            *problems = list;
+        if (error)
+            *error = list.isEmpty() ? single : (list.size() == 1 ? list.first() : QStringLiteral("Отменить нельзя:\n- ") + list.join(QStringLiteral("\n- ")));
+        return false;
+    };
+
+    const CancelPlan plan = planCancel(movementIds, true);
+    if (!plan.problems.isEmpty() || plan.rows.isEmpty())
+        return refuse(plan.problems, QStringLiteral("Нечего отменять"));
+
+    const QString text = reason.trimmed().left(200);
+    const QString comment = text.isEmpty() ? QStringLiteral("Отмена") : QStringLiteral("Отмена: ") + text;
+    Document doc; // все записи отмены - тоже один документ
+
+    // Сначала остатки (суммой по товару и складу), потом записи журнала: порядок строк не важен.
+    struct Key { int pid; int wid; bool operator<(const Key &o) const { return pid != o.pid ? pid < o.pid : wid < o.wid; } };
+    QMap<Key, qint64> net;
+    for (const CancelRow &r : plan.rows)
+        net[Key{r.productId, r.warehouseId}] -= r.delta;
+    for (auto it = net.cbegin(); it != net.cend(); ++it) {
+        QSqlQuery q;
+        q.prepare("INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (?, ?, ?) "
+                  "ON CONFLICT(product_id, warehouse_id) DO UPDATE SET quantity = stock.quantity + excluded.quantity");
+        q.addBindValue(it.key().pid);
+        q.addBindValue(it.key().wid);
+        q.addBindValue(it.value());
+        if (!q.exec())
+            return refuse({}, q.lastError().text());
+    }
+    for (const CancelRow &r : plan.rows) {
+        QSqlQuery q;
+        q.prepare("INSERT INTO stock_movements (product_id, warehouse_id, related_warehouse_id, type, delta, comment, doc_id, reverts_id) "
+                  "VALUES (?, ?, ?, 'cancel', ?, ?, ?, ?)");
+        q.addBindValue(r.productId);
+        q.addBindValue(r.warehouseId);
+        if (r.relatedWarehouseId)
+            q.addBindValue(r.relatedWarehouseId);
+        else
+            q.addBindValue(QVariant(QMetaType(QMetaType::Int)));
+        q.addBindValue(-r.delta);
+        q.addBindValue(comment);
+        q.addBindValue(g_document);
+        q.addBindValue(r.id);
+        if (!q.exec()) {
+            // Две отмены одной записи одновременно: вторую останавливает уникальный индекс reverts_id.
+            if (q.lastError().nativeErrorCode() == QLatin1String("23505"))
+                return refuse({QStringLiteral("Эту запись уже отменили (возможно, на другом компьютере). Обновите журнал")}, QString());
+            return refuse({}, q.lastError().text());
+        }
+    }
+    if (!db.commit()) {
+        const QString e = db.lastError().text();
+        db.rollback();
+        if (error)
+            *error = e;
         return false;
     }
     return true;

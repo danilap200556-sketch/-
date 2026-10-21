@@ -225,6 +225,7 @@ function createApp(cfg, db) {
   require('./routes/import')(app, ctxFor);
   require('./routes/batch')(app, ctxFor);
   require('./routes/export')(app, ctxFor);
+  require('./routes/cancel')(app, ctxFor);
   require('./routes/find')(app, ctxFor);
   require('./routes/quick')(app, ctxFor);
   require('./routes/orders')(app, ctxFor);

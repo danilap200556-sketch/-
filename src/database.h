@@ -31,9 +31,57 @@ public:
         WriteOff,       // списание
         TransferOut,    // перемещение (списание с исходного склада)
         TransferIn,     // перемещение (приход на целевой склад)
-        InventoryAdjust // корректировка по итогам инвентаризации
+        InventoryAdjust, // корректировка по итогам инвентаризации
+        Cancel          // отмена другой записи журнала (противоположное изменение)
     };
     static QString movementTypeLabel(MovementType type);
+
+    // Документ - группа записей журнала от одной операции (пакет, перемещение, импорт, правка карточки).
+    // Всё, что записано, пока объект жив, получает общий doc_id и отменяется разом. Вложенные документы
+    // сливаются в самый внешний. У одиночных операций документа нет: запись отменяется сама по себе.
+    class Document
+    {
+    public:
+        Document();
+        ~Document();
+        Document(const Document &) = delete;
+        Document &operator=(const Document &) = delete;
+
+    private:
+        bool m_owner;
+    };
+
+    // --- Отмена операций. Журнал только дополняется: отмена - новая запись типа cancel с противоположным
+    // изменением и ссылкой на отменяемую. Запись отменяется один раз; саму отмену отменить нельзя. Остаток не
+    // уходит в минус: если товар уже расходован, отмена отклоняется целиком. Перемещение - всегда парой.
+    struct CancelRow {
+        int id = 0;
+        int productId = 0;
+        QString sku;
+        QString name;
+        int warehouseId = 0;
+        QString warehouse;
+        int relatedWarehouseId = 0; // 0 - нет
+        QString type;               // как в базе: receipt, writeoff, transfer_out, ...
+        int delta = 0;
+        QString comment;
+        qint64 current = 0;         // остаток сейчас
+        qint64 after = 0;           // остаток после отмены всех выбранных записей
+    };
+    struct CancelPlan {
+        QList<CancelRow> rows;      // что будет отменено (с парами по перемещению)
+        QStringList problems;       // почему отменить нельзя (пусто - можно)
+        bool ok() const { return problems.isEmpty() && !rows.isEmpty(); }
+    };
+    // Что произойдёт при отмене записей (ничего не меняет). lock - внутри открытой транзакции, с блокировкой строк.
+    static CancelPlan planCancel(const QList<int> &movementIds, bool lock = false);
+    // Все записи документа, к которому относится запись (без отмен). Без документа - только она сама.
+    static QList<int> documentMovementIds(int movementId);
+    // Отменяет записи одной транзакцией: либо все, либо ни одной. При отказе - причины в *problems.
+    static bool cancelMovements(const QList<int> &movementIds, const QString &reason, QStringList *problems,
+                                QString *error = nullptr);
+    // Русское название типа записи для интерфейса.
+    static QString movementTypeTitle(const QString &type);
 
     // Простое изменение остатка на одном складе (приход/списание).
     // delta может быть отрицательным (списание). Для списания проверяется,

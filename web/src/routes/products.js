@@ -2,9 +2,10 @@
 const { html } = require('../html');
 const { csrfField, pager } = require('../layout');
 const bc = require('../barcode');
-const { TYPE_LABELS } = require('../stock');
+const ops = require('../stock');
+const { TYPE_LABELS } = ops;
 const { parseId, likeEscape, fmtDate, fmtMoney, parsePrice, str, field } = require('../util');
-const { thumbImg, editLink, COVER_SQL } = require('../views');
+const { thumbImg, editLink, COVER_SQL, MOVEMENT_STATUS_SQL, movementTable } = require('../views');
 
 const PAGE = 50;
 
@@ -143,6 +144,7 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
     const { rows } = await db.query('SELECT * FROM products WHERE id = $1', [id]);
     const p = rows[0];
     if (!p) { res.flash('err', 'Товар не найден'); return res.redirect('/products'); }
+    const cancelOn = await ops.cancelSupported(db);
     const [codes, stockRows, moves, photos] = await Promise.all([
       db.query('SELECT barcode FROM product_barcodes WHERE product_id = $1 ORDER BY created_at, barcode', [id]),
       db.query(`SELECT w.id AS wid, w.name AS wname, COALESCE(s.quantity, 0) AS qty, s.location_id,
@@ -150,7 +152,7 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
                           FROM locations l WHERE l.warehouse_id = w.id) AS locations
                   FROM warehouses w LEFT JOIN stock s ON s.warehouse_id = w.id AND s.product_id = $1
                  ORDER BY w.name`, [id]),
-      db.query(`SELECT m.created_at, w.name AS wname, m.type, m.delta, m.comment
+      db.query(`SELECT m.id, m.created_at, w.name AS wname, m.type, m.delta, m.comment${cancelOn ? ', ' + MOVEMENT_STATUS_SQL : ''}
                   FROM stock_movements m JOIN warehouses w ON w.id = m.warehouse_id
                  WHERE m.product_id = $1 ORDER BY m.id DESC LIMIT 15`, [id]),
       db.query('SELECT id FROM product_photos WHERE product_id = $1 ORDER BY position, id', [id]),
@@ -219,12 +221,7 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
         </div>
       </div>
       <h2>Последние движения</h2>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Дата</th><th>Склад</th><th>Тип</th><th class="num">Изменение</th><th>Комментарий</th></tr></thead>
-        <tbody>${moves.rows.map((m) => html`<tr><td>${fmtDate(m.created_at)}</td><td>${m.wname}</td><td>${TYPE_LABELS[m.type] || m.type}</td>
-          <td class="num ${m.delta < 0 ? 'neg' : 'pos'}">${m.delta > 0 ? '+' : ''}${m.delta}</td><td>${m.comment}</td></tr>`)}
-          ${moves.rows.length ? '' : html`<tr><td colspan="5" class="muted">Движений пока нет</td></tr>`}</tbody>
-      </table></div>`,
+      ${movementTable(ctx, moves.rows, { back: req.originalUrl, cancelOn, withSku: false })}`,
     }, status);
   }
   app.locals.showProduct = showProduct;

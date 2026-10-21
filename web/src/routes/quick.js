@@ -152,8 +152,9 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
           }
         }
         const reason = str(b.reason, 200) || 'правка карточки';
+        const doc = ops.newDoc(); // все пересчёты карточки - один документ
         for (const e of edits) {
-          if (e.counted !== undefined) await ops.inventory(c, id, e.wid, e.counted, reason);
+          if (e.counted !== undefined) await ops.inventory(c, id, e.wid, e.counted, reason, doc);
           if (e.location !== undefined) {
             await c.query(`INSERT INTO stock (product_id, warehouse_id, location_id, quantity) VALUES ($1, $2, $3, 0)
                            ON CONFLICT (product_id, warehouse_id) DO UPDATE SET location_id = EXCLUDED.location_id`, [id, e.wid, e.location || null]);

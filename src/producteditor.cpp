@@ -114,6 +114,7 @@ bool save(int productId, const Changes &c, QString *error)
 
     // Остатки: пересчёт (запись в журнал) и места хранения - в той же транзакции.
     const QString comment = c.stockComment.isEmpty() ? QStringLiteral("правка карточки") : c.stockComment;
+    Database::Document doc; // все пересчёты карточки - один документ: отменяются разом
     for (const auto &e : c.stock) {
         if (e.setCount) {
             QString err;

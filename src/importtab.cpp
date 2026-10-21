@@ -372,6 +372,7 @@ void ImportTab::runImport()
     const bool asWriteOff = m_modeWriteOff->isChecked();
     const bool createMissing = m_createMissing->isChecked() && !asWriteOff;
     const QString comment = tr("импорт из %1").arg(m_fileName);
+    Database::Document doc; // весь импорт - один документ: в журнале его можно отменить разом
 
     int processed = 0, created = 0, updated = 0, skipped = 0, errors = 0, linked = 0;
     QStringList logLines;

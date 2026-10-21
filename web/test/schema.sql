@@ -79,3 +79,7 @@ CREATE TABLE IF NOT EXISTS product_photos (
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 CREATE INDEX IF NOT EXISTS product_photos_product_idx ON product_photos (product_id, position, id);
+ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS doc_id TEXT;
+ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS reverts_id INTEGER REFERENCES stock_movements(id);
+CREATE INDEX IF NOT EXISTS stock_movements_doc_idx ON stock_movements (doc_id) WHERE doc_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS stock_movements_reverts_uq ON stock_movements (reverts_id) WHERE reverts_id IS NOT NULL;

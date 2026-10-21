@@ -94,10 +94,11 @@ async function apply(db, text, kind, warehouseId, comment) {
       if (prep.problems.length) return { ok: false, problems: prep.problems };
       // блокируем строки остатков в одном порядке (по товару), чтобы две партии не зашли в тупик
       const problems = [];
+      const doc = ops.newDoc(); // все позиции - один документ: отменяется разом
       for (const it of prep.items) {
         try {
-          if (kind === 'writeoff') await ops.takeOut(c, it.id, warehouseId, it.qty, comment);
-          else await ops.receive(c, it.id, warehouseId, it.qty, comment);
+          if (kind === 'writeoff') await ops.takeOut(c, it.id, warehouseId, it.qty, comment, 'writeoff', null, doc);
+          else await ops.receive(c, it.id, warehouseId, it.qty, comment, 'receipt', null, doc);
         } catch (e) {
           if (!(e instanceof ops.UserError)) throw e;
           problems.push({ n: it.lines[0], text: `${it.sku}: ${e.message}` });

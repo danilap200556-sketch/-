@@ -5,7 +5,7 @@ const bc = require('../barcode');
 const ops = require('../stock');
 const { searchSql } = require('./products');
 const { parseId, fmtDate, str, csvCell } = require('../util');
-const { thumbImg, editLink, COVER_SQL } = require('../views');
+const { thumbImg, editLink, COVER_SQL, MOVEMENT_STATUS_SQL, movementTable } = require('../views');
 const { findExact } = require('../finder');
 
 const PAGE = 100;
@@ -140,8 +140,9 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
     const q = str(req.query.q, 100);
     const pg = Math.max(1, parseInt(req.query.page, 10) || 1);
     const s = searchSql(q, 1);
+    const cancelOn = await ops.cancelSupported(db);
     const { rows } = await db.query(
-      `SELECT m.created_at, p.id AS pid, p.sku, w.name AS wname, m.type, m.delta, m.comment
+      `SELECT m.id, m.created_at, p.id AS pid, p.sku, w.name AS wname, m.type, m.delta, m.comment${cancelOn ? ', ' + MOVEMENT_STATUS_SQL : ''}
          FROM stock_movements m JOIN products p ON p.id = m.product_id JOIN warehouses w ON w.id = m.warehouse_id
         WHERE ${s.sql} ORDER BY m.id DESC LIMIT ${PAGE + 1} OFFSET ${(pg - 1) * PAGE}`, s.params);
     send(req, res, {
@@ -149,13 +150,8 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
       body: html`
       <form method="get" action="/movements" class="toolbar">
         <input type="search" name="q" value="${q}" placeholder="Артикул, название или штрихкод"><button>Найти</button></form>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Дата</th><th>Артикул</th><th>Склад</th><th>Тип</th><th class="num">Изменение</th><th>Комментарий</th></tr></thead>
-        <tbody>${rows.slice(0, PAGE).map((m) => html`<tr><td>${fmtDate(m.created_at)}</td><td><a href="/products/${m.pid}">${m.sku}</a> ${editLink(req.ctx, m.pid, req.originalUrl)}</td>
-          <td>${m.wname}</td><td>${ops.TYPE_LABELS[m.type] || m.type}</td>
-          <td class="num ${m.delta < 0 ? 'neg' : 'pos'}">${m.delta > 0 ? '+' : ''}${m.delta}</td><td>${m.comment}</td></tr>`)}
-          ${rows.length ? '' : html`<tr><td colspan="6" class="muted">Движений не найдено</td></tr>`}</tbody>
-      </table></div>
+      ${!cancelOn && !req.ctx.user.read_only ? html`<p class="muted">Отмена операций появится после обновления настольного приложения: запустите свежую версию один раз с этой базой.</p>` : ''}
+      ${movementTable(req.ctx, rows.slice(0, PAGE), { back: req.originalUrl, cancelOn })}
       ${pager('/movements', { q }, pg, rows.length > PAGE)}`,
     });
   });

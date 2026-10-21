@@ -56,3 +56,5 @@ input.short { width:90px; } form.quick h2 { margin-top:1.2em; }
 .grow { flex:1 1 320px; }
 tr.bad td { background:rgba(198,40,40,.10); } ul.problems { margin:0 0 8px; padding-left:20px; } textarea[name=lines] { font:14px/1.4 ui-monospace, Menlo, Consolas, monospace; width:100%; }
 button.danger-ok { background:var(--ok); border-color:var(--ok); color:#fff; }
+
+.button.small, button.small { padding:3px 9px; font-size:13px; } tr.cancelled td { color:var(--muted); } tr.cancelled td a { color:var(--muted); }

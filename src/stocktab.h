@@ -34,6 +34,7 @@ private slots:
     void doTransfer();
     void doInventoryAdjust();
     void doBatch();
+    void cancelSelectedMovements();
     void prefetchVisible();
 
 private:

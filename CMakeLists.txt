@@ -132,6 +132,7 @@ add_executable(inventory_manager
     src/batchparser.cpp
     src/batchdialog.cpp
     src/productexport.cpp
+    src/cancelmovementsdialog.cpp
 )
 
 target_include_directories(inventory_manager PRIVATE ${QRENCODE_INCLUDE_DIRS})

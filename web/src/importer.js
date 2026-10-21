@@ -90,6 +90,7 @@ async function run(db, opts) {
   const asWriteOff = mode === 'writeoff';
   const createMissing = opts.createMissing && !asWriteOff;
   const comment = `импорт из ${fileName}`;
+  const doc = ops.newDoc(); // весь импорт - один документ: отменяется разом (журнал → «весь документ»)
 
   const stats = { processed: 0, created: 0, updated: 0, skipped: 0, errors: 0, linked: 0 };
   const log = [];
@@ -175,9 +176,9 @@ async function run(db, opts) {
                   local.notes.push(`Строка ${rowNo}: создан новый товар «${key}»`);
                 }
                 await linkBarcodes(productId);
-                if (asInventory) await ops.inventory(c, productId, warehouseId, qty, comment);
-                else if (asWriteOff) await ops.takeOut(c, productId, warehouseId, qty, comment);
-                else await ops.receive(c, productId, warehouseId, qty, comment);
+                if (asInventory) await ops.inventory(c, productId, warehouseId, qty, comment, doc);
+                else if (asWriteOff) await ops.takeOut(c, productId, warehouseId, qty, comment, 'writeoff', null, doc);
+                else await ops.receive(c, productId, warehouseId, qty, comment, 'receipt', null, doc);
                 local.updated++;
               }
             }

@@ -1,5 +1,6 @@
 #include "stocktab.h"
 #include "batchdialog.h"
+#include "cancelmovementsdialog.h"
 #include "database.h"
 #include "movementdialog.h"
 #include "producteditor.h"
@@ -8,6 +9,9 @@
 
 #include <QGroupBox>
 #include <QLabel>
+#include <QMenu>
+#include <QSet>
+#include <QBrush>
 #include <QLineEdit>
 #include <QTimer>
 #include <QHBoxLayout>
@@ -34,6 +38,23 @@ public:
     {
         if (idx.isValid() && idx.column() == 0 && role == Qt::DecorationRole)
             return PhotoCache::thumb(QSqlQueryModel::data(index(idx.row(), columnCount() - 1)).toInt());
+        return QSqlQueryModel::data(idx, role);
+    }
+};
+
+// Журнал: отменённые записи и сами отмены - серым, чтобы действующие операции были видны сразу.
+class MovementModel : public QSqlQueryModel
+{
+public:
+    using QSqlQueryModel::QSqlQueryModel;
+
+    QVariant data(const QModelIndex &idx, int role) const override
+    {
+        if (idx.isValid() && role == Qt::ForegroundRole) {
+            const QString status = QSqlQueryModel::data(index(idx.row(), columnCount() - 1)).toString();
+            if (!status.isEmpty())
+                return QBrush(Qt::gray);
+        }
         return QSqlQueryModel::data(idx, role);
     }
 };
@@ -95,10 +116,23 @@ StockTab::StockTab(QWidget *parent)
 
     auto *movementBox = new QGroupBox(tr("Журнал движений (последние 500)"), this);
     auto *movementLayout = new QVBoxLayout(movementBox);
-    m_movementModel = new QSqlQueryModel(this);
+    auto *cancelRow = new QHBoxLayout();
+    auto *cancelBtn = new QPushButton(tr("Отменить операцию..."), movementBox);
+    cancelBtn->setToolTip(tr("Отменить выбранную запись журнала (или несколько): остаток вернётся как был, в журнале появится запись «Отмена»"));
+    auto *cancelHint = new QLabel(tr("Ошиблись? Выберите запись в журнале (правая кнопка мыши - то же самое). "
+                                     "Приход, списание, инвентаризацию и перемещение можно отменить."), movementBox);
+    cancelHint->setStyleSheet("color: gray;");
+    cancelRow->addWidget(cancelBtn);
+    cancelRow->addWidget(cancelHint, 1);
+    movementLayout->addLayout(cancelRow);
+    m_editWidgets << cancelBtn << cancelHint;
+    m_movementModel = new MovementModel(this);
     m_movementTable = new QTableView(movementBox);
     m_movementTable->setModel(m_movementModel);
     m_movementTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_movementTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_movementTable->setSelectionMode(QAbstractItemView::ExtendedSelection); // Ctrl/Shift - несколько записей
+    m_movementTable->setContextMenuPolicy(Qt::CustomContextMenu);
     m_movementTable->horizontalHeader()->setStretchLastSection(true);
     movementLayout->addWidget(m_movementTable);
     splitter->addWidget(movementBox);
@@ -110,6 +144,15 @@ StockTab::StockTab(QWidget *parent)
     connect(transferBtn, &QPushButton::clicked, this, &StockTab::doTransfer);
     connect(inventoryBtn, &QPushButton::clicked, this, &StockTab::doInventoryAdjust);
     connect(batchBtn, &QPushButton::clicked, this, &StockTab::doBatch);
+    connect(cancelBtn, &QPushButton::clicked, this, &StockTab::cancelSelectedMovements);
+    connect(m_movementTable, &QTableView::customContextMenuRequested, this, [this](const QPoint &pos) {
+        if (m_readOnly || !m_movementTable->indexAt(pos).isValid())
+            return;
+        QMenu menu(this);
+        QAction *act = menu.addAction(tr("Отменить операцию..."));
+        if (menu.exec(m_movementTable->viewport()->mapToGlobal(pos)) == act)
+            cancelSelectedMovements();
+    });
     connect(cardBtn, &QPushButton::clicked, this, &StockTab::editSelectedProduct);
     connect(m_stockTable, &QTableView::doubleClicked, this, &StockTab::editSelectedProduct);
     connect(m_search, &QLineEdit::textChanged, m_searchTimer, qOverload<>(&QTimer::start));
@@ -221,18 +264,27 @@ void StockTab::refreshMovements()
 {
     const QString term = searchTerm();
     QSqlQuery q;
+    // Последняя колонка - статус отмены (по ней же серый цвет строки, см. MovementModel).
     q.prepare(QStringLiteral(
-        "SELECT m.created_at AS \"Дата\", p.sku AS \"Артикул\", w.name AS \"Склад\", "
-        "       m.type AS \"Тип\", m.delta AS \"Изменение\", m.comment AS \"Комментарий\" "
+        "SELECT m.id AS \"№\", m.created_at AS \"Дата\", p.sku AS \"Артикул\", w.name AS \"Склад\", "
+        "       CASE m.type WHEN 'receipt' THEN 'Приход' WHEN 'writeoff' THEN 'Списание' "
+        "                   WHEN 'transfer_out' THEN 'Перемещение (расход)' WHEN 'transfer_in' THEN 'Перемещение (приход)' "
+        "                   WHEN 'inventory_adjust' THEN 'Инвентаризация' WHEN 'cancel' THEN 'Отмена' ELSE m.type END AS \"Тип\", "
+        "       m.delta AS \"Изменение\", m.comment AS \"Комментарий\", "
+        "       CASE WHEN rv.id IS NOT NULL THEN 'отменена записью №' || rv.id "
+        "            WHEN m.reverts_id IS NOT NULL THEN 'отменяет запись №' || m.reverts_id ELSE '' END AS \"Отмена\" "
         "FROM stock_movements m "
         "JOIN products p ON p.id = m.product_id "
-        "JOIN warehouses w ON w.id = m.warehouse_id %1"
+        "JOIN warehouses w ON w.id = m.warehouse_id "
+        "LEFT JOIN stock_movements rv ON rv.reverts_id = m.id %1"
         "ORDER BY m.id DESC LIMIT 500").arg(term.isEmpty() ? QStringLiteral(" ") : QStringLiteral(" WHERE") + QLatin1String(kSearchWhere)));
     if (!term.isEmpty())
         for (int i = 0; i < 4; ++i)
             q.addBindValue(likeOf(term));
     q.exec();
     m_movementModel->setQuery(std::move(q));
+    m_movementTable->setColumnWidth(0, 60);
+    m_movementTable->setColumnWidth(1, 150);
 }
 
 void StockTab::doReceipt()
@@ -295,5 +347,53 @@ void StockTab::doBatch()
     BatchDialog dlg(BatchDialog::Kind::Receipt, this);
     dlg.exec();
     if (dlg.applied())
+        refresh();
+}
+
+void StockTab::cancelSelectedMovements()
+{
+    QList<int> picked;
+    for (const QModelIndex &idx : m_movementTable->selectionModel()->selectedRows())
+        picked << m_movementModel->data(m_movementModel->index(idx.row(), 0)).toInt();
+    if (picked.isEmpty()) {
+        QMessageBox::information(this, tr("Выберите запись"),
+                                 tr("Выберите в журнале запись, которую нужно отменить (Ctrl или Shift + клик - несколько)."));
+        return;
+    }
+
+    // Запись может быть частью документа (пакет, импорт, правка карточки): предлагаем отменить документ целиком.
+    // Перемещение (пара записей) отменяется целиком всегда - его отдельно предлагать не нужно.
+    const Database::CancelPlan first = Database::planCancel(picked);
+    QSet<int> covered(picked.begin(), picked.end());
+    for (const auto &r : first.rows)
+        covered.insert(r.id);
+    QList<int> document;
+    for (int id : std::as_const(picked))
+        for (int d : Database::documentMovementIds(id))
+            if (!document.contains(d))
+                document << d;
+    bool partial = false;
+    for (int d : std::as_const(document))
+        if (!covered.contains(d))
+            partial = true;
+
+    QList<int> ids = picked;
+    if (partial) {
+        QMessageBox box(QMessageBox::Question, tr("Что отменить?"),
+                        tr("Выбрано записей: %1, а в этом документе их %2 (пакет, импорт или правка карточки).")
+                            .arg(picked.size()).arg(document.size()), QMessageBox::NoButton, this);
+        QAbstractButton *whole = box.addButton(tr("Весь документ (%1)").arg(document.size()), QMessageBox::AcceptRole);
+        box.addButton(tr("Только выбранные (%1)").arg(picked.size()), QMessageBox::AcceptRole);
+        box.addButton(QMessageBox::Cancel);
+        box.exec();
+        if (box.clickedButton() == nullptr || box.standardButton(box.clickedButton()) == QMessageBox::Cancel)
+            return;
+        if (box.clickedButton() == whole)
+            ids = document;
+    }
+
+    CancelMovementsDialog dlg(ids, this);
+    dlg.exec();
+    if (dlg.cancelled())
         refresh();
 }
