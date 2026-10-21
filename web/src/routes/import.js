@@ -29,8 +29,17 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
     const whs = await warehouses();
     const editor = !ctx.user.read_only;
     send(req, res, {
-      title: editor ? 'Импорт и экспорт остатков' : 'Экспорт остатков', active: 'import',
+      title: editor ? 'Импорт и экспорт' : 'Экспорт', active: 'import',
       body: html`
+      <div class="card">
+        <h2>Выгрузить все товары (полные данные)</h2>
+        <p class="muted">Артикул, название, описание, цена, артикул на Маркете, свой код, штрихкоды, остатки по каждому складу, места хранения,
+        число фото и дата добавления - по строке на товар. Выгрузить только часть товаров можно на вкладке «Товары»: найдите их или отметьте галочками.</p>
+        <div class="inline-row">
+          <a class="button primary" href="/export/products.xlsx">Скачать .xlsx</a>
+          <a class="button" href="/export/products.csv">CSV</a>
+        </div>
+      </div>
       <div class="card">
         <h2>Выгрузить остатки в Excel</h2>
         <p class="muted">Файл: артикул, название, склад, остаток, место хранения. ${editor ? 'Чтобы поправить остатки: скачайте, измените числа в колонке «Остаток», сохраните и загрузите файл обратно ниже в режиме «фактический остаток». ' : ''}

@@ -7,6 +7,7 @@
 #include "bulkphotosdialog.h"
 #include "photostore.h"
 #include "photoviewer.h"
+#include "productexport.h"
 
 #include <QInputDialog>
 #include <QLabel>
@@ -77,6 +78,10 @@ ProductsTab::ProductsTab(QWidget *parent)
     toolbarLayout->addWidget(photoBtn);
     toolbarLayout->addWidget(bulkEditBtn);
     toolbarLayout->addWidget(bulkPhotoBtn);
+    auto *exportBtn = new QPushButton(tr("Выгрузить в Excel..."), toolbar);
+    exportBtn->setToolTip(tr("Полные данные товаров: артикул, название, описание, цена, штрихкоды, остатки по складам, места хранения.\n"
+                             "Выгружается то, что сейчас в списке (с учётом поиска); если отмечено несколько товаров - можно выгрузить только их."));
+    toolbarLayout->addWidget(exportBtn); // не в m_editWidgets: выгружать может и роль «только просмотр»
     m_editWidgets << addBtn << deleteBtn << bulkEditBtn << bulkPhotoBtn;
     editBtn->setToolTip(tr("Открыть карточку товара"));
     toolbarLayout->addSpacing(20);
@@ -113,6 +118,7 @@ ProductsTab::ProductsTab(QWidget *parent)
     connect(photoBtn, &QPushButton::clicked, this, &ProductsTab::openSelectedPhoto);
     connect(bulkEditBtn, &QPushButton::clicked, this, &ProductsTab::bulkEdit);
     connect(bulkPhotoBtn, &QPushButton::clicked, this, &ProductsTab::bulkPhotos);
+    connect(exportBtn, &QPushButton::clicked, this, &ProductsTab::exportExcel);
     connect(m_table->verticalScrollBar(), &QScrollBar::valueChanged, this, &ProductsTab::prefetchVisible);
     connect(m_table, &QTableView::doubleClicked, this, &ProductsTab::editProduct);
     connect(m_search, &QLineEdit::textChanged, this, &ProductsTab::applySearch);
@@ -193,6 +199,38 @@ void ProductsTab::bulkPhotos()
         PhotoCache::clear();
         refresh();
     }
+}
+
+void ProductsTab::exportExcel()
+{
+    QList<int> shown;
+    for (int r = 0; r < m_model->rowCount(); ++r)
+        shown << m_model->data(m_model->index(r, ColId)).toInt();
+    if (shown.isEmpty()) {
+        QMessageBox::information(this, tr("Нечего выгружать"), tr("В списке нет товаров."));
+        return;
+    }
+    const QString term = m_search->text().trimmed();
+    QList<int> ids = shown;
+    QString note = term.isEmpty() ? tr("все товары") : tr("найденные по поиску «%1»").arg(term);
+
+    const QList<int> picked = selectedProductIds();
+    if (picked.size() >= 2 && picked.size() < shown.size()) {
+        QMessageBox box(QMessageBox::Question, tr("Что выгрузить?"),
+                        tr("Отмечено товаров: %1, в списке: %2.").arg(picked.size()).arg(shown.size()), QMessageBox::NoButton, this);
+        QAbstractButton *onlyPicked = box.addButton(tr("Только отмеченные (%1)").arg(picked.size()), QMessageBox::AcceptRole);
+        box.addButton(tr("Все в списке (%1)").arg(shown.size()), QMessageBox::AcceptRole);
+        box.addButton(QMessageBox::Cancel);
+        box.exec();
+        if (box.clickedButton() == nullptr || box.standardButton(box.clickedButton()) == QMessageBox::Cancel)
+            return;
+        if (box.clickedButton() == onlyPicked) {
+            ids = picked;
+            note = tr("отмеченные");
+        }
+    }
+    // Без фильтра и без выбора - все товары одним запросом, без списка идентификаторов.
+    ProductExport::exportToFile(this, (term.isEmpty() && ids.size() == shown.size()) ? nullptr : &ids, note);
 }
 
 int ProductsTab::selectedProductId() const

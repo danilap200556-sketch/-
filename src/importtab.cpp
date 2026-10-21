@@ -1,6 +1,7 @@
 #include "importtab.h"
 #include "csvimport.h"
 #include "database.h"
+#include "productexport.h"
 #include "xlsx.h"
 #include "barcode.h"
 
@@ -74,9 +75,13 @@ ImportTab::ImportTab(QWidget *parent)
     m_fileLabel = new QLabel(tr("Файл не выбран"), this);
     auto *pickBtn = new QPushButton(tr("Выбрать файл..."), this);
     auto *exportBtn = new QPushButton(tr("Выгрузить остатки в Excel..."), this);
+    auto *exportProductsBtn = new QPushButton(tr("Выгрузить все товары (полные данные)..."), this);
+    exportProductsBtn->setToolTip(tr("Артикул, название, описание, цена, артикул на Маркете, свой код, штрихкоды, остатки по складам, "
+                                     "места хранения, число фото. Часть товаров можно выгрузить на вкладке «Товары»."));
     fileRow->addWidget(m_fileLabel, 1);
     fileRow->addWidget(pickBtn);
     fileRow->addWidget(exportBtn);
+    fileRow->addWidget(exportProductsBtn);
     layout->addLayout(fileRow);
     m_importWidgets << hint << m_fileLabel << pickBtn;
 
@@ -150,6 +155,9 @@ ImportTab::ImportTab(QWidget *parent)
 
     connect(pickBtn, &QPushButton::clicked, this, &ImportTab::pickFile);
     connect(exportBtn, &QPushButton::clicked, this, &ImportTab::exportStock);
+    connect(exportProductsBtn, &QPushButton::clicked, this, [this]() {
+        ProductExport::exportToFile(this, nullptr, tr("все товары"));
+    });
     connect(m_modeWriteOff, &QRadioButton::toggled, this, [this](bool on) {
         // Списывать товары, которых у нас нет, бессмысленно.
         m_createMissing->setEnabled(!on);

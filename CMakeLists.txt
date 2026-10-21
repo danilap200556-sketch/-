@@ -131,6 +131,7 @@ add_executable(inventory_manager
     src/bulkeditdialog.cpp
     src/batchparser.cpp
     src/batchdialog.cpp
+    src/productexport.cpp
 )
 
 target_include_directories(inventory_manager PRIVATE ${QRENCODE_INCLUDE_DIRS})

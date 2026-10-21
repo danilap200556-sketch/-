@@ -93,6 +93,8 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
         <button>Найти</button>
         ${editor ? html`<a class="button primary" href="/products/new">+ Добавить товар</a>` : ''}
         ${viewLink('table', 'Таблица')}${viewLink('cards', 'Карточки')}
+        <a class="button" href="/export/products.xlsx?${new URLSearchParams({ q }).toString()}" title="Полные данные: артикул, название, описание, цена, штрихкоды, остатки по складам, места хранения${q ? ' - только найденные по поиску' : ''}">Выгрузить в Excel</a>
+        <a class="button" href="/export/products.csv?${new URLSearchParams({ q }).toString()}">CSV</a>
       </form>
       <p class="muted">Найдено: ${total.rows[0].n}</p>
       ${editor ? html`<form method="post" action="/bulk" id="selform">
@@ -101,6 +103,8 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
           <span class="muted">Отмеченные товары:</span>
           <button>Массовое редактирование</button>
           <button formaction="/bulk/photos">Добавить фото</button>
+          <button formaction="/export/products.xlsx" title="Полные данные отмеченных товаров">Выгрузить в Excel</button>
+          <button formaction="/export/products.csv">CSV</button>
           ${ctx.user.is_admin ? html`<button formaction="/bulk/delete" class="danger" data-confirm="Удалить отмеченные товары вместе с остатками, движениями и фото?">Удалить</button>` : ''}
           <label class="check"><input type="checkbox" name="all" value="1"> применить ко <b>всем ${total.rows[0].n}</b> найденным</label>
         </div>
