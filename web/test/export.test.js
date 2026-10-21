@@ -16,7 +16,7 @@ test.before(async () => {
   await site.db.query("UPDATE users SET read_only = TRUE WHERE username = 'viewer'");
   staff = site.client(); viewer = site.client();
   await staff.login('staff', 'staffpass1'); await viewer.login('viewer', 'viewerpass1');
-  await site.db.query(`INSERT INTO warehouses (name) VALUES ('Склад А'), ('Склад "Б" & <b>')`);
+  await site.db.query(`INSERT INTO warehouses (name) VALUES ('Склад А'), ('Яр "Б" & <b>')`);
   for (const w of await q('SELECT id, name FROM warehouses')) ids[w.name] = w.id;
   await site.db.query(`INSERT INTO products (sku, name, description, price, market_sku, custom_code) VALUES
     ('NK-AF1-42', 'Nike AF1 42', 'Белые, кожа', 12990.5, 'MKT-NK', 'QR-1'),
@@ -28,7 +28,7 @@ test.before(async () => {
   await site.db.query("INSERT INTO product_barcodes (barcode, product_id) VALUES ('4006381333931', $1), ('4600702084030', $1), ('036000291452', $2)", [ids['NK-AF1-42'], ids['AD-S-40']]);
   const loc = (await q("INSERT INTO locations (warehouse_id, code) VALUES ($1, 'A1-03') RETURNING id", [ids['Склад А']]))[0].id;
   await site.db.query('INSERT INTO stock (product_id, warehouse_id, quantity, location_id) VALUES ($1,$2,10,$3),($1,$4,3,NULL),($5,$2,6,NULL)',
-    [ids['NK-AF1-42'], ids['Склад А'], loc, ids['Склад "Б" & <b>'], ids['AD-S-40']]);
+    [ids['NK-AF1-42'], ids['Склад А'], loc, ids['Яр "Б" & <b>'], ids['AD-S-40']]);
   await site.db.query("INSERT INTO product_photos (product_id, data, thumb) VALUES ($1, '\\x00', '\\x00'), ($1, '\\x01', '\\x01')", [ids['NK-AF1-42']]);
 });
 test.after(() => site.stop());
@@ -40,14 +40,14 @@ test('Excel: все колонки карточки товара, остатки
   assert.match(res.headers.get('content-disposition'), /attachment; filename="products_\d{4}-\d{2}-\d{2}\.xlsx"; filename\*=UTF-8''/);
   const rows = sheet(res);
   assert.deepEqual(rows[0], ['Артикул', 'Название', 'Описание', 'Цена, ₽', 'Артикул на Маркете', 'Свой код', 'Штрихкоды', 'Всего на складах',
-    'Остаток: Склад "Б" & <b>', 'Остаток: Склад А', 'Места хранения', 'Фото, шт', 'Добавлен']);
+    'Остаток: Склад А', 'Остаток: Яр "Б" & <b>', 'Места хранения', 'Фото, шт', 'Добавлен']);
   assert.equal(rows.length, 5, 'заголовок + 4 товара');
   assert.deepEqual(rows.slice(1).map((r) => r[0]), ['AD-S-40', 'EMPTY-1', 'NB-373-43', 'NK-AF1-42'], 'по артикулу');
   const nk = rowOf(rows, 'NK-AF1-42');
-  assert.deepEqual(nk.slice(0, 12), ['NK-AF1-42', 'Nike AF1 42', 'Белые, кожа', '12990.5', 'MKT-NK', 'QR-1', '4006381333931; 4600702084030', '13', '3', '10', 'Склад А: A1-03', '2']);
+  assert.deepEqual(nk.slice(0, 12), ['NK-AF1-42', 'Nike AF1 42', 'Белые, кожа', '12990.5', 'MKT-NK', 'QR-1', '4006381333931; 4600702084030', '13', '10', '3', 'Склад А: A1-03', '2']);
   assert.match(nk[12], /^\d{4}-\d{2}-\d{2}$/);
   const ad = rowOf(rows, 'AD-S-40');
-  assert.deepEqual(ad.slice(0, 12), ['AD-S-40', '=Adidas Samba 40', '', '9000', '', '', '036000291452', '6', '0', '6', '', '0']);
+  assert.deepEqual(ad.slice(0, 12), ['AD-S-40', '=Adidas Samba 40', '', '9000', '', '', '036000291452', '6', '6', '0', '', '0']);
   assert.equal(rowOf(rows, 'NB-373-43')[2], 'строка 1\nстрока 2');
   assert.equal(rowOf(rows, 'NB-373-43')[3], '250.99');
   const empty = rowOf(rows, 'EMPTY-1');
@@ -136,5 +136,5 @@ test('много товаров: все строки на месте', async () 
   const rows = sheet(await staff.get('/export/products.xlsx?q=BULK-'));
   assert.equal(rows.length, 3001);
   assert.equal(rows[1][0], 'BULK-00001'); assert.equal(rows[3000][0], 'BULK-03000');
-  assert.equal(rows[2999][7], '2'); assert.equal(rows[2999][9], '2');
+  assert.equal(rows[2999][7], '2'); assert.equal(rows[2999][8], '2'); assert.equal(rows[2999][9], '0');
 });
