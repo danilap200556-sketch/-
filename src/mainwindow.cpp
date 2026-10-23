@@ -18,6 +18,9 @@
 #include "producteditor.h"
 #include "productfinder.h"
 #include "productsuggest.h"
+#include "appversion.h"
+#include "updater.h"
+#include "updatestab.h"
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -25,6 +28,7 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QDebug>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -41,6 +45,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QMessageBox>
+#include <QPushButton>
 
 MainWindow::MainWindow(const QString &username, QWidget *parent)
     : QMainWindow(parent)
@@ -239,6 +244,13 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         m_usersTab = new UsersTab(username, this);
         addPage(tr("Пользователи"), Theme::Icon::Users, m_usersTab);
     }
+    // Обновления программы - у всех: новая версия ставится на этот компьютер.
+    m_updater = new Updater(this);
+    m_updatesTab = new UpdatesTab(m_updater, this);
+    addPage(tr("Обновления"), Theme::Icon::Update, m_updatesTab);
+    m_updatesItem = m_sidebar->item(m_sidebar->count() - 1);
+    connect(m_updatesTab, &UpdatesTab::installRequested, this, &MainWindow::installUpdate);
+    connect(m_updater, &Updater::checkFinished, this, [this](bool ok, const QString &) { updateChecked(ok); });
 
     // Изменения товаров/складов должны отражаться там, где на них ссылаются другие страницы
     // (комбобоксы, сводные таблицы): помечаем такие страницы устаревшими, а обновляются они,
@@ -281,6 +293,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     m_sidebar->setCurrentRow(0);
     // Окно сначала рисуется, и только потом подгружается список товаров.
     QTimer::singleShot(0, this, [this]() { ensureLoaded(m_pages->currentWidget()); });
+    setupUpdates();
 }
 
 void MainWindow::addPage(const QString &title, Theme::Icon icon, QWidget *page)
@@ -315,7 +328,7 @@ void MainWindow::pageChanged(int row)
         return;
     }
     m_pages->setCurrentIndex(row);
-    m_pageTitle->setText(m_sidebar->item(row)->text());
+    m_pageTitle->setText(m_sidebar->item(row)->text().remove(QStringLiteral("●")).trimmed()); // без значка «есть обновление»
     ensureLoaded(m_pages->widget(row));
 }
 
@@ -409,6 +422,110 @@ void MainWindow::setupTray()
     };
     connect(m_autoSync, &MarketAutoSync::statusChanged, this, update);
     update();
+}
+
+void MainWindow::setupUpdates()
+{
+    Updater::cleanupOld(); // скачанное раньше и уже установленное
+    qInfo().noquote() << "Версия программы:" << AppVersion::text();
+    const int env = qEnvironmentVariableIntValue("INVENTORY_UPDATE_CHECK_DELAY_MS");
+    QTimer::singleShot(env > 0 ? env : 6000, this, &MainWindow::autoCheckUpdates);
+    m_updateTimer = new QTimer(this);
+    m_updateTimer->setInterval(6 * 60 * 60 * 1000); // программа может работать в трее сутками
+    connect(m_updateTimer, &QTimer::timeout, this, &MainWindow::autoCheckUpdates);
+    m_updateTimer->start();
+    QTimer::singleShot(1200, this, &MainWindow::showUpdateResult);
+}
+
+void MainWindow::autoCheckUpdates()
+{
+    if (!UpdatesTab::autoCheckEnabled() || AppVersion::build() <= 0 || m_updater->state() != Updater::State::Idle)
+        return;
+    m_autoChecking = true;
+    m_updater->check();
+}
+
+void MainWindow::updateChecked(bool ok)
+{
+    const bool automatic = m_autoChecking;
+    m_autoChecking = false;
+    const bool available = ok && m_updater->updateAvailable();
+    m_updatesItem->setText(available ? tr("Обновления  ●") : tr("Обновления"));
+    if (!available)
+        return;
+    statusBar()->showMessage(tr("Доступна новая версия программы (сборка %1) - раздел «Обновления».").arg(m_updater->latest().build), 20000);
+    if (automatic && m_offeredBuild != m_updater->latest().build) {
+        m_offeredBuild = m_updater->latest().build;
+        QTimer::singleShot(0, this, &MainWindow::offerUpdate);
+    }
+}
+
+void MainWindow::offerUpdate()
+{
+    if (!m_updater->updateAvailable() || m_updater->state() != Updater::State::Idle)
+        return;
+    // Не перебиваем человека, который сейчас в диалоге; а если окно свёрнуто в трей - только напоминание у значка.
+    if (QApplication::activeModalWidget()) {
+        QTimer::singleShot(30000, this, &MainWindow::offerUpdate);
+        return;
+    }
+    const Updater::Release &r = m_updater->latest();
+    if (!isVisible() || isMinimized()) {
+        if (m_tray && m_tray->isVisible())
+            m_tray->showMessage(tr("Доступна новая версия программы"), tr("Сборка %1. Откройте окно: раздел «Обновления».").arg(r.build),
+                                QSystemTrayIcon::Information, 10000);
+        return;
+    }
+    QString notes = r.history.isEmpty() ? r.notes : r.history.first().notes;
+    if (notes.size() > 700)
+        notes = notes.left(700) + QStringLiteral("…");
+    QMessageBox box(QMessageBox::Question, tr("Доступна новая версия"),
+                    tr("Вышла новая версия программы: сборка %1 (у вас сборка %2).\n\nСкачать и установить сейчас? Программа закроется и "
+                       "запустится заново через несколько секунд.").arg(r.build).arg(AppVersion::build()),
+                    QMessageBox::NoButton, this);
+    if (!notes.isEmpty())
+        box.setDetailedText(notes);
+    QPushButton *yes = box.addButton(tr("Скачать и установить"), QMessageBox::AcceptRole);
+    box.addButton(tr("Позже"), QMessageBox::RejectRole);
+    box.exec();
+    if (box.clickedButton() == yes) {
+        showPage(m_updatesTab);
+        m_updatesTab->startDownload();
+    }
+}
+
+void MainWindow::installUpdate()
+{
+    if (m_canEdit && !m_cardsTab->saveIfDirty())
+        return; // открытая карточка Маркета не сохранилась - не закрываем программу, чтобы не потерять правки
+    QString err;
+    if (!m_updater->install(&err)) {
+        QMessageBox::warning(this, tr("Обновление не установлено"), err);
+        return;
+    }
+    quitApp();
+}
+
+void MainWindow::showUpdateResult()
+{
+    const Updater::Result r = Updater::takeResult();
+    if (!r.present)
+        return;
+    if (r.ok) {
+        qInfo().noquote() << "Обновление установлено: сборка" << r.build;
+        statusBar()->showMessage(tr("Программа обновлена: сборка %1. Что изменилось - раздел «Обновления».").arg(r.build), 30000);
+        return;
+    }
+    QString why = r.message;
+    if (why.startsWith(QLatin1String("copy failed")))
+        why = tr("не удалось заменить файлы (их могут держать антивирус или другая программа). Возвращена прежняя версия.");
+    else if (why.startsWith(QLatin1String("backup failed")))
+        why = tr("не удалось сделать резервную копию текущих файлов, ничего не менялось.");
+    else if (why.startsWith(QLatin1String("the program did not close")))
+        why = tr("программа не закрылась за отведённое время, файлы не менялись.");
+    qWarning().noquote() << "Обновление не установлено: сборка" << r.build << r.message;
+    QMessageBox::warning(this, tr("Обновление не установлено"),
+                         tr("Установить сборку %1 не удалось: %2\n\nМожно повторить на вкладке «Обновления».").arg(r.build).arg(why));
 }
 
 void MainWindow::restoreFromTray()

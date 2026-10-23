@@ -314,6 +314,12 @@ QIcon icon(Icon which, const QColor &color, int size)
         p.drawLine(P(9, 13), P(16, 13)); p.drawLine(P(9, 16.5), P(14, 16.5));
         break;
     }
+    case Icon::Update: {
+        // круговая стрелка «обновить»
+        p.drawArc(QRectF(5 * u, 5 * u, 14 * u, 14 * u), 40 * 16, 270 * 16);
+        p.drawLine(P(17.7, 5.2), P(18.6, 9.4)); p.drawLine(P(18.6, 9.4), P(14.4, 9.8));
+        break;
+    }
     case Icon::Orders: {
         p.drawRoundedRect(QRectF(5 * u, 4.5 * u, 14 * u, 16 * u), 2 * u, 2 * u);
         p.drawRect(QRectF(9 * u, 3 * u, 6 * u, 3.4 * u));

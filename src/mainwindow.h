@@ -17,6 +17,10 @@ class CardsTab;
 class DocumentsTab;
 class OrdersTab;
 class UsersTab;
+class UpdatesTab;
+class Updater;
+class QListWidgetItem;
+class QTimer;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -56,6 +60,13 @@ private:
     void setupTray();
     void restoreFromTray();
     void quitApp();
+    // Обновления программы: проверка при запуске и раз в несколько часов, предложение установить, итог после перезапуска.
+    void setupUpdates();
+    void autoCheckUpdates();
+    void updateChecked(bool ok);
+    void offerUpdate();
+    void installUpdate();
+    void showUpdateResult();
 
     QListWidget *m_sidebar = nullptr;
     QStackedWidget *m_pages = nullptr;
@@ -80,4 +91,10 @@ private:
     DocumentsTab *m_documentsTab;
     OrdersTab *m_ordersTab;
     UsersTab *m_usersTab = nullptr;
+    Updater *m_updater = nullptr;
+    UpdatesTab *m_updatesTab = nullptr;
+    QListWidgetItem *m_updatesItem = nullptr;
+    QTimer *m_updateTimer = nullptr;
+    bool m_autoChecking = false;
+    int m_offeredBuild = 0;
 };

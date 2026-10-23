@@ -154,6 +154,8 @@ add_executable(inventory_manager
     src/productsync.cpp
     src/productimportdialog.cpp
     src/applog.cpp
+    src/updater.cpp
+    src/updatestab.cpp
     src/appversion.cpp
     src/theme.cpp
 )

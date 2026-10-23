@@ -6,7 +6,12 @@ on:
     paths:
       - 'src/**'
       - 'CMakeLists.txt'
+      - 'tools/make_update_package.py'
       - '.github/workflows/build-windows.yml'
+
+# contents: write - чтобы публиковать релиз app-latest, из которого программа берёт обновления.
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -14,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # вся история: из сообщений коммитов собирается «что нового» для обновления
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -54,8 +61,11 @@ jobs:
           rem REQUIRE_QPSQL_EMBEDDED makes configure fail loudly instead of
           rem silently shipping the plain-QPSQL fallback, which can't connect
           rem to Neon at all.
+          rem APP_BUILD / APP_COMMIT - номер и коммит этой сборки: по ним программа узнаёт, что вышла новая версия.
           cmake -S . -B build -G "NMake Makefiles" ^
             -DCMAKE_BUILD_TYPE=Release ^
+            -DAPP_BUILD=%GITHUB_RUN_NUMBER% ^
+            -DAPP_COMMIT=%GITHUB_SHA:~0,7% ^
             -DREQUIRE_QPSQL_EMBEDDED=ON ^
             -DCMAKE_TOOLCHAIN_FILE="%GITHUB_WORKSPACE%\vcpkg\scripts\buildsystems\vcpkg.cmake" ^
             -DVCPKG_TARGET_TRIPLET=x64-windows
@@ -108,6 +118,35 @@ jobs:
         with:
           name: inventory_manager-windows
           path: dist\**
+
+      # Обновления внутри программы: архив + version.json в релизе app-latest (вкладка «Обновления», src/updater.cpp).
+      - name: Package update (zip + version.json)
+        id: pack
+        shell: pwsh
+        run: |
+          $prev = "prev_version.json"
+          try {
+            Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/$env:GITHUB_REPOSITORY/releases/download/app-latest/version.json" -OutFile $prev
+          } catch {
+            Remove-Item $prev -ErrorAction SilentlyContinue
+          }
+          python tools/make_update_package.py --dist dist --zip inventory_manager-windows.zip --manifest version.json `
+            --notes release_notes.md --build $env:GITHUB_RUN_NUMBER --sha $env:GITHUB_SHA --prev $prev
+          if ($LASTEXITCODE -eq 3) { "publish=false" >> $env:GITHUB_OUTPUT; exit 0 }
+          if ($LASTEXITCODE -ne 0) { throw "make_update_package.py failed ($LASTEXITCODE)" }
+          "publish=true" >> $env:GITHUB_OUTPUT
+
+      - name: Publish update (release app-latest)
+        if: steps.pack.outputs.publish == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete app-latest --cleanup-tag --yes
+          $global:LASTEXITCODE = 0
+          gh release create app-latest inventory_manager-windows.zip version.json --target $env:GITHUB_SHA `
+            --title "Программа для Windows, сборка $env:GITHUB_RUN_NUMBER" --notes-file release_notes.md --latest
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed ($LASTEXITCODE)" }
 
       - name: Package qtpgtest (real Qt/QSqlQuery diagnostic)
         shell: pwsh
