@@ -1,10 +1,11 @@
 'use strict';
 const { searchSql } = require('./routes/products');
 const { csvCell } = require('./util');
+const mi = require('./marketinfo');
 
 // Выгрузка полных данных товаров (вкладка «Товары»): одна строка на товар, остатки по складам - отдельными
-// колонками. Те же колонки и порядок, что у кнопки «Выгрузить в Excel» на вкладке «Товары» в приложении
-// (src/productexport.cpp).
+// колонками, в конце - параметры для карточки Яндекс Маркета (бренд, страна, габариты, ТН ВЭД, теги, 18+, категория).
+// Те же колонки и порядок, что у кнопки «Выгрузить в Excel» на вкладке «Товары» в приложении (src/productexport.cpp).
 
 const MAX_ROWS = 100_000;
 const tz = process.env.DISPLAY_TZ || 'Europe/Moscow';
@@ -18,12 +19,14 @@ async function productTable(db, { q = '', ids = null } = {}) {
   let cond; let params;
   if (ids) { cond = 'p.id = ANY($1::int[])'; params = [ids]; } else { const s = searchSql(q, 1); cond = s.sql; params = s.params; }
 
+  // Параметры для карточки Маркета - в конце таблицы (столбцы создаёт приложение; без них колонок нет).
+  const ymOn = await mi.supported(db);
   // по очереди: db может быть клиентом транзакции, у которого запросы идут друг за другом
   const products = await db.query(
       `SELECT p.id, p.sku, p.name, COALESCE(p.description, '') AS description, p.price::float8 AS price,
               COALESCE(p.market_sku, '') AS market_sku, COALESCE(p.custom_code, '') AS custom_code, p.created_at,
               COALESCE((SELECT string_agg(b.barcode, '; ' ORDER BY b.created_at, b.barcode) FROM product_barcodes b WHERE b.product_id = p.id), '') AS barcodes,
-              (SELECT COUNT(*)::int FROM product_photos ph WHERE ph.product_id = p.id) AS photos
+              (SELECT COUNT(*)::int FROM product_photos ph WHERE ph.product_id = p.id) AS photos${ymOn ? `, ${mi.SELECT_SQL}` : ''}
          FROM products p WHERE ${cond} ORDER BY p.sku LIMIT ${MAX_ROWS + 1}`, params);
   const whs = await db.query('SELECT id, name FROM warehouses ORDER BY name');
   const stock = await db.query(
@@ -40,7 +43,8 @@ async function productTable(db, { q = '', ids = null } = {}) {
   }
 
   const head = ['Артикул', 'Название', 'Описание', 'Цена, ₽', 'Артикул на Маркете', 'Свой код', 'Штрихкоды', 'Всего на складах',
-    ...whs.rows.map((w) => `Остаток: ${w.name}`), 'Места хранения', 'Фото, шт', 'Добавлен'];
+    ...whs.rows.map((w) => `Остаток: ${w.name}`), 'Места хранения', 'Фото, шт', 'Добавлен',
+    ...(ymOn ? ['Бренд', 'Страна производства', 'Длина, см', 'Ширина, см', 'Высота, см', 'Вес, кг', 'ТН ВЭД', 'Теги', '18+', 'Категория Маркета (ID)', 'Категория Маркета'] : [])];
   const rows = [head];
   for (const p of items) {
     const own = byProduct.get(p.id) || new Map();
@@ -48,15 +52,17 @@ async function productTable(db, { q = '', ids = null } = {}) {
     const places = whs.rows.filter((w) => own.get(w.id)?.location).map((w) => `${w.name}: ${own.get(w.id).location}`);
     rows.push([p.sku, p.name, p.description, price(p.price), p.market_sku, p.custom_code, p.barcodes,
       String(perWarehouse.reduce((a, b) => a + b, 0)), ...perWarehouse.map(String), places.join('; '),
-      String(p.photos), p.created_at ? dayFmt.format(new Date(p.created_at)) : '']);
+      String(p.photos), p.created_at ? dayFmt.format(new Date(p.created_at)) : '',
+      ...(ymOn ? [...mi.FIELDS.map((f) => mi.shown(f, p)), p.market_category_id > 0 ? String(p.market_category_id) : '', p.market_category_name] : [])]);
   }
 
   const n = whs.rows.length;
   return {
     rows,
-    numericColumns: [3, 7, ...whs.rows.map((_, i) => 8 + i), 9 + n],
-    decimalColumns: [3],
-    columnWidths: [22, 45, 40, 11, 22, 16, 30, 12, ...whs.rows.map(() => 14), 28, 9, 12],
+    // длина, ширина, высота, вес и ID категории - числами
+    numericColumns: [3, 7, ...whs.rows.map((_, i) => 8 + i), 9 + n, ...(ymOn ? [13 + n, 14 + n, 15 + n, 16 + n, 20 + n] : [])],
+    decimalColumns: [3, ...(ymOn ? [13 + n, 14 + n, 15 + n, 16 + n] : [])],
+    columnWidths: [22, 45, 40, 11, 22, 16, 30, 12, ...whs.rows.map(() => 14), 28, 9, 12, ...(ymOn ? [16, 22, 10, 10, 10, 9, 14, 20, 6, 14, 28] : [])],
     count: items.length,
     truncated,
   };

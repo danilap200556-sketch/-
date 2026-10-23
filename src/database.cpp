@@ -99,6 +99,21 @@ const QStringList &schemaDdl()
         // Артикул товара в каталоге Маркета (offerId), если он отличается от
         // нашего sku. Пусто - используется sku.
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS market_sku TEXT",
+        // Параметры карточки Яндекс Маркета у самого товара: бренд, страны, габариты и вес упаковки, ТН ВЭД, теги, 18+,
+        // категория Маркета и её характеристики (JSON, как в market_cards.params). Из них собираются карточки Маркета.
+        "ALTER TABLE products "
+        "ADD COLUMN IF NOT EXISTS market_vendor TEXT NOT NULL DEFAULT '', "
+        "ADD COLUMN IF NOT EXISTS market_countries TEXT NOT NULL DEFAULT '', "
+        "ADD COLUMN IF NOT EXISTS market_length_cm NUMERIC(10,2) NOT NULL DEFAULT 0, "
+        "ADD COLUMN IF NOT EXISTS market_width_cm NUMERIC(10,2) NOT NULL DEFAULT 0, "
+        "ADD COLUMN IF NOT EXISTS market_height_cm NUMERIC(10,2) NOT NULL DEFAULT 0, "
+        "ADD COLUMN IF NOT EXISTS market_weight_kg NUMERIC(10,3) NOT NULL DEFAULT 0, "
+        "ADD COLUMN IF NOT EXISTS market_commodity_code TEXT NOT NULL DEFAULT '', "
+        "ADD COLUMN IF NOT EXISTS market_tags TEXT NOT NULL DEFAULT '', "
+        "ADD COLUMN IF NOT EXISTS market_adult BOOLEAN NOT NULL DEFAULT FALSE, "
+        "ADD COLUMN IF NOT EXISTS market_category_id BIGINT, "
+        "ADD COLUMN IF NOT EXISTS market_category_name TEXT NOT NULL DEFAULT '', "
+        "ADD COLUMN IF NOT EXISTS market_params TEXT NOT NULL DEFAULT '{}'",
         R"(CREATE TABLE IF NOT EXISTS market_accounts (
             id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             name TEXT NOT NULL,

@@ -5,6 +5,7 @@ const bc = require('../barcode');
 const ops = require('../stock');
 const { TYPE_LABELS } = ops;
 const { parseId, likeEscape, fmtDate, fmtMoney, parsePrice, str, field } = require('../util');
+const mi = require('../marketinfo');
 const { thumbImg, editLink, COVER_SQL, MOVEMENT_STATUS_SQL, DOC_NO_SQL, movementTable } = require('../views');
 
 const PAGE = 50;
@@ -31,11 +32,52 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
     if (!d.sku) error = 'Введите артикул';
     else if (!d.name) error = 'Введите название';
     else if (d.price === null) error = 'Цена - число не больше 10 000 000, до двух знаков после запятой';
+    // параметры для карточки Яндекс Маркета (поля есть в форме, только если приложение уже создало столбцы)
+    if (b.ym_present === '1') {
+      const ym = mi.readForm(b);
+      d.ym = ym.values;
+      error = error || ym.error;
+    }
     return { d, error };
   };
 
+  // Значения столбцов market_* для INSERT/UPDATE: [столбцы, значения] (категория и характеристики не трогаются).
+  const ymColumns = (d) => mi.FIELDS.map((f) => [f.col, mi.toColumn(f, d.ym[f.field])]);
+
+  // Параметры для карточки Яндекс Маркета: бренд, страна, габариты и вес упаковки, ТН ВЭД, теги, 18+. Категорию и
+  // характеристики выбирают в приложении (нужен Маркет) - здесь они только показываются и сохраняются как есть.
+  const marketFields = (ctx, d, p) => {
+    const ro = ctx.user.read_only;
+    const v = d.ym || (p ? mi.fromRow(p) : {});
+    const zero = (x) => (x === '0' || x === undefined ? '' : x);
+    const f = (label, name, value, max, extra = {}) => html`
+      <label class="field"><span>${label}</span><input name="${name}" value="${value ?? ''}" maxlength="${max}" ${ro ? html`readonly` : ''}
+        ${extra.inputmode ? html`inputmode="${extra.inputmode}"` : ''} ${extra.placeholder ? html`placeholder="${extra.placeholder}"` : ''}></label>`;
+    const catId = p ? Number(p.market_category_id) || 0 : 0;
+    return html`
+      <fieldset class="market">
+        <legend>Для карточки Яндекс Маркета</legend>
+        <input type="hidden" name="ym_present" value="1">
+        ${f('Бренд', 'ym_vendor', v.ym_vendor, 100, { placeholder: 'например, Nike' })}
+        ${f('Страна производства (через «;»)', 'ym_countries', v.ym_countries, 500, { placeholder: 'Китай; Вьетнам' })}
+        <p class="muted">Размеры и вес - с упаковкой.</p>
+        <div class="row4">
+          ${f('Длина, см', 'ym_length', zero(v.ym_length), 8, { inputmode: 'decimal' })}
+          ${f('Ширина, см', 'ym_width', zero(v.ym_width), 8, { inputmode: 'decimal' })}
+          ${f('Высота, см', 'ym_height', zero(v.ym_height), 8, { inputmode: 'decimal' })}
+          ${f('Вес, кг', 'ym_weight', zero(v.ym_weight), 8, { inputmode: 'decimal' })}
+        </div>
+        ${f('ТН ВЭД', 'ym_commodity', v.ym_commodity, 20, { inputmode: 'numeric', placeholder: '10 цифр, если нужен' })}
+        ${f('Теги (через «;»)', 'ym_tags', v.ym_tags, 500)}
+        <label class="check"><input type="checkbox" name="ym_adult" value="1" ${v.ym_adult === 'да' ? html`checked` : ''} ${ro ? html`disabled` : ''}> товар для взрослых (18+)</label>
+        <p class="muted">${catId > 0
+          ? html`Категория Маркета: <b>${p.market_category_name || catId}</b>, заполнено характеристик: ${mi.paramsCount(p)}. Меняется в приложении (окно товара → «Параметры для Яндекс Маркета»).`
+          : 'Категорию Маркета и её характеристики (размер, цвет, материал…) выбирают в приложении: окно товара → «Параметры для Яндекс Маркета».'}</p>
+      </fieldset>`;
+  };
+
   // Форма товара. В режиме "только просмотр" поля заблокированы и кнопки сохранения нет.
-  const productForm = (ctx, action, d, error, submit) => {
+  const productForm = (ctx, action, d, error, submit, ymOn = false, p = null) => {
     const ro = ctx.user.read_only;
     const f = (label, name, value, max, extra = {}) => html`
       <label class="field"><span>${label}</span><input name="${name}" value="${value ?? ''}" maxlength="${max}" ${ro ? html`readonly` : ''}
@@ -50,6 +92,7 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
       ${f('Артикул на Яндекс Маркете (если отличается от нашего)', 'market_sku', d.market_sku, 200)}
       ${f('Свой код (для QR-этикеток)', 'custom_code', d.custom_code, 200)}
       <label class="field"><span>Описание</span><textarea name="description" rows="3" maxlength="2000" ${ro ? html`readonly` : ''}>${d.description ?? ''}</textarea></label>
+      ${ymOn ? marketFields(ctx, d, p) : ''}
       ${ro ? '' : html`<button class="primary">${submit}</button>`}
     </form>`;
   };
@@ -116,19 +159,21 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
   });
 
   // ---- Создание
-  app.get('/products/new', requireLogin, requireEditor, (req, res) =>
-    send(req, res, { title: 'Новый товар', active: 'products', body: productForm(req.ctx, '/products', { price: '' }, '', 'Создать') }));
+  app.get('/products/new', requireLogin, requireEditor, async (req, res) =>
+    send(req, res, { title: 'Новый товар', active: 'products', body: productForm(req.ctx, '/products', { price: '' }, '', 'Создать', await mi.supported(db)) }));
 
   app.post('/products', requireLogin, async (req, res) => {
     const { d, error } = readForm(req.body);
+    const ymOn = d.ym !== undefined && await mi.supported(db);
     const fail = (msg, status = 400) =>
-      send(req, res, { title: 'Новый товар', active: 'products', body: productForm(req.ctx, '/products', d, msg, 'Создать') }, status);
+      send(req, res, { title: 'Новый товар', active: 'products', body: productForm(req.ctx, '/products', d, msg, 'Создать', ymOn) }, status);
     if (error) return fail(error);
     try {
+      const ym = ymOn ? ymColumns(d) : [];
       const { rows } = await db.query(
-        `INSERT INTO products (sku, name, description, photo_path, price, custom_code, market_sku)
-         VALUES ($1, $2, $3, '', $4, $5, $6) RETURNING id`,
-        [d.sku, d.name, d.description, d.price, d.custom_code, d.market_sku]);
+        `INSERT INTO products (sku, name, description, photo_path, price, custom_code, market_sku${ym.map(([c]) => `, ${c}`).join('')})
+         VALUES ($1, $2, $3, '', $4, $5, $6${ym.map((_, i) => `, $${7 + i}`).join('')}) RETURNING id`,
+        [d.sku, d.name, d.description, d.price, d.custom_code, d.market_sku, ...ym.map(([, v]) => v)]);
       res.flash('ok', 'Товар создан. Теперь можно добавить фото и штрихкоды');
       res.redirect(`/products/${rows[0].id}`);
     } catch (e) {
@@ -146,6 +191,7 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
     if (!p) { res.flash('err', 'Товар не найден'); return res.redirect('/products'); }
     const cancelOn = await ops.cancelSupported(db);
     const docsOn = cancelOn && await ops.docsSupported(db);
+    const ymOn = await mi.supported(db);
     const [codes, stockRows, moves, photos] = await Promise.all([
       db.query('SELECT barcode FROM product_barcodes WHERE product_id = $1 ORDER BY created_at, barcode', [id]),
       db.query(`SELECT w.id AS wid, w.name AS wname, COALESCE(s.quantity, 0) AS qty, s.location_id,
@@ -167,7 +213,7 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
       ${ro ? '' : html`<p><a class="button primary" href="/products/${id}/quick">✎ Быстрая правка: название, цена, штрихкоды, остатки</a></p>`}
       <div class="grid2">
         <div>
-          ${productForm(ctx, `/products/${id}`, d, error, 'Сохранить')}
+          ${productForm(ctx, `/products/${id}`, d, error, 'Сохранить', ymOn, p)}
           ${ctx.user.is_admin ? html`<form method="post" action="/products/${id}/delete" data-confirm="Удалить товар ${p.sku} вместе с остатками, штрихкодами и фото?">
             ${csrfField(ctx)}<button class="danger">Удалить товар</button></form>` : ''}
         </div>
@@ -235,9 +281,10 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
     const { d, error } = readForm(req.body);
     if (error) return showProduct(req, res, { error, form: d }, 400);
     try {
+      const ym = d.ym !== undefined && await mi.supported(db) ? ymColumns(d) : [];
       const r = await db.query(
-        `UPDATE products SET sku = $2, name = $3, description = $4, price = $5, custom_code = $6, market_sku = $7 WHERE id = $1`,
-        [id, d.sku, d.name, d.description, d.price, d.custom_code, d.market_sku]);
+        `UPDATE products SET sku = $2, name = $3, description = $4, price = $5, custom_code = $6, market_sku = $7${ym.map(([c], i) => `, ${c} = $${8 + i}`).join('')} WHERE id = $1`,
+        [id, d.sku, d.name, d.description, d.price, d.custom_code, d.market_sku, ...ym.map(([, v]) => v)]);
       res.flash(r.rowCount ? 'ok' : 'err', r.rowCount ? 'Сохранено' : 'Товар не найден');
       res.redirect(r.rowCount ? `/products/${id}` : '/products');
     } catch (e) {

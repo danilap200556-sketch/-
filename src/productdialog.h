@@ -1,6 +1,7 @@
 #pragma once
 
 #include "photostore.h"
+#include "productmarket.h"
 
 #include <QByteArray>
 #include <QDialog>
@@ -15,6 +16,7 @@ class QListWidget;
 class QDialogButtonBox;
 class QPushButton;
 class QTableWidget;
+class ProductMarketBox;
 
 // Форма добавления/редактирования товара: артикул, название, описание,
 // цена, фото (лежат в общей базе, до 12 штук, первое - главное), штрихкоды и
@@ -33,6 +35,7 @@ public:
         QString customCode;
         QString marketSku;
         QStringList barcodes;
+        ProductMarketInfo market; // параметры для карточки Яндекс Маркета
     };
 
     // Что исправили в остатках на одном складе (только изменённое).
@@ -127,4 +130,5 @@ private:
     QLineEdit *m_customCode;
     QLineEdit *m_marketSku;
     QLabel *m_photoStatus;
+    ProductMarketBox *m_market;
 };

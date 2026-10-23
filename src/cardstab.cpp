@@ -3,6 +3,7 @@
 #include "categorypicker.h"
 #include "marketapi.h"
 #include "marketcategories.h"
+#include "paramform.h"
 #include "productpickdialog.h"
 #include "theme.h"
 
@@ -110,6 +111,9 @@ CardsTab::CardsTab(QWidget *parent)
     b2->addWidget(pullBtn);
     b2->addWidget(checkBtn);
     ll->addLayout(b2);
+    auto *toProductBtn = new QPushButton(tr("Записать в товары…"), left);
+    toProductBtn->setToolTip(tr("Сохранить бренд, страну, габариты, ТН ВЭД, теги, категорию и характеристики из выбранных карточек в товары базы"));
+    ll->addWidget(toProductBtn);
     auto *sendBtn = new QPushButton(tr("Отправить на Маркет"), left);
     sendBtn->setProperty("primary", true);
     ll->addWidget(sendBtn);
@@ -176,8 +180,9 @@ CardsTab::CardsTab(QWidget *parent)
     m_paramsHint->setWordWrap(true);
     m_paramsHint->setObjectName("muted");
     pl->addWidget(m_paramsHint);
-    m_paramsForm = new QFormLayout();
-    pl->addLayout(m_paramsForm);
+    m_paramForm = new ParamForm(m_paramsBox);
+    pl->addWidget(m_paramForm);
+    connect(m_paramForm, &ParamForm::changed, this, [this]() { markDirty(); });
     cl->addWidget(m_paramsBox);
     fl->addWidget(cat);
 
@@ -257,6 +262,7 @@ CardsTab::CardsTab(QWidget *parent)
     connect(delBtn, &QPushButton::clicked, this, &CardsTab::removeSelected);
     connect(refillBtn, &QPushButton::clicked, this, &CardsTab::refillFromDatabase);
     connect(m_pullProductBtn, &QPushButton::clicked, this, &CardsTab::refillFromDatabase);
+    connect(toProductBtn, &QPushButton::clicked, this, &CardsTab::writeToProducts);
     connect(pullBtn, &QPushButton::clicked, this, &CardsTab::pullFromMarket);
     connect(m_pullMarketBtn, &QPushButton::clicked, this, &CardsTab::pullFromMarket);
     connect(checkBtn, &QPushButton::clicked, this, &CardsTab::checkOnMarket);
@@ -286,9 +292,7 @@ void CardsTab::setFormEnabled(bool on)
         m_categoryLabel->setText(QString());
         m_cardState->setText(tr("Выберите карточку слева или добавьте новую: «Добавить из товаров…» создаст карточки "
                                 "для товаров из базы и сразу подставит их данные."));
-        while (m_paramsForm->rowCount() > 0)
-            m_paramsForm->removeRow(0);
-        m_editors.clear();
+        m_paramForm->clear();
         m_paramsHint->setText(QString());
         m_loading = false;
     }
@@ -567,12 +571,7 @@ void CardsTab::readForm(MarketCard *card) const
     card->commodityCode = m_commodity->text().trimmed();
     card->tags = MarketCards::splitList(m_tags->text());
     card->adult = m_adult->isChecked();
-    card->params.clear();
-    for (const ParamEditor &e : m_editors) {
-        const QList<MarketParamValue> v = e.get();
-        if (!v.isEmpty())
-            card->params.insert(e.param.id, v);
-    }
+    card->params = m_paramForm->values();
 }
 
 bool CardsTab::commitCurrent()
@@ -653,9 +652,7 @@ void CardsTab::chooseCategory()
 
 void CardsTab::rebuildParams(const MarketCard &card, bool forceReload)
 {
-    while (m_paramsForm->rowCount() > 0)
-        m_paramsForm->removeRow(0);
-    m_editors.clear();
+    m_paramForm->clear();
     m_params.clear();
     if (card.categoryId <= 0) {
         m_paramsHint->setText(tr("Выберите категорию - здесь появятся её характеристики (размер, цвет, материал и т. п.)."));
@@ -682,212 +679,7 @@ void CardsTab::rebuildParams(const MarketCard &card, bool forceReload)
         return;
     }
     m_paramsHint->hide();
-    for (const MarketCategoryParam &p : std::as_const(m_params)) {
-        ParamEditor e = makeEditor(p);
-        QString title = p.name + (p.required ? QStringLiteral(" *") : QString());
-        auto *label = new QLabel(title, m_paramsBox);
-        if (p.required) {
-            QFont f = label->font();
-            f.setBold(true);
-            label->setFont(f);
-        }
-        QStringList tip;
-        if (!p.description.isEmpty())
-            tip << p.description;
-        if (p.distinctive)
-            tip << tr("Особенность варианта (по ней различаются товары одной модели).");
-        if (p.hasMin || p.hasMax)
-            tip << tr("Допустимо: от %1 до %2").arg(p.hasMin ? QString::number(p.minValue) : QStringLiteral("…"), p.hasMax ? QString::number(p.maxValue) : QStringLiteral("…"));
-        if (p.maxLength > 0)
-            tip << tr("Не длиннее %1 символов").arg(p.maxLength);
-        label->setToolTip(tip.join(QLatin1Char('\n')));
-        e.widget->setToolTip(label->toolTip());
-        m_paramsForm->addRow(label, e.widget);
-        e.set(card.params.value(p.id));
-        m_editors.append(e);
-    }
-}
-
-CardsTab::ParamEditor CardsTab::makeEditor(const MarketCategoryParam &p)
-{
-    ParamEditor e;
-    e.param = p;
-    auto dirty = [this]() { markDirty(); };
-
-    if (p.type == QLatin1String("ENUM") && p.multivalue) {
-        auto *w = new QWidget(m_paramsBox);
-        auto *l = new QVBoxLayout(w);
-        l->setContentsMargins(0, 0, 0, 0);
-        auto *list = new QListWidget(w);
-        list->setFixedHeight(qBound(48, 12 + int(p.values.size()) * 24, 150));
-        for (const auto &o : p.values) {
-            auto *it = new QListWidgetItem(o.value, list);
-            it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
-            it->setCheckState(Qt::Unchecked);
-            it->setData(Qt::UserRole, o.id);
-        }
-        l->addWidget(list);
-        QLineEdit *custom = nullptr;
-        if (p.allowCustomValues) {
-            custom = new QLineEdit(w);
-            custom->setPlaceholderText(tr("свои значения через «;»"));
-            l->addWidget(custom);
-            connect(custom, &QLineEdit::textChanged, this, dirty);
-        }
-        connect(list, &QListWidget::itemChanged, this, dirty);
-        e.widget = w;
-        e.get = [list, custom]() {
-            QList<MarketParamValue> v;
-            for (int i = 0; i < list->count(); ++i)
-                if (list->item(i)->checkState() == Qt::Checked)
-                    v.append({list->item(i)->text(), list->item(i)->data(Qt::UserRole).toLongLong(), 0});
-            if (custom)
-                for (const QString &part : MarketCards::splitList(custom->text()))
-                    v.append({part, 0, 0});
-            return v;
-        };
-        e.set = [list, custom](const QList<MarketParamValue> &vals) {
-            const QSignalBlocker b(list);
-            QStringList extra;
-            for (int i = 0; i < list->count(); ++i)
-                list->item(i)->setCheckState(Qt::Unchecked);
-            for (const MarketParamValue &v : vals) {
-                bool found = false;
-                for (int i = 0; i < list->count() && !found; ++i) {
-                    if ((v.valueId > 0 && list->item(i)->data(Qt::UserRole).toLongLong() == v.valueId) ||
-                        (v.valueId <= 0 && list->item(i)->text() == v.value)) {
-                        list->item(i)->setCheckState(Qt::Checked);
-                        found = true;
-                    }
-                }
-                if (!found)
-                    extra << v.value;
-            }
-            if (custom)
-                custom->setText(extra.join(QStringLiteral("; ")));
-        };
-    } else if (p.type == QLatin1String("ENUM")) {
-        auto *combo = new QComboBox(m_paramsBox);
-        combo->setEditable(p.allowCustomValues);
-        combo->addItem(QString(), 0);
-        for (const auto &o : p.values)
-            combo->addItem(o.value, o.id);
-        if (p.allowCustomValues) {
-            combo->setInsertPolicy(QComboBox::NoInsert);
-            if (combo->completer()) {
-                combo->completer()->setFilterMode(Qt::MatchContains);
-                combo->completer()->setCaseSensitivity(Qt::CaseInsensitive);
-            }
-        }
-        combo->setCurrentIndex(0);
-        connect(combo, &QComboBox::currentTextChanged, this, dirty);
-        e.widget = combo;
-        e.get = [combo]() {
-            QList<MarketParamValue> v;
-            const QString text = combo->currentText().trimmed();
-            if (text.isEmpty())
-                return v;
-            const int idx = combo->findText(text, Qt::MatchFixedString);
-            if (idx > 0)
-                v.append({combo->itemText(idx), combo->itemData(idx).toLongLong(), 0});
-            else if (combo->isEditable())
-                v.append({text, 0, 0});
-            return v;
-        };
-        e.set = [combo](const QList<MarketParamValue> &vals) {
-            const QSignalBlocker b(combo);
-            combo->setCurrentIndex(0);
-            if (combo->isEditable())
-                combo->setEditText(QString());
-            if (vals.isEmpty())
-                return;
-            int idx = vals[0].valueId > 0 ? combo->findData(vals[0].valueId) : -1;
-            if (idx < 0)
-                idx = combo->findText(vals[0].value, Qt::MatchFixedString);
-            if (idx > 0)
-                combo->setCurrentIndex(idx);
-            else if (combo->isEditable())
-                combo->setEditText(vals[0].value);
-        };
-    } else if (p.type == QLatin1String("NUMERIC")) {
-        auto *w = new QWidget(m_paramsBox);
-        auto *l = new QHBoxLayout(w);
-        l->setContentsMargins(0, 0, 0, 0);
-        auto *edit = new QLineEdit(w);
-        edit->setValidator(new QRegularExpressionValidator(QRegularExpression(QStringLiteral("-?[0-9]*[.,]?[0-9]*")), edit));
-        l->addWidget(edit, 1);
-        QComboBox *units = nullptr;
-        if (!p.units.isEmpty()) {
-            units = new QComboBox(w);
-            for (const auto &u : p.units)
-                units->addItem(u.name, u.id);
-            const int d = units->findData(p.defaultUnitId);
-            units->setCurrentIndex(d >= 0 ? d : 0);
-            l->addWidget(units);
-            connect(units, &QComboBox::currentIndexChanged, this, dirty);
-        }
-        connect(edit, &QLineEdit::textChanged, this, dirty);
-        e.widget = w;
-        const qint64 defaultUnit = p.defaultUnitId;
-        e.get = [edit, units, defaultUnit]() {
-            QList<MarketParamValue> v;
-            QString t = edit->text().trimmed();
-            t.replace(QLatin1Char(','), QLatin1Char('.'));
-            if (t.isEmpty())
-                return v;
-            const qint64 unit = units ? units->currentData().toLongLong() : 0;
-            v.append({t, 0, unit == defaultUnit ? 0 : unit}); // единица по умолчанию подставится сама
-            return v;
-        };
-        e.set = [edit, units, defaultUnit](const QList<MarketParamValue> &vals) {
-            const QSignalBlocker b1(edit);
-            edit->setText(vals.isEmpty() ? QString() : vals[0].value);
-            if (units) {
-                const QSignalBlocker b2(units);
-                const qint64 unit = vals.isEmpty() || vals[0].unitId <= 0 ? defaultUnit : vals[0].unitId;
-                const int idx = units->findData(unit);
-                units->setCurrentIndex(idx >= 0 ? idx : 0);
-            }
-        };
-    } else if (p.type == QLatin1String("BOOLEAN")) {
-        auto *combo = new QComboBox(m_paramsBox);
-        combo->addItem(QString(), QString());
-        combo->addItem(tr("Да"), QStringLiteral("true"));
-        combo->addItem(tr("Нет"), QStringLiteral("false"));
-        connect(combo, &QComboBox::currentIndexChanged, this, dirty);
-        e.widget = combo;
-        e.get = [combo]() {
-            QList<MarketParamValue> v;
-            const QString val = combo->currentData().toString();
-            if (!val.isEmpty())
-                v.append({val, 0, 0});
-            return v;
-        };
-        e.set = [combo](const QList<MarketParamValue> &vals) {
-            const QSignalBlocker b(combo);
-            const QString val = vals.isEmpty() ? QString() : vals[0].value.toLower();
-            const int idx = combo->findData(val == QLatin1String("1") ? QStringLiteral("true") : val == QLatin1String("0") ? QStringLiteral("false") : val);
-            combo->setCurrentIndex(idx >= 0 ? idx : 0);
-        };
-    } else { // TEXT
-        auto *edit = new QLineEdit(m_paramsBox);
-        if (p.maxLength > 0)
-            edit->setMaxLength(p.maxLength);
-        connect(edit, &QLineEdit::textChanged, this, dirty);
-        e.widget = edit;
-        e.get = [edit]() {
-            QList<MarketParamValue> v;
-            const QString t = edit->text().trimmed();
-            if (!t.isEmpty())
-                v.append({t, 0, 0});
-            return v;
-        };
-        e.set = [edit](const QList<MarketParamValue> &vals) {
-            const QSignalBlocker b(edit);
-            edit->setText(vals.isEmpty() ? QString() : vals[0].value);
-        };
-    }
-    return e;
+    m_paramForm->setParams(m_params, card.params);
 }
 
 void CardsTab::photoLinksFromDatabase()
@@ -1035,7 +827,10 @@ void CardsTab::refillFromDatabase()
         {tr("Название"), MarketCards::FName, false}, {tr("Описание"), MarketCards::FDescription, false},
         {tr("Штрихкоды"), MarketCards::FBarcodes, true}, {tr("Цену"), MarketCards::FPrice, true},
         {tr("Ссылки на фото (через сайт)"), MarketCards::FPhotos, true},
-        {tr("Бренд и код производителя (только если пусты)"), MarketCards::FVendor, true}};
+        {tr("Бренд (из товара; если там пусто - по названию, только если в карточке пусто) и код производителя"), MarketCards::FVendor, true},
+        {tr("Габариты и вес упаковки (если заданы у товара)"), MarketCards::FPack, true},
+        {tr("Категорию и характеристики (если заданы у товара)"), MarketCards::FCategory, true},
+        {tr("Страну, ТН ВЭД, теги и 18+ (то, что заполнено у товара)"), MarketCards::FDetails, true}};
     QList<QCheckBox *> boxes;
     for (const Item &it : items) {
         auto *cb = new QCheckBox(it.text, &dlg);
@@ -1074,6 +869,42 @@ void CardsTab::refillFromDatabase()
     setStatus(tr("Данные из базы подставлены в карточки: %1.").arg(sel.size()));
     if (!notes.isEmpty()) {
         QMessageBox box(QMessageBox::Information, tr("Подставлено из базы"), tr("Готово, но есть замечания (%1).").arg(notes.size()), QMessageBox::Ok, this);
+        box.setDetailedText(notes.join(QLatin1Char('\n')));
+        box.exec();
+    }
+}
+
+void CardsTab::writeToProducts()
+{
+    if (!commitCurrent())
+        return;
+    const QList<int> sel = selectedCardIndexes();
+    if (sel.isEmpty()) {
+        QMessageBox::information(this, tr("Выберите карточки"), tr("Выделите карточки в списке слева (Ctrl или Shift + клик, Ctrl+A - все)."));
+        return;
+    }
+    if (QMessageBox::question(this, tr("Записать в товары"),
+                              tr("Записать в товары базы данные из карточек (%1 шт.): бренд, страну, габариты и вес, ТН ВЭД, теги, 18+, "
+                                 "категорию и характеристики?\n\nЗаполненное в карточке заменит то же у товара, пустое у товара ничего не "
+                                 "сотрёт. Название, описание, цена и фото товара не меняются. Потом эти данные можно подставлять в новые "
+                                 "карточки и выгружать в Excel.").arg(sel.size())) != QMessageBox::Yes)
+        return;
+    QList<const MarketCard *> cards;
+    for (int i : sel)
+        cards << &m_cards[i];
+    int written = 0;
+    QStringList notes;
+    QString err;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const bool ok = MarketCards::writeToProducts(cards, &written, &notes, &err);
+    QApplication::restoreOverrideCursor();
+    if (!ok) {
+        QMessageBox::warning(this, tr("Карточки"), tr("Не удалось записать в товары:\n%1").arg(err));
+        return;
+    }
+    setStatus(tr("Записано в товары: %1.").arg(written));
+    if (!notes.isEmpty()) {
+        QMessageBox box(QMessageBox::Information, tr("Записано в товары"), tr("Готово (%1), но есть замечания (%2).").arg(written).arg(notes.size()), QMessageBox::Ok, this);
         box.setDetailedText(notes.join(QLatin1Char('\n')));
         box.exec();
     }

@@ -1,6 +1,7 @@
 #include "productdialog.h"
 #include "barcode.h"
 #include "photoviewer.h"
+#include "productmarketbox.h"
 #include "database.h"
 
 #include <QComboBox>
@@ -14,6 +15,7 @@
 #include <QKeyEvent>
 #include <QListWidget>
 
+#include <QGuiApplication>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -23,6 +25,8 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScreen>
+#include <QScrollArea>
 #include <QTextEdit>
 #include <QVBoxLayout>
 
@@ -31,10 +35,24 @@ ProductDialog::ProductDialog(QWidget *parent)
 {
     setWindowTitle(tr("Товар"));
     setMinimumWidth(580);
+    // Не выше экрана (с запасом на рамку и панель задач): остальное прокручивается.
+    if (const QScreen *screen = QGuiApplication::primaryScreen()) {
+        setMaximumHeight(screen->availableGeometry().height() - 40);
+        resize(640, qMin(800, screen->availableGeometry().height() - 80));
+    }
 
+    // Поля - в прокручиваемой области: с параметрами для Маркета окно высокое, а кнопки OK/Отмена должны быть всегда видны.
     auto *layout = new QVBoxLayout(this);
+    auto *scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto *content = new QWidget(scroll);
+    auto *contentLayout = new QVBoxLayout(content);
+    contentLayout->setContentsMargins(0, 0, 8, 0);
+    scroll->setWidget(content);
+    layout->addWidget(scroll, 1);
     auto *form = new QFormLayout();
-    layout->addLayout(form);
+    contentLayout->addLayout(form);
 
     m_sku = new QLineEdit(this);
     m_sku->setPlaceholderText(tr("напр. SHOE-042-BLK-42"));
@@ -124,6 +142,11 @@ ProductDialog::ProductDialog(QWidget *parent)
     connect(genBarcodeBtn, &QPushButton::clicked, this, &ProductDialog::generateBarcode);
     connect(delBarcodeBtn, &QPushButton::clicked, this, &ProductDialog::removeBarcode);
 
+    // --- Параметры для карточки Яндекс Маркета (бренд, габариты, категория, характеристики) ---
+    m_market = new ProductMarketBox(this);
+    m_market->setNameProvider([this]() { return m_name->text(); });
+    form->addRow(m_market);
+
     // --- Остатки по складам: быстрое исправление "косяков" (появляется у существующего товара) ---
     m_stockBox = new QWidget(this);
     auto *stockLayout = new QVBoxLayout(m_stockBox);
@@ -144,11 +167,12 @@ ProductDialog::ProductDialog(QWidget *parent)
     m_stockComment->setPlaceholderText(tr("причина исправления (необязательно, попадёт в журнал движений)"));
     stockLayout->addWidget(m_stockComment);
     m_stockBox->hide();
-    layout->addWidget(m_stockBox);
+    contentLayout->addWidget(m_stockBox);
 
     m_photoStatus = new QLabel(this);
     m_photoStatus->setStyleSheet("color: gray; font-size: 11px;");
-    layout->addWidget(m_photoStatus);
+    contentLayout->addWidget(m_photoStatus);
+    contentLayout->addStretch(1);
 
     m_buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     auto *buttons = m_buttons;
@@ -190,7 +214,7 @@ bool ProductDialog::loadCard(int productId, Card *out)
     QString error;
     const auto sets = Database::queryMulti(
         "SELECT sku, name, COALESCE(description, ''), COALESCE(photo_path, ''), price, "
-        "COALESCE(custom_code, ''), COALESCE(market_sku, '') FROM products WHERE id = ?;"
+        "COALESCE(custom_code, ''), COALESCE(market_sku, ''), " + ProductMarket::selectColumns() + " FROM products WHERE id = ?;"
         "SELECT barcode FROM product_barcodes WHERE product_id = ? ORDER BY created_at, barcode;"
         "SELECT id, thumb FROM product_photos WHERE product_id = ? ORDER BY position, id;"
         "SELECT w.id, w.name, COALESCE(s.quantity, 0), COALESCE(s.location_id, 0) "
@@ -208,6 +232,7 @@ bool ProductDialog::loadCard(int productId, Card *out)
     d.price = p[4].toDouble();
     d.customCode = p[5].toString();
     d.marketSku = p[6].toString();
+    d.market = ProductMarket::fromValues(p, 7);
     d.barcodes.clear();
     for (const QVariantList &r : sets[1])
         d.barcodes << r[0].toString();
@@ -434,6 +459,7 @@ void ProductDialog::setReadOnly(bool readOnly)
         m_stockComment->setVisible(!readOnly);
     }
     m_barcodeInput->setVisible(!readOnly);
+    m_market->setReadOnly(readOnly);
     m_buttons->button(QDialogButtonBox::Ok)->setVisible(!readOnly);
     m_buttons->button(QDialogButtonBox::Cancel)->setText(readOnly ? tr("Закрыть") : tr("Отмена"));
     setWindowTitle(readOnly ? tr("Товар (только просмотр)") : tr("Товар"));
@@ -459,6 +485,7 @@ void ProductDialog::setData(const ProductData &data)
     m_barcodes->clear();
     m_barcodes->addItems(data.barcodes);
     m_originalBarcodes = data.barcodes;
+    m_market->setInfo(data.market);
 }
 
 ProductDialog::ProductData ProductDialog::data() const
@@ -473,6 +500,7 @@ ProductDialog::ProductData ProductDialog::data() const
     d.marketSku = m_marketSku->text().trimmed();
     for (int i = 0; i < m_barcodes->count(); ++i)
         d.barcodes << m_barcodes->item(i)->text();
+    d.market = m_market->info();
     return d;
 }
 

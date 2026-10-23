@@ -290,8 +290,8 @@ void ProductsTab::addProduct()
             codes << c;
     }
     QString sql = QStringLiteral(
-        "WITH p AS (INSERT INTO products (sku, name, description, photo_path, price, custom_code, market_sku) "
-        "           VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id)");
+        "WITH p AS (INSERT INTO products (sku, name, description, photo_path, price, custom_code, market_sku, %1) "
+        "           VALUES (?, ?, ?, ?, ?, ?, ?, %2) RETURNING id)").arg(ProductMarket::insertColumns(), ProductMarket::insertMarks());
     if (!codes.isEmpty())
         sql += QStringLiteral(", b AS (INSERT INTO product_barcodes (barcode, product_id) SELECT c.code, p.id FROM p, "
                               "(VALUES %1) c(code))").arg(QStringList(codes.size(), QStringLiteral("(?)")).join(QLatin1Char(',')));
@@ -305,6 +305,7 @@ void ProductsTab::addProduct()
     ins.addBindValue(d.price);
     ins.addBindValue(d.customCode);
     ins.addBindValue(d.marketSku);
+    ProductMarket::bind(ins, d.market);
     for (const QString &c : codes)
         ins.addBindValue(c);
     if (!ins.exec() || !ins.next()) {

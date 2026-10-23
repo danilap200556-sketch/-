@@ -123,6 +123,9 @@ add_executable(inventory_manager
     src/marketautosync.cpp
     src/marketcategories.cpp
     src/marketcards.cpp
+    src/productmarketbox.cpp
+    src/paramform.cpp
+    src/productmarket.cpp
     src/categorypicker.cpp
     src/productpickdialog.cpp
     src/cardstab.cpp

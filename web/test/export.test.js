@@ -30,6 +30,9 @@ test.before(async () => {
   await site.db.query('INSERT INTO stock (product_id, warehouse_id, quantity, location_id) VALUES ($1,$2,10,$3),($1,$4,3,NULL),($5,$2,6,NULL)',
     [ids['NK-AF1-42'], ids['Склад А'], loc, ids['Яр "Б" & <b>'], ids['AD-S-40']]);
   await site.db.query("INSERT INTO product_photos (product_id, data, thumb) VALUES ($1, '\\x00', '\\x00'), ($1, '\\x01', '\\x01')", [ids['NK-AF1-42']]);
+  await site.db.query(`UPDATE products SET market_vendor = 'Nike', market_countries = 'Вьетнам;Китай', market_length_cm = 30.5, market_width_cm = 20,
+    market_height_cm = 12, market_weight_kg = 1.25, market_commodity_code = '6404110000', market_tags = 'лето;спорт', market_adult = TRUE,
+    market_category_id = 101, market_category_name = 'Обувь › Кроссовки' WHERE id = $1`, [ids['NK-AF1-42']]);
 });
 test.after(() => site.stop());
 
@@ -40,12 +43,15 @@ test('Excel: все колонки карточки товара, остатки
   assert.match(res.headers.get('content-disposition'), /attachment; filename="products_\d{4}-\d{2}-\d{2}\.xlsx"; filename\*=UTF-8''/);
   const rows = sheet(res);
   assert.deepEqual(rows[0], ['Артикул', 'Название', 'Описание', 'Цена, ₽', 'Артикул на Маркете', 'Свой код', 'Штрихкоды', 'Всего на складах',
-    'Остаток: Склад А', 'Остаток: Яр "Б" & <b>', 'Места хранения', 'Фото, шт', 'Добавлен']);
+    'Остаток: Склад А', 'Остаток: Яр "Б" & <b>', 'Места хранения', 'Фото, шт', 'Добавлен',
+    'Бренд', 'Страна производства', 'Длина, см', 'Ширина, см', 'Высота, см', 'Вес, кг', 'ТН ВЭД', 'Теги', '18+', 'Категория Маркета (ID)', 'Категория Маркета']);
   assert.equal(rows.length, 5, 'заголовок + 4 товара');
   assert.deepEqual(rows.slice(1).map((r) => r[0]), ['AD-S-40', 'EMPTY-1', 'NB-373-43', 'NK-AF1-42'], 'по артикулу');
   const nk = rowOf(rows, 'NK-AF1-42');
   assert.deepEqual(nk.slice(0, 12), ['NK-AF1-42', 'Nike AF1 42', 'Белые, кожа', '12990.5', 'MKT-NK', 'QR-1', '4006381333931; 4600702084030', '13', '10', '3', 'Склад А: A1-03', '2']);
   assert.match(nk[12], /^\d{4}-\d{2}-\d{2}$/);
+  assert.deepEqual(nk.slice(13), ['Nike', 'Вьетнам; Китай', '30.5', '20', '12', '1.25', '6404110000', 'лето; спорт', 'да', '101', 'Обувь › Кроссовки'], 'параметры для Маркета в конце');
+  assert.deepEqual(rowOf(rows, 'AD-S-40').slice(13), ['', '', '0', '0', '0', '0', '', '', 'нет'], 'у товара без параметров - нули и «нет» (пустые ячейки в конце строки не пишутся)');
   const ad = rowOf(rows, 'AD-S-40');
   assert.deepEqual(ad.slice(0, 12), ['AD-S-40', '=Adidas Samba 40', '', '9000', '', '', '036000291452', '6', '6', '0', '', '0']);
   assert.equal(rowOf(rows, 'NB-373-43')[2], 'строка 1\nстрока 2');

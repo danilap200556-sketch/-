@@ -3,17 +3,24 @@
 #include "xlsx.h"
 
 #include <QList>
+#include <QMap>
 #include <QString>
 #include <QStringList>
 #include <QVector>
 #include <optional>
 
-// Обновление данных товаров из Excel/CSV: название, описание, цена, артикул на Маркете, свой код, штрихкоды.
+// Обновление данных товаров из Excel/CSV: название, описание, цена, артикул на Маркете, свой код, штрихкоды и параметры
+// для карточки Яндекс Маркета (бренд, страна, габариты и вес, ТН ВЭД, теги, 18+).
 // Остатки не затрагиваются. Те же правила и тексты, что у страницы «Обновление товаров из Excel» на сайте
 // (web/src/productsync.js). Шаги: plan() - что изменится (ничего не пишет), apply() - записать одной транзакцией.
 namespace ProductSync {
 
-enum Role { RoleIgnore = 0, RoleKey, RoleBarcode, RoleName, RoleDescription, RolePrice, RoleMarketSku, RoleCustomCode, RoleCount };
+enum Role {
+    RoleIgnore = 0, RoleKey, RoleBarcode, RoleName, RoleDescription, RolePrice, RoleMarketSku, RoleCustomCode,
+    // параметры для карточки Яндекс Маркета
+    RoleVendor, RoleCountries, RoleLength, RoleWidth, RoleHeight, RoleWeight, RoleCommodity, RoleTags, RoleAdult,
+    RoleCount
+};
 constexpr int kMaxRows = 20'000;
 
 QStringList roleLabels();
@@ -30,7 +37,7 @@ struct Options {
 };
 
 struct Change {
-    QString field;  // name, description, price, market_sku, custom_code, barcodes
+    QString field;  // name, description, price, market_sku, custom_code, barcodes, ym_vendor, ym_countries, ym_length, ...
     QString label;
     QString from;
     QString to;
@@ -49,6 +56,7 @@ struct Item {
     // для create
     QString createName, createDescription, createMarketSku, createCustomCode;
     double createPrice = 0;
+    QMap<QString, QString> createYm; // параметры для Маркета нового товара: поле -> значение (как в Change::to)
 };
 
 struct Problem {

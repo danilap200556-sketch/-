@@ -1,8 +1,13 @@
 #include "productsync.h"
 #include "barcode.h"
+#include "marketcards.h"
 #include "productexport.h"
+#include "productmarket.h"
 
 #include <QHash>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMap>
 #include <QRegularExpression>
 #include <QSet>
@@ -22,6 +27,7 @@ int limitOf(const QString &field)
 {
     if (field == QLatin1String("name")) return 300;
     if (field == QLatin1String("description")) return 2000;
+    if (field == QLatin1String("ym_vendor")) return 100;
     return 200; // market_sku, custom_code
 }
 
@@ -32,6 +38,15 @@ QString fieldLabel(const QString &field)
     if (field == QLatin1String("price")) return QStringLiteral("Цена");
     if (field == QLatin1String("market_sku")) return QStringLiteral("Артикул на Маркете");
     if (field == QLatin1String("custom_code")) return QStringLiteral("Свой код");
+    if (field == QLatin1String("ym_vendor")) return QStringLiteral("Бренд");
+    if (field == QLatin1String("ym_countries")) return QStringLiteral("Страна производства");
+    if (field == QLatin1String("ym_length")) return QStringLiteral("Длина, см");
+    if (field == QLatin1String("ym_width")) return QStringLiteral("Ширина, см");
+    if (field == QLatin1String("ym_height")) return QStringLiteral("Высота, см");
+    if (field == QLatin1String("ym_weight")) return QStringLiteral("Вес, кг");
+    if (field == QLatin1String("ym_commodity")) return QStringLiteral("ТН ВЭД");
+    if (field == QLatin1String("ym_tags")) return QStringLiteral("Теги");
+    if (field == QLatin1String("ym_adult")) return QStringLiteral("18+");
     return QStringLiteral("Штрихкоды");
 }
 
@@ -60,10 +75,12 @@ struct ProductRow {
     int id = 0;
     QString sku, name, description, marketSku, customCode;
     double price = 0;
+    ProductMarketInfo market;
 };
 
-const char kProductCols[] = "p.id, p.sku, p.name, COALESCE(p.description, ''), p.price::float8, "
-                            "COALESCE(p.market_sku, ''), COALESCE(p.custom_code, '')";
+const QString kProductCols = QStringLiteral("p.id, p.sku, p.name, COALESCE(p.description, ''), p.price::float8, "
+                                            "COALESCE(p.market_sku, ''), COALESCE(p.custom_code, ''), ") +
+                             ProductMarket::selectColumns(QStringLiteral("p."));
 
 ProductRow readProduct(const QSqlQuery &q, int offset)
 {
@@ -75,6 +92,7 @@ ProductRow readProduct(const QSqlQuery &q, int offset)
     r.price = q.value(offset + 4).toDouble();
     r.marketSku = q.value(offset + 5).toString();
     r.customCode = q.value(offset + 6).toString();
+    r.market = ProductMarket::fromRow(q, offset + 7);
     return r;
 }
 
@@ -86,6 +104,158 @@ QString valuesList(int n)
     return marks.join(QLatin1Char(','));
 }
 
+
+// ---- Параметры для карточки Яндекс Маркета: разбор ячеек и значения «как в таблице»
+struct YmField {
+    int role;
+    const char *field;
+    const char *column;
+};
+const YmField kYmFields[] = {
+    {RoleVendor, "ym_vendor", "market_vendor"},       {RoleCountries, "ym_countries", "market_countries"},
+    {RoleLength, "ym_length", "market_length_cm"},    {RoleWidth, "ym_width", "market_width_cm"},
+    {RoleHeight, "ym_height", "market_height_cm"},    {RoleWeight, "ym_weight", "market_weight_kg"},
+    {RoleCommodity, "ym_commodity", "market_commodity_code"}, {RoleTags, "ym_tags", "market_tags"},
+    {RoleAdult, "ym_adult", "market_adult"},
+};
+
+// 30.5, 12, 1.25 - без хвостовых нулей
+QString fmtNumber(double v, int decimals)
+{
+    QString s = QString::number(v, 'f', decimals);
+    if (s.contains(QLatin1Char('.'))) {
+        while (s.endsWith(QLatin1Char('0')))
+            s.chop(1);
+        if (s.endsWith(QLatin1Char('.')))
+            s.chop(1);
+    }
+    return s;
+}
+
+QString listText(const QStringList &l) { return l.join(QStringLiteral("; ")); }
+
+QStringList parseList(const QString &raw)
+{
+    static const QRegularExpression sep(QStringLiteral("[;,\\n]+"));
+    QStringList out;
+    for (const QString &part : raw.split(sep, Qt::SkipEmptyParts)) {
+        const QString t = part.trimmed();
+        if (!t.isEmpty() && !out.contains(t))
+            out << t;
+    }
+    return out;
+}
+
+// Значение ячейки в виде, в котором оно показывается и сравнивается; пусто + *why - ячейка не подходит.
+QString parseYm(const QString &field, const QString &raw, QString *why)
+{
+    if (field == QLatin1String("ym_vendor")) {
+        if (raw.size() > limitOf(field)) { *why = QStringLiteral("длиннее %1 знаков").arg(limitOf(field)); return QString(); }
+        return raw;
+    }
+    if (field == QLatin1String("ym_countries") || field == QLatin1String("ym_tags")) {
+        const QStringList l = parseList(raw);
+        const QString t = listText(l);
+        if (t.size() > 500) { *why = QStringLiteral("слишком длинный список"); return QString(); }
+        return t;
+    }
+    if (field == QLatin1String("ym_length") || field == QLatin1String("ym_width") || field == QLatin1String("ym_height") ||
+        field == QLatin1String("ym_weight")) {
+        QString t;
+        for (QChar ch : raw)
+            if (!ch.isSpace())
+                t += ch;
+        t.replace(QLatin1Char(','), QLatin1Char('.'));
+        static const QRegularExpression number(QStringLiteral("^[0-9]+(\\.[0-9]+)?$"));
+        const bool weight = field == QLatin1String("ym_weight");
+        if (!number.match(t).hasMatch() || t.toDouble() > 1000) {
+            *why = weight ? QStringLiteral("нужно число от 0 до 1000 (килограммы)") : QStringLiteral("нужно число от 0 до 1000 (сантиметры)");
+            return QString();
+        }
+        const int dec = weight ? 3 : 2;
+        return fmtNumber(std::round(t.toDouble() * std::pow(10, dec)) / std::pow(10, dec), dec);
+    }
+    if (field == QLatin1String("ym_commodity")) {
+        QString t;
+        for (QChar ch : raw)
+            if (!ch.isSpace() && ch != QLatin1Char('.') && ch != QLatin1Char(','))
+                t += ch;
+        static const QRegularExpression digits(QStringLiteral("^[0-9]{4,14}$"));
+        if (!digits.match(t).hasMatch()) { *why = QStringLiteral("код ТН ВЭД - от 4 до 14 цифр"); return QString(); }
+        return t;
+    }
+    // ym_adult
+    const QString v = raw.toLower();
+    for (const char *yes : {"да", "yes", "true", "1", "+", "y"})
+        if (v == QString::fromUtf8(yes))
+            return QStringLiteral("да");
+    for (const char *no : {"нет", "no", "false", "0", "-", "n"})
+        if (v == QString::fromUtf8(no))
+            return QStringLiteral("нет");
+    *why = QStringLiteral("нужно «да» или «нет»");
+    return QString();
+}
+
+QString currentYm(const QString &field, const ProductMarketInfo &m)
+{
+    if (field == QLatin1String("ym_vendor")) return m.vendor;
+    if (field == QLatin1String("ym_countries")) return listText(m.countries);
+    if (field == QLatin1String("ym_length")) return fmtNumber(m.lengthCm, 2);
+    if (field == QLatin1String("ym_width")) return fmtNumber(m.widthCm, 2);
+    if (field == QLatin1String("ym_height")) return fmtNumber(m.heightCm, 2);
+    if (field == QLatin1String("ym_weight")) return fmtNumber(m.weightKg, 3);
+    if (field == QLatin1String("ym_commodity")) return m.commodityCode;
+    if (field == QLatin1String("ym_tags")) return listText(m.tags);
+    return m.adult ? QStringLiteral("да") : QStringLiteral("нет");
+}
+
+// Одним запросом (JSON) записывает значения параметров для Маркета нескольким товарам; в строке только те поля, что менялись.
+bool writeYm(const QList<QPair<int, QMap<QString, QString>>> &items, QString *error)
+{
+    for (int i = 0; i < items.size(); i += 200) {
+        QJsonArray arr;
+        for (int k = i; k < qMin<int>(i + 200, items.size()); ++k) {
+            QJsonObject cols;
+            for (const YmField &f : kYmFields) {
+                const auto it = items[k].second.constFind(QLatin1String(f.field));
+                if (it == items[k].second.constEnd())
+                    continue;
+                QString v = it.value();
+                if (f.role == RoleCountries || f.role == RoleTags)
+                    v = parseList(v).join(QLatin1Char(';'));
+                else if (f.role == RoleAdult)
+                    v = v == QStringLiteral("да") ? QStringLiteral("true") : QStringLiteral("false");
+                cols.insert(QLatin1String(f.column), v);
+            }
+            QJsonObject row;
+            row.insert(QStringLiteral("id"), items[k].first);
+            row.insert(QStringLiteral("c"), cols);
+            arr.append(row);
+        }
+        QString set;
+        for (const YmField &f : kYmFields) {
+            const QString col = QLatin1String(f.column);
+            QString expr = QStringLiteral("j.c->>'%1'").arg(col);
+            if (f.role == RoleLength || f.role == RoleWidth || f.role == RoleHeight || f.role == RoleWeight)
+                expr = QStringLiteral("(%1)::numeric").arg(expr);
+            else if (f.role == RoleAdult)
+                expr = QStringLiteral("(%1)::boolean").arg(expr);
+            if (!set.isEmpty())
+                set += QLatin1String(", ");
+            set += QStringLiteral("%1 = CASE WHEN jsonb_exists(j.c, '%1') THEN %2 ELSE p.%1 END").arg(col, expr);
+        }
+        QSqlQuery q;
+        q.prepare(QStringLiteral("UPDATE products p SET %1 FROM jsonb_to_recordset(?::jsonb) AS j(id int, c jsonb) WHERE p.id = j.id").arg(set));
+        q.addBindValue(QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
+        if (!q.exec()) {
+            if (error)
+                *error = q.lastError().text();
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 QStringList roleLabels()
@@ -93,7 +263,10 @@ QStringList roleLabels()
     return {QStringLiteral("— пропустить —"), QStringLiteral("Артикул (по нему ищем товар)"),
             QStringLiteral("Штрихкод (тоже ищет товар; новый код привяжется)"), QStringLiteral("Название"),
             QStringLiteral("Описание"), QStringLiteral("Цена"), QStringLiteral("Артикул на Маркете"),
-            QStringLiteral("Свой код (для QR-этикеток)")};
+            QStringLiteral("Свой код (для QR-этикеток)"), QStringLiteral("Бренд (для карточки Маркета)"),
+            QStringLiteral("Страна производства (через «;»)"), QStringLiteral("Длина упаковки, см"),
+            QStringLiteral("Ширина упаковки, см"), QStringLiteral("Высота упаковки, см"), QStringLiteral("Вес упаковки, кг"),
+            QStringLiteral("ТН ВЭД"), QStringLiteral("Теги (через «;»)"), QStringLiteral("Для взрослых 18+ (да/нет)")};
 }
 
 int guessRole(const QString &header)
@@ -103,7 +276,7 @@ int guessRole(const QString &header)
     auto starts = [&](const char16_t *s) { return h.startsWith(QString::fromUtf16(s)); };
     if (h.isEmpty())
         return RoleIgnore;
-    if (starts(u"остаток") || starts(u"всего") || starts(u"места") || starts(u"фото") || starts(u"добавлен"))
+    if (starts(u"остаток") || starts(u"всего") || starts(u"места") || starts(u"фото") || starts(u"добавлен") || starts(u"категори"))
         return RoleIgnore;
     if (has(u"штрих") || has(u"ean") || has(u"barcode"))
         return RoleBarcode;
@@ -111,6 +284,24 @@ int guessRole(const QString &header)
         return RoleMarketSku;
     if (has(u"свой код") || has(u"custom") || has(u"qr"))
         return RoleCustomCode;
+    if (has(u"бренд") || has(u"brand") || has(u"vendor"))
+        return RoleVendor;
+    if (has(u"страна") || has(u"country"))
+        return RoleCountries;
+    if (has(u"длина") || has(u"length"))
+        return RoleLength;
+    if (has(u"ширина") || has(u"width"))
+        return RoleWidth;
+    if (has(u"высота") || has(u"height"))
+        return RoleHeight;
+    if (starts(u"вес") || has(u"weight"))
+        return RoleWeight;
+    if (has(u"тн вэд") || has(u"твэд") || has(u"tnved") || has(u"commodity"))
+        return RoleCommodity;
+    if (h == QStringLiteral("теги") || h == QStringLiteral("tags") || h == QStringLiteral("тег"))
+        return RoleTags;
+    if (h == QLatin1String("18+") || has(u"взросл") || has(u"adult"))
+        return RoleAdult;
     if (has(u"артикул") || has(u"sku") || has(u"ключ"))
         return RoleKey;
     if (has(u"наимен") || has(u"назв") || h == QLatin1String("name"))
@@ -207,9 +398,12 @@ Plan plan(const QVector<QStringList> &rows, int headerIdx, const QList<int> &rol
     for (int r : dataRoles)
         if (col(r) >= 0)
             anyData = true;
+    for (const YmField &f : kYmFields)
+        if (col(f.role) >= 0)
+            anyData = true;
     if (!anyData && codeCol < 0) {
         out.fatal = QStringLiteral("Не выбрано, что обновлять: укажите хотя бы одну колонку - название, описание, цену, "
-                                   "артикул на Маркете, свой код или штрихкод");
+                                   "артикул на Маркете, свой код, штрихкод или параметры для Маркета (бренд, габариты и т. д.)");
         return out;
     }
     if (rows.size() - headerIdx - 1 > kMaxRows + 5000) {
@@ -258,7 +452,7 @@ Plan plan(const QVector<QStringList> &rows, int headerIdx, const QList<int> &rol
         const QStringList part = keys.mid(i, 400);
         QSqlQuery q;
         q.prepare(QStringLiteral("SELECT k.key, %1 FROM (VALUES %2) AS k(key) JOIN products p ON lower(p.sku) = lower(k.key)")
-                      .arg(QLatin1String(kProductCols), valuesList(int(part.size()))));
+                      .arg(kProductCols, valuesList(int(part.size()))));
         for (const QString &k : part)
             q.addBindValue(k);
         if (!q.exec())
@@ -276,7 +470,7 @@ Plan plan(const QVector<QStringList> &rows, int headerIdx, const QList<int> &rol
             marks << QStringLiteral("?");
         QSqlQuery q;
         q.prepare(QStringLiteral("SELECT b.barcode, %1 FROM product_barcodes b JOIN products p ON p.id = b.product_id WHERE b.barcode IN (%2)")
-                      .arg(QLatin1String(kProductCols), marks.join(QLatin1Char(','))));
+                      .arg(kProductCols, marks.join(QLatin1Char(','))));
         for (const QString &c : part)
             q.addBindValue(c);
         if (!q.exec())
@@ -387,6 +581,23 @@ Plan plan(const QVector<QStringList> &rows, int headerIdx, const QList<int> &rol
                 }
             }
         }
+        QMap<QString, QString> wantYm;
+        for (const YmField &f : kYmFields) {
+            const int c = col(f.role);
+            if (c < 0)
+                continue;
+            const QString raw = cleanText(l.row.value(c));
+            if (raw.isEmpty())
+                continue;
+            QString why;
+            const QString v = parseYm(QLatin1String(f.field), raw, &why);
+            if (!why.isEmpty()) {
+                if (problem.isEmpty())
+                    problem = QStringLiteral("Строка %1: «%2» - %3").arg(l.n).arg(fieldLabel(QLatin1String(f.field)), why);
+                continue;
+            }
+            wantYm.insert(QLatin1String(f.field), v);
+        }
         if (!problem.isEmpty()) {
             fail(problem);
             continue;
@@ -436,6 +647,14 @@ Plan plan(const QVector<QStringList> &rows, int headerIdx, const QList<int> &rol
                     item.changes << Change{f, fieldLabel(f), curText(f), want.value(f)};
             if (wantPrice && std::abs(*wantPrice - cur.price) >= 0.005)
                 item.changes << Change{QStringLiteral("price"), fieldLabel(QStringLiteral("price")), fmtPrice(cur.price), fmtPrice(*wantPrice)};
+            for (const YmField &f : kYmFields) {
+                const QString field = QLatin1String(f.field);
+                if (!wantYm.contains(field))
+                    continue;
+                const QString now = currentYm(field, cur.market);
+                if (wantYm.value(field) != now)
+                    item.changes << Change{field, fieldLabel(field), now, wantYm.value(field)};
+            }
             if (!add.isEmpty()) {
                 QSet<QString> uniq;
                 for (const QString &c : add)
@@ -473,6 +692,7 @@ Plan plan(const QVector<QStringList> &rows, int headerIdx, const QList<int> &rol
             item.createMarketSku = want.value(QStringLiteral("market_sku"));
             item.createCustomCode = want.value(QStringLiteral("custom_code"));
             item.createPrice = wantPrice.value_or(0);
+            item.createYm = wantYm;
             item.name = item.createName;
             item.newCodes = add;
             for (const QString &c : add)
@@ -522,17 +742,22 @@ bool apply(const QVector<QStringList> &rows, int headerIdx, const QList<int> &ro
     if (!p.fatal.isEmpty())
         return refuse(p.fatal);
 
-    QList<const Item *> upd, withCodes;
+    QList<const Item *> upd, withCodes, ymUpd;
     QList<int> backupIds;
     for (const Item &it : std::as_const(p.items)) {
         if (it.status != QLatin1String("update"))
             continue;
-        bool dataChange = false;
-        for (const Change &c : it.changes)
-            if (c.field != QLatin1String("barcodes"))
+        bool dataChange = false, ymChange = false;
+        for (const Change &c : it.changes) {
+            if (c.field.startsWith(QLatin1String("ym_")))
+                ymChange = true;
+            else if (c.field != QLatin1String("barcodes"))
                 dataChange = true;
+        }
         if (dataChange)
             upd << &it;
+        if (ymChange)
+            ymUpd << &it;
         if (!it.newCodes.isEmpty())
             withCodes << &it;
         if (!backupIds.contains(it.id))
@@ -583,6 +808,20 @@ bool apply(const QVector<QStringList> &rows, int headerIdx, const QList<int> &ro
         }
         if (!q.exec())
             return refuse(q.lastError().text());
+    }
+
+    {
+        QList<QPair<int, QMap<QString, QString>>> ymRows;
+        for (const Item *it : std::as_const(ymUpd)) {
+            QMap<QString, QString> values;
+            for (const Change &c : it->changes)
+                if (c.field.startsWith(QLatin1String("ym_")))
+                    values.insert(c.field, c.to);
+            ymRows.append({it->id, values});
+        }
+        QString ymError;
+        if (!writeYm(ymRows, &ymError))
+            return refuse(ymError);
     }
 
     auto linkCodes = [&](const QList<QPair<QString, int>> &pairs, int n) -> bool {
@@ -647,15 +886,21 @@ bool apply(const QVector<QStringList> &rows, int headerIdx, const QList<int> &ro
         while (q.next())
             newIds.insert(q.value(1).toString(), q.value(0).toInt());
         QList<QPair<QString, int>> codePairs;
+        QList<QPair<int, QMap<QString, QString>>> ymRows;
         for (const Item *it : part) {
             if (!newIds.contains(it->sku)) {
                 res.problems << Problem{it->n, QStringLiteral("товар «%1» за это время уже создали - пропущен").arg(it->sku)};
                 continue;
             }
             ++created;
+            if (!it->createYm.isEmpty())
+                ymRows.append({newIds.value(it->sku), it->createYm});
             for (const QString &c : it->newCodes)
                 codePairs << qMakePair(c, newIds.value(it->sku));
         }
+        QString ymError;
+        if (!writeYm(ymRows, &ymError))
+            return refuse(ymError);
         if (!codePairs.isEmpty() && !linkCodes(codePairs, 0))
             return refuse(QStringLiteral("Не удалось привязать штрихкоды"));
     }
@@ -666,6 +911,8 @@ bool apply(const QVector<QStringList> &rows, int headerIdx, const QList<int> &ro
     for (const Item *it : std::as_const(upd))
         changed.insert(it->id);
     for (const Item *it : std::as_const(withCodes))
+        changed.insert(it->id);
+    for (const Item *it : std::as_const(ymUpd))
         changed.insert(it->id);
     res.updated = int(changed.size());
     res.created = created;

@@ -50,6 +50,30 @@ struct MarketCard
     QDateTime updatedAt;
 };
 
+// Параметры карточки Яндекс Маркета у самого товара (столбцы market_* таблицы products): бренд, страны, габариты и вес
+// упаковки, ТН ВЭД, теги, 18+, категория Маркета и её характеристики. Из них собираются карточки Маркета
+// (MarketCards::createFromProducts / refillFromProducts), а данные карточки можно записать обратно в товар.
+struct ProductMarketInfo
+{
+    QString vendor;
+    QStringList countries;
+    double lengthCm = 0, widthCm = 0, heightCm = 0, weightKg = 0;
+    QString commodityCode; // ТН ВЭД
+    QStringList tags;
+    bool adult = false;
+    qint64 categoryId = 0;
+    QString categoryName;
+    QMap<qint64, QList<MarketParamValue>> params; // характеристики категории
+
+    bool hasPack() const { return lengthCm > 0 || widthCm > 0 || heightCm > 0 || weightKg > 0; }
+    // Ничего не заполнено.
+    bool isEmpty() const
+    {
+        return vendor.isEmpty() && countries.isEmpty() && !hasPack() && commodityCode.isEmpty() && tags.isEmpty() && !adult &&
+               categoryId <= 0 && categoryName.isEmpty() && params.isEmpty();
+    }
+};
+
 namespace MarketCards {
 
 // Какие данные взять из базы в карточку.
@@ -59,8 +83,11 @@ enum Field {
     FBarcodes = 4,
     FPrice = 8,
     FPhotos = 16,
-    FVendor = 32,    // бренд (по названию) и код производителя (наш артикул), если они пусты
-    FAll = 63
+    FVendor = 32,    // бренд (из товара, а если там пусто - по названию, если у карточки пуст) и код производителя (наш артикул)
+    FPack = 64,      // габариты и вес упаковки (если заданы у товара)
+    FCategory = 128, // категория Маркета и характеристики (если категория задана у товара)
+    FDetails = 256,  // страны, ТН ВЭД, теги и 18+ (то, что заполнено у товара)
+    FAll = 511
 };
 
 // Данные нашего товара, нужные для карточки.
@@ -73,6 +100,7 @@ struct ProductData {
     double price = 0;
     QStringList barcodes;
     QStringList photoLinks;
+    ProductMarketInfo market; // параметры для карточки Маркета, заданные у самого товара
 };
 
 QList<MarketCard> loadAll(int accountId, QString *error = nullptr);
@@ -90,6 +118,11 @@ QList<MarketCard> createFromProducts(int accountId, const QList<int> &productIds
 // Обновляет данные нескольких карточек из базы (только выбранные поля) и сохраняет их.
 bool refillFromProducts(const QList<MarketCard *> &cards, int fields, const QString &siteUrl, QStringList *notes,
                         QString *error);
+// Записывает в связанные товары то, что заполнено в карточках: бренд, страны, габариты и вес, ТН ВЭД, теги, 18+, категорию
+// и характеристики. Пустое в карточке не стирает заполненное в товаре. *written - сколько товаров обновлено;
+// *notes - карточки без товара и т. п.
+bool writeToProducts(const QList<const MarketCard *> &cards, int *written, QStringList *notes, QString *error);
+
 // Сохраняет (новую - вставляет и заполняет id). Артикул на Маркете в кабинете должен быть уникальным.
 bool save(MarketCard *card, QString *error);
 bool remove(const QList<int> &ids, QString *error);

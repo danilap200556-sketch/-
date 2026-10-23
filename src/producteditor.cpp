@@ -61,14 +61,15 @@ bool save(int productId, const Changes &c, QString *error)
         stockWrites = stockWrites || e.setCount || e.setLocation;
 
     QSqlQuery up;
-    up.prepare("UPDATE products SET sku = ?, name = ?, description = ?, price = ?, custom_code = ?, market_sku = ? "
-               "WHERE id = ?");
+    up.prepare(QStringLiteral("UPDATE products SET sku = ?, name = ?, description = ?, price = ?, custom_code = ?, market_sku = ?, %1 "
+                              "WHERE id = ?").arg(ProductMarket::updateAssignments()));
     up.addBindValue(d.sku.trimmed());
     up.addBindValue(d.name.trimmed());
     up.addBindValue(d.description);
     up.addBindValue(d.price);
     up.addBindValue(d.customCode);
     up.addBindValue(d.marketSku);
+    ProductMarket::bind(up, d.market);
     up.addBindValue(productId);
     const auto updateError = [&]() {
         return up.lastError().nativeErrorCode() == QLatin1String("23505")

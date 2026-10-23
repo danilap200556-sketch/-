@@ -18,6 +18,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QTableWidget;
 class QVBoxLayout;
+class ParamForm;
 
 // Карточки товаров для ассортимента Яндекс Маркета: список слева, все поля карточки справа, включая характеристики
 // выбранной категории (обязательные первыми). Карточки хранятся в базе как черновики; данные подставляются из товаров
@@ -41,6 +42,7 @@ private slots:
     void addBlank();
     void removeSelected();
     void refillFromDatabase();
+    void writeToProducts();
     void pullFromMarket();
     void checkOnMarket();
     void sendToMarket();
@@ -50,14 +52,6 @@ private slots:
     void applyFilter();
 
 private:
-    // Поле характеристики категории: виджет и функции чтения/записи значения.
-    struct ParamEditor {
-        MarketCategoryParam param;
-        QWidget *widget = nullptr;
-        std::function<QList<MarketParamValue>()> get;
-        std::function<void(const QList<MarketParamValue> &)> set;
-    };
-
     bool currentAccount(MarketAccount *acc) const;
     int currentCardIndex() const;
     QList<int> selectedCardIndexes() const;
@@ -69,7 +63,6 @@ private:
     // Сохраняет открытую карточку, если в ней что-то меняли.
     bool commitCurrent();
     void rebuildParams(const MarketCard &card, bool forceReload = false);
-    ParamEditor makeEditor(const MarketCategoryParam &p);
     QString siteUrl();
     void setStatus(const QString &text, bool error = false);
     void markDirty() { if (!m_loading) m_dirty = true; }
@@ -83,7 +76,6 @@ private:
     bool m_dirty = false;
     QJsonObject m_tree;
     QList<MarketCategoryParam> m_params;
-    QList<ParamEditor> m_editors;
 
     QComboBox *m_accountCombo;
     QLineEdit *m_search;
@@ -111,7 +103,7 @@ private:
     QLineEdit *m_tags;
     QCheckBox *m_adult;
     QGroupBox *m_paramsBox;
-    QFormLayout *m_paramsForm;
+    ParamForm *m_paramForm;
     QLabel *m_paramsHint;
     QLabel *m_cardState;
     QPushButton *m_pullProductBtn;

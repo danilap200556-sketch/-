@@ -1,4 +1,5 @@
 #include "productexport.h"
+#include "productmarket.h"
 
 #include <QDate>
 #include <QFileDialog>
@@ -20,6 +21,19 @@ namespace {
 QString price(double v)
 {
     QString s = QString::number(std::round(v * 100.0) / 100.0, 'f', 2);
+    if (s.contains(QLatin1Char('.'))) {
+        while (s.endsWith(QLatin1Char('0')))
+            s.chop(1);
+        if (s.endsWith(QLatin1Char('.')))
+            s.chop(1);
+    }
+    return s;
+}
+
+// 30.5, 12, 1.25 - без хвостовых нулей
+QString number(double v, int decimals)
+{
+    QString s = QString::number(v, 'f', decimals);
     if (s.contains(QLatin1Char('.'))) {
         while (s.endsWith(QLatin1Char('0')))
             s.chop(1);
@@ -74,6 +88,10 @@ Xlsx::Sheet build(const QList<int> *onlyIds)
     for (const QString &w : std::as_const(warehouseNames))
         head << QObject::tr("Остаток: %1").arg(w);
     head << QObject::tr("Места хранения") << QObject::tr("Фото, шт") << QObject::tr("Добавлен");
+    // Параметры для карточки Яндекс Маркета - в конце, чтобы прежние колонки остались на своих местах.
+    head << QObject::tr("Бренд") << QObject::tr("Страна производства") << QObject::tr("Длина, см") << QObject::tr("Ширина, см")
+         << QObject::tr("Высота, см") << QObject::tr("Вес, кг") << QObject::tr("ТН ВЭД") << QObject::tr("Теги") << QObject::tr("18+")
+         << QObject::tr("Категория Маркета (ID)") << QObject::tr("Категория Маркета");
     sheet.rows.append(head);
 
     const int n = int(warehouseIds.size());
@@ -81,17 +99,18 @@ Xlsx::Sheet build(const QList<int> *onlyIds)
     for (int i = 0; i < n; ++i)
         sheet.numericColumns << 8 + i;
     sheet.numericColumns << 9 + n;
+    sheet.numericColumns << 13 + n << 14 + n << 15 + n << 16 + n << 20 + n; // длина, ширина, высота, вес, ID категории
     sheet.columnWidths = {22, 45, 40, 11, 22, 16, 30, 12};
     for (int i = 0; i < n; ++i)
         sheet.columnWidths << 14;
-    sheet.columnWidths << 28 << 9 << 12;
+    sheet.columnWidths << 28 << 9 << 12 << 16 << 22 << 10 << 10 << 10 << 9 << 14 << 20 << 6 << 14 << 28;
 
     QSqlQuery q("SELECT p.id, p.sku, p.name, COALESCE(p.description, ''), p.price::float8, COALESCE(p.market_sku, ''), "
                 "COALESCE(p.custom_code, ''), p.created_at, "
                 "COALESCE((SELECT string_agg(b.barcode, '; ' ORDER BY b.created_at, b.barcode) "
                 "         FROM product_barcodes b WHERE b.product_id = p.id), ''), "
-                "(SELECT COUNT(*) FROM product_photos ph WHERE ph.product_id = p.id) "
-                "FROM products p ORDER BY p.sku");
+                "(SELECT COUNT(*) FROM product_photos ph WHERE ph.product_id = p.id), " + ProductMarket::selectColumns(QStringLiteral("p.")) +
+                " FROM products p ORDER BY p.sku");
     while (q.next()) {
         const int id = q.value(0).toInt();
         if (onlyIds && !wanted.contains(id))
@@ -112,6 +131,10 @@ Xlsx::Sheet build(const QList<int> *onlyIds)
             << QString::number(q.value(9).toInt());
         const QDateTime created = q.value(7).toDateTime();
         row << (created.isValid() ? created.toLocalTime().date().toString(QStringLiteral("yyyy-MM-dd")) : QString());
+        const ProductMarketInfo m = ProductMarket::fromRow(q, 10);
+        row << m.vendor << m.countries.join(QStringLiteral("; ")) << number(m.lengthCm, 2) << number(m.widthCm, 2) << number(m.heightCm, 2)
+            << number(m.weightKg, 3) << m.commodityCode << m.tags.join(QStringLiteral("; ")) << (m.adult ? QObject::tr("да") : QObject::tr("нет"))
+            << (m.categoryId > 0 ? QString::number(m.categoryId) : QString()) << m.categoryName;
         sheet.rows.append(row);
     }
     return sheet;
@@ -138,7 +161,8 @@ bool exportToFile(QWidget *parent, const QList<int> *onlyIds, const QString &not
         text += QStringLiteral(" (%1)").arg(note);
     QMessageBox::information(parent, QObject::tr("Готово"),
                              text + QObject::tr(".\n\nВ файле: артикул, название, описание, цена, артикул на Маркете, свой код, "
-                                                "штрихкоды, остатки по каждому складу, места хранения, число фото и дата добавления."));
+                                                "штрихкоды, остатки по каждому складу, места хранения, число фото, дата добавления и параметры для карточки "
+                                                "Яндекс Маркета (бренд, страна, габариты, вес, ТН ВЭД, теги, 18+, категория)."));
     return true;
 }
 

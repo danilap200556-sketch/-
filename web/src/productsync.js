@@ -1,16 +1,30 @@
 'use strict';
 const bc = require('./barcode');
 const { UserError } = require('./stock');
+const mi = require('./marketinfo');
 
-// Обновление данных товаров из Excel/CSV: название, описание, цена, артикул на Маркете, свой код, штрихкоды.
+// Обновление данных товаров из Excel/CSV: название, описание, цена, артикул на Маркете, свой код, штрихкоды и параметры
+// для карточки Яндекс Маркета (бренд, страна, габариты и вес, ТН ВЭД, теги, 18+).
 // Остатки не затрагиваются. Те же правила и тексты, что у диалога «Обновить товары из Excel» в приложении
 // (src/productsync.cpp). Шаги: plan() - что изменится (ничего не пишет), apply() - записать одной транзакцией.
 
-const ROLES = { ignore: 0, key: 1, barcode: 2, name: 3, description: 4, price: 5, market_sku: 6, custom_code: 7 };
+const ROLES = {
+  ignore: 0, key: 1, barcode: 2, name: 3, description: 4, price: 5, market_sku: 6, custom_code: 7,
+  vendor: 8, countries: 9, length: 10, width: 11, height: 12, weight: 13, commodity: 14, tags: 15, adult: 16,
+};
+// роль колонки -> поле параметров для Маркета (то же, что в marketinfo.FIELDS и в приложении)
+const YM_ROLE = new Map([[ROLES.vendor, 'ym_vendor'], [ROLES.countries, 'ym_countries'], [ROLES.length, 'ym_length'], [ROLES.width, 'ym_width'],
+  [ROLES.height, 'ym_height'], [ROLES.weight, 'ym_weight'], [ROLES.commodity, 'ym_commodity'], [ROLES.tags, 'ym_tags'], [ROLES.adult, 'ym_adult']]);
 const ROLE_LABELS = ['— пропустить —', 'Артикул (по нему ищем товар)', 'Штрихкод (тоже ищет товар; новый код привяжется)',
-  'Название', 'Описание', 'Цена', 'Артикул на Маркете', 'Свой код (для QR-этикеток)'];
-const FIELD = { name: 'Название', description: 'Описание', price: 'Цена', market_sku: 'Артикул на Маркете', custom_code: 'Свой код', barcodes: 'Штрихкоды' };
+  'Название', 'Описание', 'Цена', 'Артикул на Маркете', 'Свой код (для QR-этикеток)', 'Бренд (для карточки Маркета)',
+  'Страна производства (через «;»)', 'Длина упаковки, см', 'Ширина упаковки, см', 'Высота упаковки, см', 'Вес упаковки, кг', 'ТН ВЭД',
+  'Теги (через «;»)', 'Для взрослых 18+ (да/нет)'];
+const FIELD = {
+  name: 'Название', description: 'Описание', price: 'Цена', market_sku: 'Артикул на Маркете', custom_code: 'Свой код', barcodes: 'Штрихкоды',
+  ...Object.fromEntries(mi.FIELDS.map((f) => [f.field, f.label])),
+};
 const LIMITS = { name: 300, description: 2000, market_sku: 200, custom_code: 200 };
+const isYm = (field) => field.startsWith('ym_');
 const MAX_ROWS = 20_000;
 const MAX_PRICE = 10_000_000;
 const CLEARABLE = ['description', 'market_sku', 'custom_code'];
@@ -20,10 +34,19 @@ const CLEARABLE = ['description', 'market_sku', 'custom_code'];
 function guessRole(header) {
   const h = String(header ?? '').toLowerCase().trim();
   if (!h) return ROLES.ignore;
-  if (h.startsWith('остаток') || h.startsWith('всего') || h.startsWith('места') || h.startsWith('фото') || h.startsWith('добавлен')) return ROLES.ignore;
+  if (h.startsWith('остаток') || h.startsWith('всего') || h.startsWith('места') || h.startsWith('фото') || h.startsWith('добавлен') || h.startsWith('категори')) return ROLES.ignore;
   if (h.includes('штрих') || h.includes('ean') || h.includes('barcode')) return ROLES.barcode;
   if (h.includes('на маркет') || h.includes('market') || h.includes('offer')) return ROLES.market_sku;
   if (h.includes('свой код') || h.includes('custom') || h.includes('qr')) return ROLES.custom_code;
+  if (h.includes('бренд') || h.includes('brand') || h.includes('vendor')) return ROLES.vendor;
+  if (h.includes('страна') || h.includes('country')) return ROLES.countries;
+  if (h.includes('длина') || h.includes('length')) return ROLES.length;
+  if (h.includes('ширина') || h.includes('width')) return ROLES.width;
+  if (h.includes('высота') || h.includes('height')) return ROLES.height;
+  if (h.startsWith('вес') || h.includes('weight')) return ROLES.weight;
+  if (h.includes('тн вэд') || h.includes('твэд') || h.includes('tnved') || h.includes('commodity')) return ROLES.commodity;
+  if (h === 'теги' || h === 'tags' || h === 'тег') return ROLES.tags;
+  if (h === '18+' || h.includes('взросл') || h.includes('adult')) return ROLES.adult;
   if (h.includes('артикул') || h.includes('sku') || h.includes('ключ')) return ROLES.key;
   if (h.includes('наимен') || h.includes('назв') || h === 'name') return ROLES.name;
   if (h.includes('описан') || h.includes('descr')) return ROLES.description;
@@ -73,13 +96,18 @@ const fmtPrice = (n) => String(Math.round((Number(n) || 0) * 100) / 100);
 async function plan(q, opts) {
   const { rows, headerIdx, roles, createMissing = false, clearEmpty = false } = opts;
   const out = { fatal: null, items: [], stats: { rows: 0, update: 0, same: 0, create: 0, missing: 0, error: 0 }, problems: [] };
-  const col = (role) => roles.indexOf(role);
+  const ymOn = await mi.supported(q);
+  // параметры для Маркета: пока приложение не создало столбцы в базе, такие колонки файла пропускаются
+  const col = (role) => (YM_ROLE.has(role) && !ymOn ? -1 : roles.indexOf(role));
   const seen = new Set();
   for (const r of roles) { if (r !== ROLES.ignore) { if (seen.has(r)) { out.fatal = `Роль «${ROLE_LABELS[r]}» назначена нескольким колонкам - оставьте её одной колонке`; return out; } seen.add(r); } }
   const keyCol = col(ROLES.key); const codeCol = col(ROLES.barcode);
   if (keyCol < 0 && codeCol < 0) { out.fatal = 'Укажите колонку «Артикул» (или «Штрихкод»): по ней ищется товар'; return out; }
   const dataRoles = [ROLES.name, ROLES.description, ROLES.price, ROLES.market_sku, ROLES.custom_code];
-  if (!dataRoles.some((r) => col(r) >= 0) && codeCol < 0) { out.fatal = 'Не выбрано, что обновлять: укажите хотя бы одну колонку - название, описание, цену, артикул на Маркете, свой код или штрихкод'; return out; }
+  if (!dataRoles.some((r) => col(r) >= 0) && ![...YM_ROLE.keys()].some((r) => col(r) >= 0) && codeCol < 0) {
+    out.fatal = 'Не выбрано, что обновлять: укажите хотя бы одну колонку - название, описание, цену, артикул на Маркете, свой код, штрихкод или параметры для Маркета (бренд, габариты и т. д.)';
+    return out;
+  }
   const body = rows.slice(headerIdx + 1);
   if (body.length > MAX_ROWS + 5000) { out.fatal = `Слишком много строк (больше ${MAX_ROWS}) - разбейте файл на части`; return out; }
 
@@ -99,7 +127,7 @@ async function plan(q, opts) {
   const keys = [...new Set(lines.map((l) => l.key).filter(Boolean))];
   const codes = [...new Set(lines.flatMap((l) => l.codes))];
   const bySku = new Map(); const byCode = new Map(); const ownCodes = new Map();
-  const PRODUCT_COLS = `p.id, p.sku, p.name, COALESCE(p.description, '') AS description, p.price::float8 AS price, COALESCE(p.market_sku, '') AS market_sku, COALESCE(p.custom_code, '') AS custom_code`;
+  const PRODUCT_COLS = `p.id, p.sku, p.name, COALESCE(p.description, '') AS description, p.price::float8 AS price, COALESCE(p.market_sku, '') AS market_sku, COALESCE(p.custom_code, '') AS custom_code${ymOn ? `, ${mi.SELECT_SQL}` : ''}`;
   const products = new Map();
   for (let i = 0; i < keys.length; i += 1000) {
     const r = await q.query(`SELECT k.key, ${PRODUCT_COLS} FROM unnest($1::text[]) AS k(key) JOIN products p ON lower(p.sku) = lower(k.key)`, [keys.slice(i, i + 1000)]);
@@ -157,6 +185,14 @@ async function plan(q, opts) {
         else want.price = p;
       }
     }
+    const wantYm = {};
+    for (const [role, field] of YM_ROLE) {
+      const c = col(role); if (c < 0) continue;
+      const raw = cleanText(l.row[c]); if (raw === '') continue;
+      const r = mi.parse(mi.BY_FIELD.get(field), raw);
+      if (r.why) { problem = problem || `Строка ${l.n}: «${FIELD[field]}» - ${r.why}`; continue; }
+      wantYm[field] = r.value;
+    }
     if (problem) { fail(item, problem); continue; }
     for (const c of l.codes) {
       const bad = bc.validate(c);
@@ -177,6 +213,11 @@ async function plan(q, opts) {
         if (f in want && want[f] !== cleanText(cur[f])) item.changes.push({ field: f, label: FIELD[f], from: cur[f] ?? '', to: want[f] });
       }
       if ('price' in want && Math.abs(want.price - Number(cur.price)) >= 0.005) item.changes.push({ field: 'price', label: FIELD.price, from: fmtPrice(cur.price), to: fmtPrice(want.price) });
+      for (const f of mi.FIELDS) {
+        if (!(f.field in wantYm)) continue;
+        const now = mi.shown(f, cur);
+        if (wantYm[f.field] !== now) item.changes.push({ field: f.field, label: FIELD[f.field], from: now, to: wantYm[f.field] });
+      }
       if (add.length) { item.newCodes = [...new Set(add)]; item.changes.push({ field: 'barcodes', label: FIELD.barcodes, from: '', to: item.newCodes.join(', ') }); item.newCodes.forEach((c) => claimed.set(c, l.n)); }
       doneProduct.set(pid, l.n);
       item.status = item.changes.length ? 'update' : 'same';
@@ -186,7 +227,7 @@ async function plan(q, opts) {
       const add = [...new Set(l.codes)];
       const clash = add.find((c) => claimed.has(c));
       if (clash) { fail(item, `Строка ${l.n}: штрихкод ${clash} уже указан в строке ${claimed.get(clash)}`); continue; }
-      item.create = { sku: l.key, name: want.name || l.key, description: want.description ?? '', price: want.price ?? 0, market_sku: want.market_sku ?? '', custom_code: want.custom_code ?? '' };
+      item.create = { sku: l.key, name: want.name || l.key, description: want.description ?? '', price: want.price ?? 0, market_sku: want.market_sku ?? '', custom_code: want.custom_code ?? '', ym: wantYm };
       item.name = item.create.name; item.newCodes = add; add.forEach((c) => claimed.set(c, l.n)); newSkus.set(l.key.toLowerCase(), l.n);
       item.status = 'create';
     } else {
@@ -207,9 +248,10 @@ async function apply(db, opts) {
   return db.tx(async (c) => {
     const p = await plan(c, opts);
     if (p.fatal) throw new UserError(p.fatal);
-    const upd = p.items.filter((i) => i.status === 'update' && i.changes.some((ch) => ch.field !== 'barcodes'));
+    const upd = p.items.filter((i) => i.status === 'update' && i.changes.some((ch) => ch.field !== 'barcodes' && !isYm(ch.field)));
+    const ymUpd = p.items.filter((i) => i.status === 'update' && i.changes.some((ch) => isYm(ch.field)));
     const withCodes = p.items.filter((i) => i.status === 'update' && i.newCodes.length);
-    const backupIds = [...new Set([...upd, ...withCodes].map((i) => i.id))];
+    const backupIds = [...new Set([...upd, ...ymUpd, ...withCodes].map((i) => i.id))];
     const backup = backupIds.length ? await productTable(c, { ids: backupIds }) : null;
     const problems = p.problems.slice();
 
@@ -225,6 +267,24 @@ async function apply(db, opts) {
           part.map((it) => { const v = val(it, 'price'); return v === null ? null : Number(v); }),
           part.map((it) => val(it, 'market_sku')), part.map((it) => val(it, 'custom_code'))]);
     }
+    // параметры для Маркета: одним запросом (JSON), в строке только изменённые поля
+    const writeYm = async (rows) => {
+      for (let i = 0; i < rows.length; i += 500) {
+        const part = rows.slice(i, i + 500).map(([id, values]) => ({
+          id, c: Object.fromEntries(Object.entries(values).map(([field, v]) => {
+            const f = mi.BY_FIELD.get(field); const col = mi.toColumn(f, v);
+            return [f.col, typeof col === 'number' ? String(col) : (typeof col === 'boolean' ? String(col) : col)];
+          })),
+        }));
+        const set = mi.FIELDS.map((f) => {
+          const raw = `j.c->>'${f.col}'`;
+          const expr = f.kind === 'size' || f.kind === 'weight' ? `(${raw})::numeric` : (f.kind === 'bool' ? `(${raw})::boolean` : raw);
+          return `${f.col} = CASE WHEN jsonb_exists(j.c, '${f.col}') THEN ${expr} ELSE p.${f.col} END`;
+        }).join(', ');
+        await c.query(`UPDATE products p SET ${set} FROM jsonb_to_recordset($1::jsonb) AS j(id int, c jsonb) WHERE p.id = j.id`, [JSON.stringify(part)]);
+      }
+    };
+    await writeYm(ymUpd.map((it) => [it.id, Object.fromEntries(it.changes.filter((ch) => isYm(ch.field)).map((ch) => [ch.field, ch.to]))]));
     const linkCodes = async (pairs, n) => {
       if (!pairs.length) return;
       const r = await c.query('INSERT INTO product_barcodes (barcode, product_id) SELECT * FROM unnest($1::text[], $2::int[]) ON CONFLICT (barcode) DO NOTHING RETURNING barcode',
@@ -243,9 +303,10 @@ async function apply(db, opts) {
          ON CONFLICT (sku) DO NOTHING RETURNING id`, [cr.sku, cr.name, cr.description, cr.price, cr.custom_code, cr.market_sku]);
       if (!r.rowCount) { problems.push({ n: it.n, text: `товар «${cr.sku}» за это время уже создали - пропущен` }); continue; }
       created++;
+      if (cr.ym && Object.keys(cr.ym).length) await writeYm([[r.rows[0].id, cr.ym]]);
       await linkCodes(it.newCodes.map((code) => [code, r.rows[0].id]), it.n);
     }
-    return { stats: { ...p.stats, create: created }, problems, backup, updated: new Set([...upd, ...withCodes].map((i) => i.id)).size, created };
+    return { stats: { ...p.stats, create: created }, problems, backup, updated: new Set([...upd, ...ymUpd, ...withCodes].map((i) => i.id)).size, created };
   });
 }
 

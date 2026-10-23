@@ -1,5 +1,6 @@
 #include "marketcards.h"
 #include "barcode.h"
+#include "productmarket.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -355,8 +356,8 @@ QHash<int, ProductData> loadProducts(const QList<int> &ids, const QString &siteU
     for (int start = 0; start < ids.size(); start += kChunk) {
         const QList<int> part = ids.mid(start, kChunk);
         QSqlQuery q;
-        q.prepare(QStringLiteral("SELECT id, sku, name, COALESCE(description, ''), price::float8, COALESCE(market_sku, '') "
-                                 "FROM products WHERE id IN (%1)").arg(marks(part.size())));
+        q.prepare(QStringLiteral("SELECT id, sku, name, COALESCE(description, ''), price::float8, COALESCE(market_sku, ''), %2 "
+                                 "FROM products WHERE id IN (%1)").arg(marks(part.size()), ProductMarket::selectColumns()));
         for (int id : part)
             q.addBindValue(id);
         if (q.exec()) {
@@ -368,6 +369,7 @@ QHash<int, ProductData> loadProducts(const QList<int> &ids, const QString &siteU
                 d.description = q.value(3).toString();
                 d.price = qRound(q.value(4).toDouble() * 100) / 100.0;
                 d.marketSku = q.value(5).toString();
+                d.market = ProductMarket::fromRow(q, 6);
                 result.insert(d.id, d);
             }
         }
@@ -410,10 +412,33 @@ void applyProduct(MarketCard *c, const ProductData &d, int fields)
     if (fields & FBarcodes)
         c->barcodes = d.barcodes;
     if (fields & FVendor) {
-        if (c->vendor.trimmed().isEmpty())
+        if (!d.market.vendor.isEmpty()) // бренд задан у товара - он главный
+            c->vendor = d.market.vendor;
+        else if (c->vendor.trimmed().isEmpty())
             c->vendor = guessVendor(d.name);
         if (c->vendorCode.trimmed().isEmpty())
             c->vendorCode = d.sku;
+    }
+    if ((fields & FPack) && d.market.hasPack()) {
+        c->lengthCm = d.market.lengthCm;
+        c->widthCm = d.market.widthCm;
+        c->heightCm = d.market.heightCm;
+        c->weightKg = d.market.weightKg;
+    }
+    if ((fields & FCategory) && d.market.categoryId > 0) {
+        c->categoryId = d.market.categoryId;
+        c->categoryName = d.market.categoryName;
+        c->params = d.market.params;
+    }
+    if (fields & FDetails) {
+        if (!d.market.countries.isEmpty())
+            c->countries = d.market.countries;
+        if (!d.market.commodityCode.isEmpty())
+            c->commodityCode = d.market.commodityCode;
+        if (!d.market.tags.isEmpty())
+            c->tags = d.market.tags;
+        if (d.market.adult)
+            c->adult = true;
     }
     if ((fields & FPhotos) && !d.photoLinks.isEmpty())
         c->pictures = d.photoLinks;
@@ -516,6 +541,62 @@ bool refillFromProducts(const QList<MarketCard *> &cards, int fields, const QStr
         changed << c;
     }
     return saveMany(changed, true, nullptr, error);
+}
+
+bool writeToProducts(const QList<const MarketCard *> &cards, int *written, QStringList *notes, QString *error)
+{
+    if (written)
+        *written = 0;
+    QList<int> ids;
+    for (const MarketCard *c : cards)
+        if (c->productId > 0 && !ids.contains(c->productId))
+            ids << c->productId;
+    QHash<int, ProductMarketInfo> have = ProductMarket::loadMany(ids, error);
+    if (error && !error->isEmpty())
+        return false;
+    QList<QPair<int, ProductMarketInfo>> updates;
+    QSet<int> done;
+    for (const MarketCard *c : cards) {
+        if (c->productId <= 0 || !have.contains(c->productId)) {
+            if (notes)
+                *notes << QStringLiteral("%1: нет связанного товара в базе - пропущена").arg(c->offerId);
+            continue;
+        }
+        if (done.contains(c->productId)) {
+            if (notes)
+                *notes << QStringLiteral("%1: у товара уже взяты данные другой карточки - пропущена").arg(c->offerId);
+            continue;
+        }
+        done.insert(c->productId);
+        ProductMarketInfo m = have.value(c->productId);
+        if (!c->vendor.trimmed().isEmpty())
+            m.vendor = c->vendor.trimmed();
+        if (!c->countries.isEmpty())
+            m.countries = c->countries;
+        if (c->lengthCm > 0 || c->widthCm > 0 || c->heightCm > 0 || c->weightKg > 0) {
+            m.lengthCm = c->lengthCm;
+            m.widthCm = c->widthCm;
+            m.heightCm = c->heightCm;
+            m.weightKg = c->weightKg;
+        }
+        if (!c->commodityCode.trimmed().isEmpty())
+            m.commodityCode = c->commodityCode.trimmed();
+        if (!c->tags.isEmpty())
+            m.tags = c->tags;
+        if (c->adult)
+            m.adult = true;
+        if (c->categoryId > 0) {
+            m.categoryId = c->categoryId;
+            m.categoryName = c->categoryName;
+            m.params = c->params;
+        }
+        updates.append({c->productId, m});
+    }
+    if (!ProductMarket::saveMany(updates, error))
+        return false;
+    if (written)
+        *written = int(updates.size());
+    return true;
 }
 
 QString describeCardStatus(const QString &s)
