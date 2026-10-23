@@ -3,6 +3,8 @@ const crypto = require('crypto');
 const { html } = require('../html');
 const { csrfField } = require('../layout');
 const batch = require('../batch');
+const docs = require('../documents');
+const ops = require('../stock');
 const { parseId, str } = require('../util');
 const { thumbImg } = require('../views');
 
@@ -101,7 +103,7 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
 
     let result;
     try {
-      result = await batch.apply(db, form.lines, kind, wid, form.comment);
+      result = await batch.apply(db, form.lines, kind, wid, form.comment, req.ctx.user.username);
     } catch (e) {
       tokens.set(token, t); // ничего не выполнено - можно повторить
       if (e.code === '22003') return view(req, res, { form, error: 'Слишком большое число в остатке', status: 400, token });
@@ -112,6 +114,11 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
       const prep = await batch.prepare(db, form.lines, kind, wid);
       prep.problems = result.problems.length ? result.problems : prep.problems;
       return view(req, res, { form, prep, error: 'Ничего не выполнено: в списке есть ошибки.', status: 409, token });
+    }
+    const docNo = (await ops.docsSupported(db)) ? await docs.idByKey(db, result.doc) : 0;
+    if (docNo) {
+      res.flash('ok', `${KINDS[kind]}: ${result.items.length} поз., ${result.totalQty} шт, склад «${warehouse.name}». Создан документ №${docNo}: открыть и при ошибке отменить целиком его можно в разделе «Документы».`);
+      return res.redirect(`/documents/${docNo}`);
     }
     res.flash('ok', `${KINDS[kind]}: ${result.items.length} поз., ${result.totalQty} шт, склад «${warehouse.name}». Подробности - в журнале.`);
     res.redirect('/movements');

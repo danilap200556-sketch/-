@@ -6,6 +6,7 @@ const ICONS = {
   stock: '<path d="M4 20h16M5 20v-8h3.6v8M10.2 20V7h3.6v13M15.4 20V3.5H19V20"/>',
   products: '<path d="M12 3.5l7.5 4.2v8.6L12 20.5l-7.5-4.2V7.7zM4.5 7.7L12 12l7.5-4.3M12 12v8.5"/>',
   warehouses: '<path d="M3.5 10L12 4l8.5 6v10h-17zM9 20v-7h6v7"/>',
+  documents: '<path d="M7 3.5h7.5L19 8v12.5H7zM14 3.5V8.5h5M9.8 12.5h6.4M9.8 16h6.4"/>',
   movements: '<path d="M4 8h13M13.5 4.5L17 8l-3.5 3.5M20 16H7M10.5 12.5L7 16l3.5 3.5"/>',
   import: '<path d="M12 3.5v11M7.8 10.5l4.2 4.2 4.2-4.2M4 14.5V20h16v-5.5"/>',
   orders: '<path d="M7 4.5h10a2 2 0 012 2V20H5V6.5a2 2 0 012-2zM9 4.5h6M8.5 11h7M8.5 14.5h7M8.5 18h4"/>',
@@ -23,6 +24,7 @@ function nav(ctx, active) {
     ['/products', 'Товары', 'products'],
     ['/warehouses', 'Склады', 'warehouses'],
     ['/movements', 'Движения', 'movements'],
+    ['/documents', 'Документы', 'documents'],
   ];
   items.push(['/import', ctx.user.read_only ? 'Экспорт' : 'Импорт / экспорт', 'import']);
   if (!ctx.user.read_only) items.push(['/orders', 'Заказы Маркета', 'orders']);

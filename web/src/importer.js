@@ -90,7 +90,7 @@ async function run(db, opts) {
   const asWriteOff = mode === 'writeoff';
   const createMissing = opts.createMissing && !asWriteOff;
   const comment = `импорт из ${fileName}`;
-  const doc = ops.newDoc(); // весь импорт - один документ: отменяется разом (журнал → «весь документ»)
+  const doc = ops.newDoc(asInventory ? 'inventory' : asWriteOff ? 'writeoff' : 'receipt', comment, opts.user); // весь импорт - один документ: отменяется разом
 
   const stats = { processed: 0, created: 0, updated: 0, skipped: 0, errors: 0, linked: 0 };
   const log = [];
@@ -191,6 +191,7 @@ async function run(db, opts) {
         for (const [code, pid] of local.newCodes) productByCode.set(code, pid);
       } catch (e) {
         await c.query('ROLLBACK TO SAVEPOINT row_sp');
+        ops.docRolledBack(doc); // строка документа могла откатиться вместе с этой строкой файла
         if (e instanceof ops.UserError || e.code === '23505' || e.code === '22003' || e.code === '23514') {
           stats.errors++;
           note(`Строка ${rowNo}: ошибка обновления остатка для «${key}»: ${e.message}`);
@@ -201,9 +202,11 @@ async function run(db, opts) {
     }
   });
   log.push('');
+  const docNo = (await ops.docsSupported(db)) ? (await db.query('SELECT id FROM stock_documents WHERE doc_key = $1', [doc.key])).rows[0]?.id : null;
+  if (docNo) log.push(`Создан документ №${docNo}: он виден в разделе «Документы», там же его можно отменить целиком.`);
   log.push(`Готово: обработано ${stats.processed}, создано товаров ${stats.created}, обновлено остатков ${stats.updated}, ` +
     `привязано штрихкодов ${stats.linked}, пропущено ${stats.skipped}, ошибок ${stats.errors}`);
-  return { stats, log };
+  return { stats, log, doc: docNo ?? null };
 }
 
 // Выгрузка остатков в том же виде, что в приложении: Артикул | Название | Склад | Остаток | Место хранения.

@@ -24,9 +24,12 @@ const MOVEMENT_STATUS_SQL = `m.doc_id, m.reverts_id,
   (SELECT r.id FROM stock_movements r WHERE r.reverts_id = m.id) AS reverted_by,
   CASE WHEN m.doc_id IS NULL THEN 1 ELSE (SELECT COUNT(*)::int FROM stock_movements d WHERE d.doc_id = m.doc_id AND d.type <> 'cancel') END AS doc_size`;
 
+// Номер документа записи (если в базе есть stock_documents): ссылка из журнала на раздел «Документы».
+const DOC_NO_SQL = '(SELECT d.id FROM stock_documents d WHERE d.doc_key = m.doc_id) AS doc_no';
+
 // Таблица журнала движений. cancelOn - сайт уже умеет отмену (в базе есть нужные столбцы);
 // редактор видит «Отменить» (и «весь документ», если операция из нескольких записей), «только просмотр» - статус.
-function movementTable(ctx, rows, { back = '/movements', cancelOn = false, withSku = true } = {}) {
+function movementTable(ctx, rows, { back = '/movements', cancelOn = false, withSku = true, docsOn = false } = {}) {
   const editor = !ctx.user.read_only;
   const action = (m) => {
     if (!cancelOn) return '';
@@ -44,9 +47,9 @@ function movementTable(ctx, rows, { back = '/movements', cancelOn = false, withS
     <tbody>${rows.map((m) => html`<tr class="${m.reverted_by ? 'cancelled' : ''}"><td class="muted">${m.id}</td><td>${fmtDate(m.created_at)}</td>
       ${withSku ? html`<td><a href="/products/${m.pid}">${m.sku}</a> ${editLink(ctx, m.pid, back)}</td>` : ''}
       <td>${m.wname}</td><td>${TYPE_LABELS[m.type] || m.type}</td>
-      <td class="num ${m.delta < 0 ? 'neg' : 'pos'}">${m.delta > 0 ? '+' : ''}${m.delta}</td><td>${m.comment}</td>${cancelOn ? html`<td class="actions">${action(m)}</td>` : ''}</tr>`)}
+      <td class="num ${m.delta < 0 ? 'neg' : 'pos'}">${m.delta > 0 ? '+' : ''}${m.delta}</td><td>${m.comment}${docsOn && m.doc_no ? html` <a class="muted" href="/documents/${m.doc_no}" title="Открыть документ">документ №${m.doc_no}</a>` : ''}</td>${cancelOn ? html`<td class="actions">${action(m)}</td>` : ''}</tr>`)}
       ${rows.length ? '' : html`<tr><td colspan="${cols}" class="muted">Движений не найдено</td></tr>`}</tbody>
   </table></div>`;
 }
 
-module.exports = { thumbImg, editLink, COVER_SQL, MOVEMENT_STATUS_SQL, movementTable };
+module.exports = { thumbImg, editLink, COVER_SQL, MOVEMENT_STATUS_SQL, DOC_NO_SQL, movementTable };

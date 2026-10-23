@@ -170,7 +170,7 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
     try {
       result = await imp.run(db, {
         rows: e.rows, headerIdx: Math.max(0, (parseInt(b.header, 10) || 1) - 1), roles, mode,
-        warehouseId: parseId(b.warehouse), createMissing: b.create_missing === '1', fileName: e.fileName,
+        warehouseId: parseId(b.warehouse), createMissing: b.create_missing === '1', fileName: e.fileName, user: req.ctx.user.username,
       });
     } catch (err) {
       if (!(err instanceof ops.UserError)) throw err;

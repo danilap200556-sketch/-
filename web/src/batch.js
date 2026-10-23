@@ -86,7 +86,7 @@ async function prepare(db, text, kind, warehouseId) {
 
 // Применяет всё одной транзакцией. Если хоть одна позиция не проходит - не меняется ничего.
 // -> { ok: true, items } | { ok: false, problems }
-async function apply(db, text, kind, warehouseId, comment) {
+async function apply(db, text, kind, warehouseId, comment, user = '') {
   let result;
   try {
     result = await db.tx(async (c) => {
@@ -94,7 +94,7 @@ async function apply(db, text, kind, warehouseId, comment) {
       if (prep.problems.length) return { ok: false, problems: prep.problems };
       // блокируем строки остатков в одном порядке (по товару), чтобы две партии не зашли в тупик
       const problems = [];
-      const doc = ops.newDoc(); // все позиции - один документ: отменяется разом
+      const doc = ops.newDoc(kind === 'writeoff' ? 'writeoff' : 'receipt', comment, user); // все позиции - один документ: отменяется разом
       for (const it of prep.items) {
         try {
           if (kind === 'writeoff') await ops.takeOut(c, it.id, warehouseId, it.qty, comment, 'writeoff', null, doc);
@@ -105,7 +105,7 @@ async function apply(db, text, kind, warehouseId, comment) {
         }
       }
       if (problems.length) throw Object.assign(new Error('batch-rollback'), { problems });
-      return { ok: true, items: prep.items, totalQty: prep.totalQty };
+      return { ok: true, items: prep.items, totalQty: prep.totalQty, doc: doc.key };
     });
   } catch (e) {
     if (e.problems) return { ok: false, problems: e.problems };

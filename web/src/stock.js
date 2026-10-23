@@ -21,9 +21,21 @@ function qty(value, { allowZero = false } = {}) {
   return n;
 }
 
-// Документ - группа записей журнала от одной операции (пакет, перемещение, импорт, правка карточки):
-// их можно отменить разом. У одиночных операций документа нет, запись отменяется сама по себе.
-const newDoc = () => crypto.randomUUID();
+// Документ - одна операция склада (приход, списание, перемещение, инвентаризация, импорт, отмена): внутри одна
+// или много записей журнала, номер виден в разделе «Документы», отменить можно целиком. Как и в приложении,
+// строка документа (stock_documents) создаётся вместе с первой записью, поэтому у неудавшейся операции номера нет.
+// doc = null - запись без документа (так работают старые вызовы и тесты).
+function newDoc(kind = 'other', comment = '', user = '') {
+  return {
+    key: crypto.randomUUID(),
+    kind,
+    comment: String(comment ?? '').trim().slice(0, 300),
+    user: String(user ?? '').trim().slice(0, 100),
+    saved: false,
+  };
+}
+// После ROLLBACK TO SAVEPOINT строка документа могла откатиться вместе с записью (импорт: строка = точка сохранения).
+const docRolledBack = (doc) => { if (doc) doc.saved = false; };
 
 // Столбцы журнала doc_id и reverts_id создаёт настольное приложение (свежая версия, один запуск с этой базой).
 // Пока их нет, сайт работает по-старому: записи без документа, отмены нет. Проверка - раз в 15 секунд,
@@ -41,14 +53,40 @@ async function cancelSupported(q) {
   cancelReady = r.rows[0].n === 2;
   return cancelReady;
 }
-const resetFeatureCache = () => { cancelReady = false; checkedAt = 0; };
+
+// Таблицу stock_documents создаёт настольное приложение при подключении (как и столбцы выше). Без неё записи
+// получают только doc_id, а раздел «Документы» показывает подсказку.
+let docsReady = false;
+let docsCheckedAt = 0;
+async function docsSupported(q) {
+  if (docsReady) return true;
+  const now = Date.now();
+  if (now - docsCheckedAt < 15_000) return false;
+  docsCheckedAt = now;
+  const r = await q.query(
+    `SELECT COUNT(*)::int AS n FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'stock_documents'`);
+  docsReady = r.rows[0].n === 1;
+  return docsReady;
+}
+const resetFeatureCache = () => { cancelReady = false; checkedAt = 0; docsReady = false; docsCheckedAt = 0; };
+
+// WHERE NOT EXISTS вместо ON CONFLICT: номер (identity) тратится только на реально создаваемую строку.
+async function ensureDoc(c, doc) {
+  if (doc.saved) return;
+  await c.query(
+    `INSERT INTO stock_documents (doc_key, kind, comment, username)
+     SELECT $1::text, $2::text, $3::text, $4::text WHERE NOT EXISTS (SELECT 1 FROM stock_documents WHERE doc_key = $1)`,
+    [doc.key, doc.kind, doc.comment, doc.user]);
+  doc.saved = true;
+}
 
 async function addMovement(c, productId, warehouseId, related, type, delta, comment, doc = null, reverts = null) {
   if (await cancelSupported(c)) {
+    if (doc && await docsSupported(c)) await ensureDoc(c, doc);
     await c.query(
       `INSERT INTO stock_movements (product_id, warehouse_id, related_warehouse_id, type, delta, comment, doc_id, reverts_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [productId, warehouseId, related, type, delta, comment, doc, reverts]);
+      [productId, warehouseId, related, type, delta, comment, doc ? doc.key : null, reverts]);
   } else {
     await c.query(
       `INSERT INTO stock_movements (product_id, warehouse_id, related_warehouse_id, type, delta, comment)
@@ -78,9 +116,8 @@ async function takeOut(c, productId, warehouseId, n, comment, type = 'writeoff',
   await addMovement(c, productId, warehouseId, related, type, -n, comment, doc);
 }
 
-async function transfer(c, productId, fromId, toId, n, comment) {
+async function transfer(c, productId, fromId, toId, n, comment, doc = newDoc('transfer', comment)) {
   if (fromId === toId) throw new UserError('Исходный и целевой склад совпадают');
-  const doc = newDoc();
   await takeOut(c, productId, fromId, n, comment, 'transfer_out', toId, doc);
   await receive(c, productId, toId, n, comment, 'transfer_in', fromId, doc);
 }
@@ -195,7 +232,7 @@ async function planCancel(q, ids, { lock = false } = {}) {
 
 // Отменяет записи ids одной транзакцией: либо все (с их парами по перемещению), либо ничего.
 // -> { rows } (то, что было отменено). Бросает CancelRefused со списком причин.
-async function cancel(db, ids, reason = '') {
+async function cancel(db, ids, reason = '', user = '') {
   const text = String(reason ?? '').trim().slice(0, 200);
   try {
     return await db.tx(async (c) => {
@@ -204,8 +241,8 @@ async function cancel(db, ids, reason = '') {
       }
       const plan = await planCancel(c, ids, { lock: true });
       if (plan.problems.length) throw new CancelRefused(plan.problems);
-      const doc = newDoc();
       const comment = text ? `Отмена: ${text}` : 'Отмена';
+      const doc = newDoc('cancel', comment, user);
       const sums = new Map();
       for (const r of plan.rows) {
         const k = `${r.product_id}:${r.warehouse_id}`;
@@ -218,7 +255,7 @@ async function cancel(db, ids, reason = '') {
           [e.pid, e.wid, e.sum]);
       }
       for (const r of plan.rows) await addMovement(c, r.product_id, r.warehouse_id, r.related_warehouse_id, 'cancel', -r.delta, comment, doc, r.id);
-      return { rows: plan.rows };
+      return { rows: plan.rows, doc: doc.key };
     });
   } catch (e) {
     // Две отмены одной записи одновременно: вторую останавливает уникальный индекс reverts_id.
@@ -228,6 +265,6 @@ async function cancel(db, ids, reason = '') {
 }
 
 module.exports = {
-  UserError, ValidationError, CancelRefused, qty, receive, takeOut, transfer, inventory, newDoc,
-  cancelSupported, resetFeatureCache, documentIds, planCancel, cancel, TYPE_LABELS, MAX_QTY,
+  UserError, ValidationError, CancelRefused, qty, receive, takeOut, transfer, inventory, newDoc, docRolledBack,
+  cancelSupported, docsSupported, resetFeatureCache, documentIds, planCancel, cancel, TYPE_LABELS, MAX_QTY,
 };

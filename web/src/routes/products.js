@@ -5,7 +5,7 @@ const bc = require('../barcode');
 const ops = require('../stock');
 const { TYPE_LABELS } = ops;
 const { parseId, likeEscape, fmtDate, fmtMoney, parsePrice, str, field } = require('../util');
-const { thumbImg, editLink, COVER_SQL, MOVEMENT_STATUS_SQL, movementTable } = require('../views');
+const { thumbImg, editLink, COVER_SQL, MOVEMENT_STATUS_SQL, DOC_NO_SQL, movementTable } = require('../views');
 
 const PAGE = 50;
 
@@ -145,6 +145,7 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
     const p = rows[0];
     if (!p) { res.flash('err', 'Товар не найден'); return res.redirect('/products'); }
     const cancelOn = await ops.cancelSupported(db);
+    const docsOn = cancelOn && await ops.docsSupported(db);
     const [codes, stockRows, moves, photos] = await Promise.all([
       db.query('SELECT barcode FROM product_barcodes WHERE product_id = $1 ORDER BY created_at, barcode', [id]),
       db.query(`SELECT w.id AS wid, w.name AS wname, COALESCE(s.quantity, 0) AS qty, s.location_id,
@@ -152,7 +153,7 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
                           FROM locations l WHERE l.warehouse_id = w.id) AS locations
                   FROM warehouses w LEFT JOIN stock s ON s.warehouse_id = w.id AND s.product_id = $1
                  ORDER BY w.name`, [id]),
-      db.query(`SELECT m.id, m.created_at, w.name AS wname, m.type, m.delta, m.comment${cancelOn ? ', ' + MOVEMENT_STATUS_SQL : ''}
+      db.query(`SELECT m.id, m.created_at, w.name AS wname, m.type, m.delta, m.comment${cancelOn ? ', ' + MOVEMENT_STATUS_SQL : ''}${docsOn ? ', ' + DOC_NO_SQL : ''}
                   FROM stock_movements m JOIN warehouses w ON w.id = m.warehouse_id
                  WHERE m.product_id = $1 ORDER BY m.id DESC LIMIT 15`, [id]),
       db.query('SELECT id FROM product_photos WHERE product_id = $1 ORDER BY position, id', [id]),
@@ -221,7 +222,7 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
         </div>
       </div>
       <h2>Последние движения</h2>
-      ${movementTable(ctx, moves.rows, { back: req.originalUrl, cancelOn, withSku: false })}`,
+      ${movementTable(ctx, moves.rows, { back: req.originalUrl, cancelOn, withSku: false, docsOn })}`,
     }, status);
   }
   app.locals.showProduct = showProduct;

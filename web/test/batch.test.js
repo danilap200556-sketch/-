@@ -74,8 +74,9 @@ test('списание списком: всё одним действием, ж�
   const token = tokenOf(page.text);
   const f = { ...form({ lines: '4006381333931\nNK-AF1-42 2\nmkt-nb 3\nAD-S-40 6' }), token };
   const r = await post(staff, '/batch/apply', f);
-  assert.equal(r.status, 302); assert.equal(r.location, '/movements');
-  assert.match(decodeURIComponent((await staff.follow(r)).text), /Списание: 3 поз\., 12 шт, склад «Склад А»/);
+  assert.equal(r.status, 302); assert.match(r.location, /^\/documents\/\d+$/, 'после пакета открывается созданный документ');
+  const done = decodeURIComponent((await staff.follow(r)).text);
+  assert.match(done, /Списание: 3 поз\., 12 шт, склад «Склад А»/); assert.match(done, /Создан документ №1/);
   assert.equal(await stockOf('NK-AF1-42', 'Склад А'), 7); assert.equal(await stockOf('NB-373-43', 'Склад А'), 1); assert.equal(await stockOf('AD-S-40', 'Склад А'), 0);
   const mv = await q("SELECT p.sku, m.type, m.delta, m.comment FROM stock_movements m JOIN products p ON p.id = m.product_id ORDER BY p.sku");
   assert.deepEqual(mv, [{ sku: 'AD-S-40', type: 'writeoff', delta: -6, comment: 'отгрузка №7' }, { sku: 'NB-373-43', type: 'writeoff', delta: -3, comment: 'отгрузка №7' }, { sku: 'NK-AF1-42', type: 'writeoff', delta: -3, comment: 'отгрузка №7' }]);

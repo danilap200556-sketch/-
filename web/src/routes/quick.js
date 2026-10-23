@@ -152,7 +152,7 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
           }
         }
         const reason = str(b.reason, 200) || 'правка карточки';
-        const doc = ops.newDoc(); // все пересчёты карточки - один документ
+        const doc = ops.newDoc('inventory', reason, req.ctx.user.username); // все пересчёты карточки - один документ
         for (const e of edits) {
           if (e.counted !== undefined) await ops.inventory(c, id, e.wid, e.counted, reason, doc);
           if (e.location !== undefined) {

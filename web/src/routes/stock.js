@@ -3,9 +3,10 @@ const { html } = require('../html');
 const { csrfField, pager } = require('../layout');
 const bc = require('../barcode');
 const ops = require('../stock');
+const docs = require('../documents');
 const { searchSql } = require('./products');
 const { parseId, fmtDate, str, csvCell } = require('../util');
-const { thumbImg, editLink, COVER_SQL, MOVEMENT_STATUS_SQL, movementTable } = require('../views');
+const { thumbImg, editLink, COVER_SQL, MOVEMENT_STATUS_SQL, DOC_NO_SQL, movementTable } = require('../views');
 const { findExact } = require('../finder');
 
 const PAGE = 100;
@@ -117,15 +118,17 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
       const names = new Map((await warehouses()).map((w) => [w.id, w.name]));
       if (!names.has(wid) || (dest && !names.has(dest))) return fail('Склад не найден');
 
+      const doc = ops.newDoc(f.kind, f.comment, req.ctx.user.username);
       await db.tx(async (c) => {
-        if (f.kind === 'receipt') await ops.receive(c, found.id, wid, n, f.comment);
-        else if (f.kind === 'writeoff') await ops.takeOut(c, found.id, wid, n, f.comment);
-        else if (f.kind === 'transfer') await ops.transfer(c, found.id, wid, dest, n, f.comment);
-        else await ops.inventory(c, found.id, wid, n, f.comment);
+        if (f.kind === 'receipt') await ops.receive(c, found.id, wid, n, f.comment, 'receipt', null, doc);
+        else if (f.kind === 'writeoff') await ops.takeOut(c, found.id, wid, n, f.comment, 'writeoff', null, doc);
+        else if (f.kind === 'transfer') await ops.transfer(c, found.id, wid, dest, n, f.comment, doc);
+        else await ops.inventory(c, found.id, wid, n, f.comment, doc);
       });
+      const docNo = doc.saved ? await docs.idByKey(db, doc.key) : 0;
       const now = (await db.query('SELECT quantity FROM stock WHERE product_id = $1 AND warehouse_id = $2', [found.id, wid])).rows[0];
       const verb = { receipt: 'Приход', writeoff: 'Списание', transfer: 'Перемещено', inventory: 'Инвентаризация' }[f.kind];
-      res.flash('ok', `${verb}: ${found.sku}, ${n} шт. Теперь на складе «${names.get(wid)}»: ${now?.quantity ?? 0} шт`);
+      res.flash('ok', `${verb}: ${found.sku}, ${n} шт. Теперь на складе «${names.get(wid)}»: ${now?.quantity ?? 0} шт${docNo ? `. Документ №${docNo}` : ''}`);
       res.redirect(`/stock?q=${encodeURIComponent(found.sku)}`);
     } catch (e) {
       if (e instanceof ops.ValidationError) return fail(e.message, 400);
@@ -141,8 +144,9 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
     const pg = Math.max(1, parseInt(req.query.page, 10) || 1);
     const s = searchSql(q, 1);
     const cancelOn = await ops.cancelSupported(db);
+    const docsOn = cancelOn && await ops.docsSupported(db);
     const { rows } = await db.query(
-      `SELECT m.id, m.created_at, p.id AS pid, p.sku, w.name AS wname, m.type, m.delta, m.comment${cancelOn ? ', ' + MOVEMENT_STATUS_SQL : ''}
+      `SELECT m.id, m.created_at, p.id AS pid, p.sku, w.name AS wname, m.type, m.delta, m.comment${cancelOn ? ', ' + MOVEMENT_STATUS_SQL : ''}${docsOn ? ', ' + DOC_NO_SQL : ''}
          FROM stock_movements m JOIN products p ON p.id = m.product_id JOIN warehouses w ON w.id = m.warehouse_id
         WHERE ${s.sql} ORDER BY m.id DESC LIMIT ${PAGE + 1} OFFSET ${(pg - 1) * PAGE}`, s.params);
     send(req, res, {
@@ -151,7 +155,7 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
       <form method="get" action="/movements" class="toolbar">
         <input type="search" name="q" value="${q}" placeholder="Артикул, название или штрихкод"><button>Найти</button></form>
       ${!cancelOn && !req.ctx.user.read_only ? html`<p class="muted">Отмена операций появится после обновления настольного приложения: запустите свежую версию один раз с этой базой.</p>` : ''}
-      ${movementTable(req.ctx, rows.slice(0, PAGE), { back: req.originalUrl, cancelOn })}
+      ${movementTable(req.ctx, rows.slice(0, PAGE), { back: req.originalUrl, cancelOn, docsOn })}
       ${pager('/movements', { q }, pg, rows.length > PAGE)}`,
     });
   });
