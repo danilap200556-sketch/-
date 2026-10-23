@@ -19,6 +19,11 @@ class Database
 public:
     static bool open(const ServerConfig &config, QString *error = nullptr);
 
+    // Кто работает в программе: попадает в документы остатков как автор.
+    static void setCurrentUser(const QString &username);
+    // Номер документа, который последним создала эта программа (0 - ничего не записано): чтобы показать «Создан документ №N».
+    static int lastDocumentId();
+
     // Несколько SELECT одним обращением к серверу: результаты приходят разом, а не по очереди. База удалённая,
     // и каждое обращение - это ожидание (десятки миллисекунд), поэтому всё, что нужно окну, читаем так.
     // sql - запросы через «;» с метками ?, binds - значения для них по порядку. Результат: по набору строк
@@ -47,10 +52,12 @@ public:
     // Документ - группа записей журнала от одной операции (пакет, перемещение, импорт, правка карточки).
     // Всё, что записано, пока объект жив, получает общий doc_id и отменяется разом. Вложенные документы
     // сливаются в самый внешний. У одиночных операций документа нет: запись отменяется сама по себе.
+    // kind - вид документа (receipt | writeoff | transfer | inventory | cancel | other), comment - его комментарий:
+    // документ получает номер и попадает в раздел «Документы» (кто, когда, что) вместе с первой записью журнала.
     class Document
     {
     public:
-        Document();
+        explicit Document(const QString &kind = QStringLiteral("other"), const QString &comment = QString());
         ~Document();
         Document(const Document &) = delete;
         Document &operator=(const Document &) = delete;

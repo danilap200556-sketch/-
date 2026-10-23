@@ -298,6 +298,7 @@ void StockTab::doReceipt()
         return;
     }
     refresh();
+    emit documentCreated(Database::lastDocumentId());
 }
 
 void StockTab::doWriteOff()
@@ -312,6 +313,7 @@ void StockTab::doWriteOff()
         return;
     }
     refresh();
+    emit documentCreated(Database::lastDocumentId());
 }
 
 void StockTab::doTransfer()
@@ -326,6 +328,7 @@ void StockTab::doTransfer()
         return;
     }
     refresh();
+    emit documentCreated(Database::lastDocumentId());
 }
 
 void StockTab::doInventoryAdjust()
@@ -339,14 +342,17 @@ void StockTab::doInventoryAdjust()
         return;
     }
     refresh();
+    emit documentCreated(Database::lastDocumentId());
 }
 
 void StockTab::doBatch()
 {
     BatchDialog dlg(BatchDialog::Kind::Receipt, this);
     dlg.exec();
-    if (dlg.applied())
+    if (dlg.applied()) {
         refresh();
+        emit documentCreated(Database::lastDocumentId());
+    }
 }
 
 void StockTab::cancelSelectedMovements()

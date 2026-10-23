@@ -24,7 +24,7 @@ void apply(Mode mode);
 const Colors &colors();
 QString stylesheet(Mode mode);
 
-enum class Icon { Products, Warehouses, Stock, Labels, Import, Market, Cards, Orders, Users, Search, Eye, EyeOff, Close, Sun, Moon, Logout };
+enum class Icon { Products, Warehouses, Stock, Labels, Import, Market, Cards, Documents, Orders, Users, Search, Eye, EyeOff, Close, Sun, Moon, Logout };
 // Значок нужного цвета (по умолчанию - цвет боковой панели).
 QIcon icon(Icon which, const QColor &color, int size = 22);
 // Логотип приложения: скруглённый квадрат с градиентом и коробкой.

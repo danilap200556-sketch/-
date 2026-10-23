@@ -7,11 +7,14 @@
 #include "connectiondialog.h"
 #include "markettab.h"
 #include "cardstab.h"
+#include "documentstab.h"
+#include "documents.h"
 #include "marketautosync.h"
 #include "ordertab.h"
 #include "userstab.h"
 #include "applog.h"
 #include "authservice.h"
+#include "database.h"
 #include "producteditor.h"
 #include "productfinder.h"
 
@@ -30,6 +33,7 @@
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QStackedWidget>
+#include <QStatusBar>
 #include <QSystemTrayIcon>
 #include <QTimer>
 #include <QToolButton>
@@ -40,6 +44,7 @@
 MainWindow::MainWindow(const QString &username, QWidget *parent)
     : QMainWindow(parent)
 {
+    Database::setCurrentUser(username); // автор документов остатков
     setWindowTitle(tr("Управление складом — %1").arg(username));
     resize(1200, 800);
 
@@ -193,11 +198,13 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     m_importTab = new ImportTab(this);
     m_marketTab = new MarketTab(isAdmin, this);
     m_cardsTab = new CardsTab(this);
+    m_documentsTab = new DocumentsTab(this);
     m_ordersTab = new OrdersTab(this);
 
     addPage(tr("Товары"), Theme::Icon::Products, m_productsTab);
     addPage(tr("Склады"), Theme::Icon::Warehouses, m_warehousesTab);
     addPage(tr("Остатки и движения"), Theme::Icon::Stock, m_stockTab);
+    addPage(tr("Документы"), Theme::Icon::Documents, m_documentsTab);
     addPage(tr("Этикетки"), Theme::Icon::Labels, m_labelsTab);
     addPage(canEdit ? tr("Импорт") : tr("Экспорт"), Theme::Icon::Import, m_importTab);
     if (canEdit) {
@@ -214,6 +221,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         m_productsTab->setReadOnly(true);
         m_warehousesTab->setReadOnly(true);
         m_stockTab->setReadOnly(true);
+        m_documentsTab->setReadOnly(true);
         m_importTab->setReadOnly(true);
         m_marketTab->hide();
         m_cardsTab->hide();
@@ -241,6 +249,14 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         markDirty(m_stockTab);
         markDirty(m_productsTab);
         markDirty(m_labelsTab);
+    });
+    connect(m_stockTab, &StockTab::documentCreated, this, [this](int id) {
+        if (id <= 0)
+            return;
+        markDirty(m_documentsTab);
+        const Documents::Info d = Documents::get(id);
+        statusBar()->showMessage(tr("Создан документ: %1. Открыть и при необходимости отменить целиком - раздел «Документы».")
+                                     .arg(Documents::title(d)), 15000);
     });
     connect(m_stockTab, &StockTab::productEdited, this, [this]() {
         markDirty(m_productsTab);
@@ -303,6 +319,8 @@ void MainWindow::refreshPage(QWidget *w)
         m_warehousesTab->refresh();
     else if (w == m_stockTab)
         m_stockTab->refresh();
+    else if (w == m_documentsTab)
+        m_documentsTab->refresh();
     else if (w == m_labelsTab)
         m_labelsTab->refresh();
     else if (w == m_importTab)
@@ -327,7 +345,9 @@ void MainWindow::ensureLoaded(QWidget *w)
     // список товаров - только по пометке (иначе при возврате на него сбрасывалось бы выделение).
     constexpr qint64 kStaleMs = 20000;
     const bool never = !m_loadedAt.contains(w);
-    const bool stale = w != m_productsTab && w != m_warehousesTab && m_clock.elapsed() - m_loadedAt.value(w) > kStaleMs;
+    // Документы перечитываем при каждом заходе: в них добавляются и записи с других компьютеров.
+    const bool stale = w != m_productsTab && w != m_warehousesTab &&
+                       (w == m_documentsTab || m_clock.elapsed() - m_loadedAt.value(w) > kStaleMs);
     if (never || stale || m_dirty.contains(w))
         refreshPage(w);
 }

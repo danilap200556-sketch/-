@@ -14,6 +14,7 @@ class LabelsTab;
 class ImportTab;
 class MarketTab;
 class CardsTab;
+class DocumentsTab;
 class OrdersTab;
 class UsersTab;
 class QLabel;
@@ -76,6 +77,7 @@ private:
     ImportTab *m_importTab;
     MarketTab *m_marketTab;
     CardsTab *m_cardsTab;
+    DocumentsTab *m_documentsTab;
     OrdersTab *m_ordersTab;
     UsersTab *m_usersTab = nullptr;
 };

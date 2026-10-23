@@ -126,6 +126,8 @@ add_executable(inventory_manager
     src/categorypicker.cpp
     src/productpickdialog.cpp
     src/cardstab.cpp
+    src/documents.cpp
+    src/documentstab.cpp
     src/xlsx.cpp
     src/ordertab.cpp
     src/barcode.cpp

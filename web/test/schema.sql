@@ -83,6 +83,31 @@ ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS doc_id TEXT;
 ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS reverts_id INTEGER REFERENCES stock_movements(id);
 CREATE INDEX IF NOT EXISTS stock_movements_doc_idx ON stock_movements (doc_id) WHERE doc_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS stock_movements_reverts_uq ON stock_movements (reverts_id) WHERE reverts_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS stock_documents (
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            doc_key TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL DEFAULT 'other',
+            comment TEXT NOT NULL DEFAULT '',
+            username TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+INSERT INTO stock_documents (doc_key, kind, comment, created_at)
+           SELECT g.doc_id,
+                  CASE WHEN g.types = ARRAY['receipt']::text[] THEN 'receipt'
+                       WHEN g.types = ARRAY['writeoff']::text[] THEN 'writeoff'
+                       WHEN g.types <@ ARRAY['transfer_out', 'transfer_in']::text[] THEN 'transfer'
+                       WHEN g.types = ARRAY['inventory_adjust']::text[] THEN 'inventory'
+                       WHEN g.types = ARRAY['cancel']::text[] THEN 'cancel'
+                       ELSE 'other' END,
+                  COALESCE(g.first_comment, ''), g.first_at
+             FROM (SELECT m.doc_id, array_agg(DISTINCT m.type ORDER BY m.type) AS types,
+                          (array_agg(m.comment ORDER BY m.id))[1] AS first_comment, MIN(m.created_at) AS first_at
+                     FROM stock_movements m LEFT JOIN stock_documents d ON d.doc_key = m.doc_id
+                    WHERE m.doc_id IS NOT NULL AND d.id IS NULL
+                    GROUP BY m.doc_id) g
+            ORDER BY g.first_at
+           ON CONFLICT (doc_key) DO NOTHING;
+CREATE INDEX IF NOT EXISTS stock_documents_created_idx ON stock_documents (created_at DESC);
 ALTER TABLE product_photos ADD COLUMN IF NOT EXISTS public_token TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS product_photos_token_uq ON product_photos (public_token) WHERE public_token IS NOT NULL;
 CREATE TABLE IF NOT EXISTS market_cards (

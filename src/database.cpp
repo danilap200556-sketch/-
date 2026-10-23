@@ -21,6 +21,12 @@
 namespace {
 // Текущий документ (см. Database::Document): записи журнала, сделанные пока он открыт, группируются.
 QString g_document;
+QString g_docKind;
+QString g_docComment;
+QString g_currentUser;
+QString g_lastDocKey;
+// Пустая строка вместо NULL: колонки документа NOT NULL, а QString() драйвер отправил бы как NULL.
+QString nn(const QString &s) { return s.isNull() ? QString(QLatin1String("")) : s; }
 } // namespace
 
 namespace {
@@ -140,6 +146,35 @@ const QStringList &schemaDdl()
         "ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS reverts_id INTEGER REFERENCES stock_movements(id)",
         "CREATE INDEX IF NOT EXISTS stock_movements_doc_idx ON stock_movements (doc_id) WHERE doc_id IS NOT NULL",
         "CREATE UNIQUE INDEX IF NOT EXISTS stock_movements_reverts_uq ON stock_movements (reverts_id) WHERE reverts_id IS NOT NULL",
+        // --- Документы остатков: каждое списание, приход, перемещение, инвентаризация, импорт - отдельный документ
+        // с номером (id), видом, автором и комментарием; внутри него записи журнала (stock_movements.doc_id = doc_key).
+        // Документ можно открыть и отменить целиком. kind: receipt | writeoff | transfer | inventory | cancel | other.
+        R"(CREATE TABLE IF NOT EXISTS stock_documents (
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            doc_key TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL DEFAULT 'other',
+            comment TEXT NOT NULL DEFAULT '',
+            username TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        ))",
+        // Документы, созданные до появления этой таблицы (пакеты, импорт, перемещения, отмены): по одной записи на doc_id.
+        R"(INSERT INTO stock_documents (doc_key, kind, comment, created_at)
+           SELECT g.doc_id,
+                  CASE WHEN g.types = ARRAY['receipt']::text[] THEN 'receipt'
+                       WHEN g.types = ARRAY['writeoff']::text[] THEN 'writeoff'
+                       WHEN g.types <@ ARRAY['transfer_out', 'transfer_in']::text[] THEN 'transfer'
+                       WHEN g.types = ARRAY['inventory_adjust']::text[] THEN 'inventory'
+                       WHEN g.types = ARRAY['cancel']::text[] THEN 'cancel'
+                       ELSE 'other' END,
+                  COALESCE(g.first_comment, ''), g.first_at
+             FROM (SELECT m.doc_id, array_agg(DISTINCT m.type ORDER BY m.type) AS types,
+                          (array_agg(m.comment ORDER BY m.id))[1] AS first_comment, MIN(m.created_at) AS first_at
+                     FROM stock_movements m LEFT JOIN stock_documents d ON d.doc_key = m.doc_id
+                    WHERE m.doc_id IS NOT NULL AND d.id IS NULL
+                    GROUP BY m.doc_id) g
+            ORDER BY g.first_at
+           ON CONFLICT (doc_key) DO NOTHING)",
+        "CREATE INDEX IF NOT EXISTS stock_documents_created_idx ON stock_documents (created_at DESC)",
         // --- Ссылки на фото для Маркета: у фото, которое нужно отдать наружу, появляется секретный токен; сайт отдаёт
         // такое фото по адресу /pub/photo/<id>/<токен>.jpg без входа (Маркет скачивает картинки по ссылке).
         "ALTER TABLE product_photos ADD COLUMN IF NOT EXISTS public_token TEXT",
@@ -461,17 +496,39 @@ QString Database::movementTypeTitle(const QString &type)
     return type;
 }
 
-Database::Document::Document()
+Database::Document::Document(const QString &kind, const QString &comment)
     : m_owner(g_document.isEmpty())
 {
-    if (m_owner)
+    if (m_owner) {
         g_document = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        g_docKind = kind.isEmpty() ? QStringLiteral("other") : kind;
+        g_docComment = nn(comment.trimmed().left(300));
+    }
 }
 
 Database::Document::~Document()
 {
-    if (m_owner)
+    if (m_owner) {
+        g_lastDocKey = g_document;
         g_document.clear();
+        g_docKind.clear();
+        g_docComment.clear();
+    }
+}
+
+int Database::lastDocumentId()
+{
+    if (g_lastDocKey.isEmpty())
+        return 0;
+    QSqlQuery q;
+    q.prepare("SELECT id FROM stock_documents WHERE doc_key = ?");
+    q.addBindValue(g_lastDocKey);
+    return q.exec() && q.next() ? q.value(0).toInt() : 0;
+}
+
+void Database::setCurrentUser(const QString &username)
+{
+    g_currentUser = nn(username.trimmed().left(100));
 }
 
 int Database::currentStock(int productId, int warehouseId)
@@ -522,6 +579,14 @@ MovementResult applyMovements(const QList<Movement> &mvs, QList<Shortage> *short
         binds << i << m.productId << m.warehouseId << m.delta << m.type
               << (m.related ? QVariant(*m.related) : QVariant(QMetaType(QMetaType::Int))) << m.comment;
     }
+    // Документ (номер, вид, автор) создаётся вместе с первой записью - тем же запросом, и только если проводка прошла.
+    QString docCte;
+    if (!g_document.isEmpty()) {
+        docCte = QStringLiteral("doc AS (INSERT INTO stock_documents (doc_key, kind, comment, username) "
+                                "SELECT ?::text, ?::text, ?::text, ?::text FROM ok WHERE ok.good "
+                                "ON CONFLICT (doc_key) DO NOTHING RETURNING id), ");
+        binds << g_document << g_docKind << nn(g_docComment) << nn(g_currentUser);
+    }
     binds << (g_document.isEmpty() ? QVariant(QMetaType(QMetaType::QString)) : QVariant(g_document));
 
     const QString sql = QStringLiteral(
@@ -530,6 +595,7 @@ MovementResult applyMovements(const QList<Movement> &mvs, QList<Shortage> *short
         "chk AS (SELECT a.product_id, a.warehouse_id, a.delta, COALESCE(s.quantity, 0) AS have FROM agg a "
         "        LEFT JOIN stock s ON s.product_id = a.product_id AND s.warehouse_id = a.warehouse_id), "
         "ok AS (SELECT NOT EXISTS (SELECT 1 FROM chk WHERE have + delta < 0) AS good), "
+        "%2"
         "mv AS (INSERT INTO stock_movements (product_id, warehouse_id, related_warehouse_id, type, delta, comment, doc_id) "
         "       SELECT i.product_id, i.warehouse_id, i.related, i.type, i.delta, i.comment, ?::text "
         "       FROM items i, ok WHERE ok.good ORDER BY i.n RETURNING id), "
@@ -544,7 +610,7 @@ MovementResult applyMovements(const QList<Movement> &mvs, QList<Shortage> *short
         "                     THEN 1 / (SELECT count(*) - count(*) FROM st) ELSE 0 END, "
         "       sh.sku, sh.have, sh.delta "
         "FROM ok LEFT JOIN (SELECT p.sku, c.have, c.delta FROM chk c JOIN products p ON p.id = c.product_id "
-        "                   WHERE c.have + c.delta < 0) sh ON TRUE").arg(rows.join(QLatin1Char(',')));
+        "                   WHERE c.have + c.delta < 0) sh ON TRUE").arg(rows.join(QLatin1Char(',')), docCte);
 
     QSqlQuery q;
     q.prepare(sql);
@@ -597,7 +663,18 @@ bool applyMovementInternal(int productId, int warehouseId, int delta,
 bool Database::adjustStock(int productId, int warehouseId, int delta, MovementType type,
                             const QString &comment, QString *error)
 {
-    // Одна проводка - один запрос, транзакция не нужна.
+    // Одна проводка - один запрос, транзакция не нужна. Но и одиночная операция - это документ (с номером и автором):
+    // его видно в разделе «Документы» и можно отменить целиком.
+    QString kind = QStringLiteral("other");
+    switch (type) {
+    case MovementType::Receipt: kind = QStringLiteral("receipt"); break;
+    case MovementType::WriteOff: kind = QStringLiteral("writeoff"); break;
+    case MovementType::TransferOut:
+    case MovementType::TransferIn: kind = QStringLiteral("transfer"); break;
+    case MovementType::InventoryAdjust: kind = QStringLiteral("inventory"); break;
+    case MovementType::Cancel: kind = QStringLiteral("cancel"); break;
+    }
+    Document doc(kind, comment);
     return applyMovementInternal(productId, warehouseId, delta, type, std::nullopt, comment, error);
 }
 
@@ -663,7 +740,7 @@ bool Database::adjustStockBatch(const QList<BatchItem> &items, int warehouseId, 
         mvs.append({it.key(), warehouseId, int(writeOff ? -it.value() : it.value()), movementTypeLabel(type), std::nullopt, comment});
 
     // Все позиции - один документ: отменяется разом; и один запрос к серверу на весь список.
-    Document doc;
+    Document doc(writeOff ? QStringLiteral("writeoff") : QStringLiteral("receipt"), comment);
     QList<Shortage> shortages;
     QString err;
     const MovementResult r = applyMovements(mvs, &shortages, &err);
@@ -704,7 +781,7 @@ bool Database::transferStock(int productId, int srcWarehouseId, int dstWarehouse
     }
 
     // Расход и приход - один документ (отменяются только вместе) и один запрос к серверу.
-    Document doc;
+    Document doc(QStringLiteral("transfer"), comment);
     QList<Shortage> shortages;
     const MovementResult r = applyMovements(
         {{productId, srcWarehouseId, -quantity, movementTypeLabel(MovementType::TransferOut), dstWarehouseId, comment},
@@ -745,6 +822,7 @@ bool Database::inventoryAdjust(int productId, int warehouseId, int countedQuanti
 {
     // Пересчёт: один запрос на чтение текущего остатка и один на запись (проводка сама атомарна, транзакция
     // с BEGIN/COMMIT добавляла бы ещё два обращения к серверу).
+    Document doc(QStringLiteral("inventory"), comment);
     return inventorySetInTransaction(productId, warehouseId, countedQuantity, comment, error);
 }
 
@@ -945,7 +1023,7 @@ bool Database::cancelMovements(const QList<int> &movementIds, const QString &rea
 
     const QString text = reason.trimmed().left(200);
     const QString comment = text.isEmpty() ? QStringLiteral("Отмена") : QStringLiteral("Отмена: ") + text;
-    Document doc; // все записи отмены - тоже один документ
+    Document doc(QStringLiteral("cancel"), comment); // все записи отмены - тоже один документ
 
     // Сначала остатки (суммой по товару и складу), потом записи журнала: порядок строк не важен.
     struct Key { int pid; int wid; bool operator<(const Key &o) const { return pid != o.pid ? pid < o.pid : wid < o.wid; } };
@@ -969,6 +1047,14 @@ bool Database::cancelMovements(const QList<int> &movementIds, const QString &rea
             return refuse({}, q.lastError().text());
     }
     {
+        // Документ отмены (номер, автор) - вместе с первой записью, в той же транзакции.
+        QSqlQuery d;
+        d.prepare("INSERT INTO stock_documents (doc_key, kind, comment, username) VALUES (?, 'cancel', ?, ?) ON CONFLICT (doc_key) DO NOTHING");
+        d.addBindValue(g_document);
+        d.addBindValue(nn(g_docComment));
+        d.addBindValue(nn(g_currentUser));
+        if (!d.exec())
+            return refuse({}, d.lastError().text());
         QStringList rows;
         QSqlQuery q;
         for (int i = 0; i < plan.rows.size(); ++i)

@@ -26,6 +26,8 @@ public:
 signals:
     // Карточку товара поправили прямо отсюда - остальные вкладки должны обновиться.
     void productEdited();
+    // Операция записана документом с этим номером (приход, списание, перемещение, инвентаризация).
+    void documentCreated(int id);
 
 private slots:
     void editSelectedProduct();

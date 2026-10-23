@@ -308,6 +308,12 @@ QIcon icon(Icon which, const QColor &color, int size)
         p.drawRoundedRect(QRectF(13 * u, 13 * u, 7 * u, 7 * u), 1.6 * u, 1.6 * u);
         break;
     }
+    case Icon::Documents: {
+        poly({P(6, 3.5), P(14, 3.5), P(19, 8.5), P(19, 20.5), P(6, 20.5)});
+        p.drawLine(P(14, 3.5), P(14, 8.5)); p.drawLine(P(14, 8.5), P(19, 8.5));
+        p.drawLine(P(9, 13), P(16, 13)); p.drawLine(P(9, 16.5), P(14, 16.5));
+        break;
+    }
     case Icon::Orders: {
         p.drawRoundedRect(QRectF(5 * u, 4.5 * u, 14 * u, 16 * u), 2 * u, 2 * u);
         p.drawRect(QRectF(9 * u, 3 * u, 6 * u, 3.4 * u));

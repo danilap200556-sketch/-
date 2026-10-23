@@ -432,8 +432,10 @@ void BatchDialog::commit()
                              tr("Ничего не изменилось.\n\n%1").arg(m_problems.mid(0, 10).join(QLatin1Char('\n'))));
         return;
     }
-    QMessageBox::information(this, windowTitle(), tr("Готово: %1, позиций %2, всего %3 шт.")
-                                                    .arg(kindText(writeOff())).arg(m_table->rowCount()).arg(totalQty()));
+    const int docId = Database::lastDocumentId();
+    QMessageBox::information(this, windowTitle(), tr("Готово: %1, позиций %2, всего %3 шт.%4")
+                                                    .arg(kindText(writeOff())).arg(m_table->rowCount()).arg(totalQty())
+                                                    .arg(docId > 0 ? tr("\n\nСоздан документ №%1: открыть и отменить целиком его можно в разделе «Документы».").arg(docId) : QString()));
     accept();
 }
 
