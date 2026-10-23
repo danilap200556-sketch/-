@@ -100,7 +100,10 @@ endif()
 # Номер сборки и коммит - для проверки обновлений. В CI: -DAPP_BUILD=<номер запуска workflow> -DAPP_COMMIT=<короткий хеш>;
 # локальная сборка остаётся «версией для разработки» (номер 0).
 set(APP_BUILD "0" CACHE STRING "Номер сборки (в CI - номер запуска workflow)")
-set(APP_COMMIT "" CACHE STRING "Короткий хеш коммита сборки")
+set(APP_COMMIT "local" CACHE STRING "Короткий хеш коммита сборки (local - собрано не в CI)")
+if(APP_COMMIT STREQUAL "")
+    set(APP_COMMIT "local") # пустое значение MSVC в макросе не принимает
+endif()
 
 add_executable(inventory_manager
     src/main.cpp

@@ -7,8 +7,9 @@
 #ifndef APP_BUILD
 #define APP_BUILD 0
 #endif
+// Коммит всегда непустой (иначе MSVC не принимает пустой аргумент макроса): «local» - собрано не в CI.
 #ifndef APP_COMMIT
-#define APP_COMMIT
+#define APP_COMMIT local
 #endif
 #define APP_STR2(x) #x
 #define APP_STR(x) APP_STR2(x)
@@ -24,7 +25,8 @@ int build()
 
 QString commit()
 {
-    return QString::fromLatin1(APP_STR(APP_COMMIT)).trimmed();
+    const QString c = QString::fromLatin1(APP_STR(APP_COMMIT)).trimmed();
+    return c == QLatin1String("local") ? QString() : c;
 }
 
 QString builtOn()
