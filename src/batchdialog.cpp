@@ -86,7 +86,7 @@ BatchDialog::BatchDialog(Kind kind, QWidget *parent)
     m_problemsLabel = new QLabel(this);
     m_problemsLabel->setWordWrap(true);
     m_problemsLabel->setTextFormat(Qt::PlainText);
-    m_problemsLabel->setStyleSheet("color: #b00020;");
+    m_problemsLabel->setStyleSheet("color: #d64545;");
     m_problemsLabel->hide();
     layout->addWidget(m_problemsLabel);
 
@@ -341,7 +341,7 @@ void BatchDialog::recompute()
     if (short_)
         s += tr(" - не хватает остатка у позиций: %1 (красные строки)").arg(short_);
     m_summary->setText(s);
-    m_summary->setStyleSheet(short_ ? "color: #b00020;" : QString());
+    m_summary->setStyleSheet(short_ ? "color: #d64545;" : QString());
     m_commitButton->setText(out ? tr("Провести списание") : tr("Провести приход"));
     m_commitButton->setEnabled(m_table->rowCount() > 0);
     showProblems();

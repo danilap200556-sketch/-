@@ -43,7 +43,7 @@ CancelMovementsDialog::CancelMovementsDialog(const QList<int> &movementIds, QWid
     m_problems = new QLabel(this);
     m_problems->setWordWrap(true);
     m_problems->setTextFormat(Qt::PlainText);
-    m_problems->setStyleSheet("color: #b00020;");
+    m_problems->setStyleSheet("color: #d64545;");
     m_problems->hide();
     layout->addWidget(m_problems);
 

@@ -84,7 +84,7 @@ ProductImportDialog::ProductImportDialog(QWidget *parent)
     m_problems = new QPlainTextEdit(this);
     m_problems->setReadOnly(true);
     m_problems->setMaximumHeight(64);
-    m_problems->setStyleSheet("color: #b00020;");
+    m_problems->setStyleSheet("color: #d64545;");
     m_problems->hide();
     layout->addWidget(m_problems);
     m_diff = new QTableWidget(0, 4, this);
@@ -271,7 +271,7 @@ void ProductImportDialog::refreshPlan()
     o.clearEmpty = m_clearEmpty->isChecked();
     m_plan = ProductSync::plan(m_rows, m_headerRow->value() - 1, roles, o);
     if (!m_plan.fatal.isEmpty()) {
-        m_summary->setText(QStringLiteral("<span style='color:#b00020'>%1</span>").arg(m_plan.fatal.toHtmlEscaped()));
+        m_summary->setText(QStringLiteral("<span style='color:#d64545'>%1</span>").arg(m_plan.fatal.toHtmlEscaped()));
         return;
     }
     m_summary->setText(tr("Будет обновлено: <b>%1</b> · создано: <b>%2</b> · без изменений: <b>%3</b> · не найдено: <b>%4</b> · с ошибками: <b>%5</b>")

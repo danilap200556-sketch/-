@@ -55,7 +55,7 @@ public:
         }
 
         m_error = new QLabel(this);
-        m_error->setStyleSheet("color: #c0392b;");
+        m_error->setStyleSheet("color: #d64545;");
         m_error->setWordWrap(true);
         layout->addWidget(m_error);
 

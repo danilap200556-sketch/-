@@ -116,7 +116,7 @@ MarketAccountDialog::MarketAccountDialog(const MarketAccount &account, QWidget *
 void MarketAccountDialog::loadCampaigns()
 {
     if (m_apiKey->text().trimmed().isEmpty()) {
-        m_status->setStyleSheet("color: #c0392b;");
+        m_status->setStyleSheet("color: #d64545;");
         m_status->setText(tr("Сначала вставьте API-ключ."));
         return;
     }
@@ -128,7 +128,7 @@ void MarketAccountDialog::loadCampaigns()
     const bool ok = MarketApi(m_apiKey->text()).campaigns(&campaigns, &err);
     QApplication::restoreOverrideCursor();
     if (!ok) {
-        m_status->setStyleSheet("color: #c0392b;");
+        m_status->setStyleSheet("color: #d64545;");
         m_status->setText(tr("Не удалось получить магазины: %1").arg(err));
         return;
     }
@@ -179,7 +179,7 @@ void MarketAccountDialog::loadWarehouses()
 {
     const qint64 businessId = m_campaign->currentData(RoleBusinessId).toLongLong();
     if (!businessId) {
-        m_status->setStyleSheet("color: #c0392b;");
+        m_status->setStyleSheet("color: #d64545;");
         m_status->setText(tr("Сначала загрузите и выберите магазин."));
         return;
     }
@@ -189,7 +189,7 @@ void MarketAccountDialog::loadWarehouses()
     const bool ok = MarketApi(m_apiKey->text()).partnerWarehouses(businessId, &warehouses, &err);
     QApplication::restoreOverrideCursor();
     if (!ok) {
-        m_status->setStyleSheet("color: #c0392b;");
+        m_status->setStyleSheet("color: #d64545;");
         m_status->setText(tr("Не удалось получить склады: %1").arg(err));
         return;
     }
@@ -201,7 +201,7 @@ void MarketAccountDialog::loadWarehouses()
             m_warehouse->setCurrentIndex(m_warehouse->count() - 1);
     }
     if (warehouses.isEmpty()) {
-        m_status->setStyleSheet("color: #c0392b;");
+        m_status->setStyleSheet("color: #d64545;");
         m_status->setText(tr("Маркет не вернул ни одного отдельного склада. Если склады объединены в группы - "
                              "включите галку «группы складов»."));
     } else {
@@ -222,7 +222,7 @@ void MarketAccountDialog::validateAndAccept()
     else if (!m_groups->isChecked() && !m_warehouse->currentData().toLongLong())
         err = tr("Загрузите и выберите склад Маркета (или отметьте, что в кабинете группы складов).");
     if (!err.isEmpty()) {
-        m_status->setStyleSheet("color: #c0392b;");
+        m_status->setStyleSheet("color: #d64545;");
         m_status->setText(err);
         return;
     }

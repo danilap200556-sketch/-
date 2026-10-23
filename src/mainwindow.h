@@ -2,6 +2,8 @@
 
 #include <QMainWindow>
 
+#include "theme.h"
+
 class ProductsTab;
 class WarehousesTab;
 class StockTab;
@@ -10,8 +12,11 @@ class ImportTab;
 class MarketTab;
 class OrdersTab;
 class UsersTab;
+class QLabel;
 class QLineEdit;
-class QTabWidget;
+class QListWidget;
+class QStackedWidget;
+class QToolButton;
 
 class MainWindow : public QMainWindow
 {
@@ -26,8 +31,17 @@ private slots:
 
 private:
     void refreshAfterProductEdit();
+    // Раздел боковой панели: строка в списке + страница справа.
+    void addPage(const QString &title, Theme::Icon icon, QWidget *page);
+    void showPage(QWidget *page);
+    void pageChanged(int row);
+    void toggleTheme();
+    void updateThemeButton();
 
-    QTabWidget *m_tabs = nullptr;
+    QListWidget *m_sidebar = nullptr;
+    QStackedWidget *m_pages = nullptr;
+    QLabel *m_pageTitle = nullptr;
+    QToolButton *m_themeButton = nullptr;
     QLineEdit *m_scan = nullptr;
     bool m_canEdit = true;
     ProductsTab *m_productsTab;

@@ -135,7 +135,17 @@ add_executable(inventory_manager
     src/cancelmovementsdialog.cpp
     src/productsync.cpp
     src/productimportdialog.cpp
+    src/applog.cpp
+    src/theme.cpp
 )
+
+# Обычное оконное приложение: без чёрного окна консоли при запуске. Сообщения, которые раньше
+# печатались в консоль, пишет в файл inventory_manager.log рядом с программой src/applog.cpp.
+set_target_properties(inventory_manager PROPERTIES WIN32_EXECUTABLE TRUE)
+if(MSVC)
+    # точка входа остаётся обычным main()
+    target_link_options(inventory_manager PRIVATE /ENTRY:mainCRTStartup)
+endif()
 
 target_include_directories(inventory_manager PRIVATE ${QRENCODE_INCLUDE_DIRS})
 target_link_directories(inventory_manager PRIVATE ${QRENCODE_LIBRARY_DIRS})

@@ -1,8 +1,10 @@
+#include "applog.h"
 #include "connectiondialog.h"
 #include "database.h"
 #include "logindialog.h"
 #include "mainwindow.h"
 #include "serverconfig.h"
+#include "theme.h"
 
 #include <QApplication>
 #include <QMessageBox>
@@ -12,6 +14,8 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     QApplication::setApplicationName("InventoryManager");
     QApplication::setOrganizationName("InventoryManager");
+    AppLog::install(); // у приложения нет окна консоли: всё, что раньше шло в неё, пишется в inventory_manager.log
+    Theme::apply(Theme::saved());
 
     ServerConfig config = ServerConfig::load();
     bool askServer = false;

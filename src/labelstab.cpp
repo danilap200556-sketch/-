@@ -57,7 +57,7 @@ LabelsTab::LabelsTab(QWidget *parent)
             }
     });
     connect(scan, &ScanField::notFound, scan, [scan](const QString &) {
-        scan->setStyleSheet("color: #c0392b;");
+        scan->setStyleSheet("color: #d64545;");
         QTimer::singleShot(1200, scan, [scan]() { scan->setStyleSheet(QString()); });
     });
     formLayout->addWidget(m_productRow);

@@ -86,7 +86,7 @@ void ConnectionDialog::testConnection()
 {
     const ServerConfig cfg = config();
     if (!cfg.isComplete()) {
-        m_status->setStyleSheet("color: #c0392b;");
+        m_status->setStyleSheet("color: #d64545;");
         m_status->setText(tr("Заполните адрес, базу и пользователя."));
         return;
     }
@@ -96,7 +96,7 @@ void ConnectionDialog::testConnection()
         m_status->setStyleSheet("color: #27ae60;");
         m_status->setText(tr("Соединение установлено успешно."));
     } else {
-        m_status->setStyleSheet("color: #c0392b;");
+        m_status->setStyleSheet("color: #d64545;");
         m_status->setText(tr("Не удалось подключиться:\n%1").arg(Database::explainConnectionError(error)));
     }
 }
