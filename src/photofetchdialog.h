@@ -9,14 +9,15 @@ class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
 class QRadioButton;
+class QSpinBox;
 
-// «Фото с Маркета»: скачивает фото товаров, которые уже есть на Яндекс Маркете (или в карточках Маркета в программе),
-// и сохраняет их у товаров в базе. Логика - в MarketPhotos::run, здесь только выбор и отчёт.
-class MarketPhotosDialog : public QDialog
+// «Найти фото»: подбирает фото товарам, у которых их нет, и сохраняет в базе. Источники - Яндекс Маркет, карточки Маркета
+// в программе и поиск картинок в интернете по названию (см. PhotoFetch::run). Здесь только выбор и отчёт.
+class PhotoFetchDialog : public QDialog
 {
     Q_OBJECT
 public:
-    MarketPhotosDialog(const QList<int> &selectedProductIds, QWidget *parent = nullptr);
+    PhotoFetchDialog(const QList<int> &selectedProductIds, QWidget *parent = nullptr);
 
     bool changed() const { return m_changed; }
 
@@ -37,8 +38,10 @@ private:
     QRadioButton *m_toSelected;
     QRadioButton *m_toAll;
     QCheckBox *m_onlyEmpty;
+    QSpinBox *m_perProduct;
     QCheckBox *m_fromMarket;
     QCheckBox *m_fromCards;
+    QCheckBox *m_fromWeb;
     QProgressBar *m_bar;
     QLabel *m_status;
     QPlainTextEdit *m_log;

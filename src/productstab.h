@@ -11,7 +11,7 @@ class QLabel;
 
 // Вкладка "Товары": список товаров с миниатюрами фото, добавление/редактирование/
 // удаление через ProductDialog, массовое редактирование, загрузка фото пачкой
-// для нескольких выделенных товаров и фото с Яндекс Маркета.
+// для нескольких выделенных товаров и подбор фото (Маркет, интернет).
 class ProductsTab : public QWidget
 {
     Q_OBJECT
@@ -35,7 +35,7 @@ private slots:
     void openSelectedPhoto();
     void bulkEdit();
     void bulkPhotos();
-    void marketPhotos();
+    void findPhotos();
     void exportExcel();
     void updateFromExcel();
     void prefetchVisible();

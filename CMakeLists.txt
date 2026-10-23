@@ -149,8 +149,9 @@ add_executable(inventory_manager
     src/photostore.cpp
     src/photoviewer.cpp
     src/bulkphotosdialog.cpp
-    src/marketphotos.cpp
-    src/marketphotosdialog.cpp
+    src/imagesearch.cpp
+    src/photofetch.cpp
+    src/photofetchdialog.cpp
     src/bulkeditdialog.cpp
     src/batchparser.cpp
     src/batchdialog.cpp

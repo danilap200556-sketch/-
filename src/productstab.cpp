@@ -5,7 +5,7 @@
 #include "barcode.h"
 #include "bulkeditdialog.h"
 #include "bulkphotosdialog.h"
-#include "marketphotosdialog.h"
+#include "photofetchdialog.h"
 #include "photostore.h"
 #include "photoviewer.h"
 #include "productexport.h"
@@ -90,16 +90,16 @@ ProductsTab::ProductsTab(QWidget *parent)
     auto *photoBtn = new QPushButton(tr("Фото..."), toolbar);
     auto *bulkEditBtn = new QPushButton(tr("Массовое редактирование..."), toolbar);
     auto *bulkPhotoBtn = new QPushButton(tr("Фото пачкой..."), toolbar);
-    auto *marketPhotoBtn = new QPushButton(tr("Фото с Маркета..."), toolbar);
-    marketPhotoBtn->setToolTip(tr("Скачать фото товаров с Яндекс Маркета (по артикулу) и сохранить в карточки: "
-                                  "выделенным товарам или всем, у кого ещё нет фото."));
+    auto *findPhotoBtn = new QPushButton(tr("Найти фото..."), toolbar);
+    findPhotoBtn->setToolTip(tr("Подобрать фото товарам без фото и сохранить в карточки: с Яндекс Маркета (по артикулу) "
+                                "или из интернета (поиск по названию). Выделенным товарам или всем."));
     toolbarLayout->addWidget(addBtn);
     toolbarLayout->addWidget(editBtn);
     toolbarLayout->addWidget(deleteBtn);
     toolbarLayout->addWidget(photoBtn);
     toolbarLayout->addWidget(bulkEditBtn);
     toolbarLayout->addWidget(bulkPhotoBtn);
-    toolbarLayout->addWidget(marketPhotoBtn);
+    toolbarLayout->addWidget(findPhotoBtn);
     auto *updateBtn = new QPushButton(tr("Обновить из Excel..."), toolbar);
     updateBtn->setToolTip(tr("Загрузить изменения карточек из Excel: название, описание, цена, штрихкоды и т.д. - сразу для многих товаров. "
                              "Остатки не меняются."));
@@ -109,7 +109,7 @@ ProductsTab::ProductsTab(QWidget *parent)
     exportBtn->setToolTip(tr("Полные данные товаров: артикул, название, описание, цена, штрихкоды, остатки по складам, места хранения.\n"
                              "Выгружается то, что сейчас в списке (с учётом поиска); если отмечено несколько товаров - можно выгрузить только их."));
     toolbarLayout->addWidget(exportBtn); // не в m_editWidgets: выгружать может и роль «только просмотр»
-    m_editWidgets << addBtn << deleteBtn << bulkEditBtn << bulkPhotoBtn << marketPhotoBtn;
+    m_editWidgets << addBtn << deleteBtn << bulkEditBtn << bulkPhotoBtn << findPhotoBtn;
     editBtn->setToolTip(tr("Открыть карточку товара"));
     toolbarLayout->addSpacing(20);
     m_search = new QLineEdit(toolbar);
@@ -144,7 +144,7 @@ ProductsTab::ProductsTab(QWidget *parent)
     connect(photoBtn, &QPushButton::clicked, this, &ProductsTab::openSelectedPhoto);
     connect(bulkEditBtn, &QPushButton::clicked, this, &ProductsTab::bulkEdit);
     connect(bulkPhotoBtn, &QPushButton::clicked, this, &ProductsTab::bulkPhotos);
-    connect(marketPhotoBtn, &QPushButton::clicked, this, &ProductsTab::marketPhotos);
+    connect(findPhotoBtn, &QPushButton::clicked, this, &ProductsTab::findPhotos);
     connect(exportBtn, &QPushButton::clicked, this, &ProductsTab::exportExcel);
     connect(updateBtn, &QPushButton::clicked, this, &ProductsTab::updateFromExcel);
     connect(m_table->verticalScrollBar(), &QScrollBar::valueChanged, this, &ProductsTab::prefetchVisible);
@@ -229,9 +229,9 @@ void ProductsTab::bulkPhotos()
     }
 }
 
-void ProductsTab::marketPhotos()
+void ProductsTab::findPhotos()
 {
-    MarketPhotosDialog dlg(selectedProductIds(), this);
+    PhotoFetchDialog dlg(selectedProductIds(), this);
     dlg.exec();
     if (dlg.changed()) {
         PhotoCache::clear();
