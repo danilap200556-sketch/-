@@ -63,7 +63,33 @@ enum Field {
     FAll = 63
 };
 
+// Данные нашего товара, нужные для карточки.
+struct ProductData {
+    int id = 0;
+    QString sku;
+    QString name;
+    QString description;
+    QString marketSku;
+    double price = 0;
+    QStringList barcodes;
+    QStringList photoLinks;
+};
+
 QList<MarketCard> loadAll(int accountId, QString *error = nullptr);
+// Несколько карточек одним запросом (список из десятков карточек не должен значить десятки обращений к базе).
+// overwrite=false: уже существующие (по артикулу в кабинете) пропускаются, их артикулы - в *skipped;
+// overwrite=true: существующие обновляются (карточки должны быть уже сохранены, у них заполнен id).
+bool saveMany(const QList<MarketCard *> &cards, bool overwrite, QStringList *skipped, QString *error);
+// Товары из базы пачкой: данные, штрихкоды и (если withPhotos) ссылки на фото. Если фото запрошены, но заданы не
+// полностью (нет адреса сайта) - причина в *photoError.
+QHash<int, ProductData> loadProducts(const QList<int> &ids, const QString &siteUrl, bool withPhotos, QString *photoError);
+// Новые карточки для списка товаров одним заходом в базу. *skipped - артикулы, для которых карточка уже была;
+// *notes - замечания по отдельным товарам (нет фото и т.п.).
+QList<MarketCard> createFromProducts(int accountId, const QList<int> &productIds, const QString &siteUrl,
+                                     QStringList *skipped, QStringList *notes, QString *error);
+// Обновляет данные нескольких карточек из базы (только выбранные поля) и сохраняет их.
+bool refillFromProducts(const QList<MarketCard *> &cards, int fields, const QString &siteUrl, QStringList *notes,
+                        QString *error);
 // Сохраняет (новую - вставляет и заполняет id). Артикул на Маркете в кабинете должен быть уникальным.
 bool save(MarketCard *card, QString *error);
 bool remove(const QList<int> &ids, QString *error);

@@ -5,6 +5,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <QSet>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QVariant>
@@ -201,6 +202,57 @@ bool save(MarketCard *c, QString *error)
     return true;
 }
 
+bool saveMany(const QList<MarketCard *> &cards, bool overwrite, QStringList *skipped, QString *error)
+{
+    if (skipped)
+        skipped->clear();
+    if (cards.isEmpty())
+        return true;
+    constexpr int kChunk = 100;
+    for (int start = 0; start < cards.size(); start += kChunk) {
+        const auto part = cards.mid(start, kChunk);
+        QStringList rows;
+        for (int i = 0; i < part.size(); ++i)
+            rows << QStringLiteral("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        const QString update = QStringLiteral(
+            "ON CONFLICT (account_id, offer_id) DO UPDATE SET product_id = EXCLUDED.product_id, name = EXCLUDED.name, "
+            "description = EXCLUDED.description, vendor = EXCLUDED.vendor, vendor_code = EXCLUDED.vendor_code, "
+            "category_id = EXCLUDED.category_id, category_name = EXCLUDED.category_name, barcodes = EXCLUDED.barcodes, "
+            "pictures = EXCLUDED.pictures, videos = EXCLUDED.videos, countries = EXCLUDED.countries, length_cm = EXCLUDED.length_cm, "
+            "width_cm = EXCLUDED.width_cm, height_cm = EXCLUDED.height_cm, weight_kg = EXCLUDED.weight_kg, "
+            "commodity_code = EXCLUDED.commodity_code, tags = EXCLUDED.tags, price = EXCLUDED.price, adult = EXCLUDED.adult, "
+            "params = EXCLUDED.params, status = EXCLUDED.status, market_status = EXCLUDED.market_status, "
+            "market_sku = EXCLUDED.market_sku, last_result = EXCLUDED.last_result, sent_at = EXCLUDED.sent_at, updated_at = NOW()");
+        QSqlQuery q;
+        q.prepare(QStringLiteral("INSERT INTO market_cards (account_id, product_id, offer_id, name, description, vendor, vendor_code, "
+                                 "category_id, category_name, barcodes, pictures, videos, countries, length_cm, width_cm, height_cm, "
+                                 "weight_kg, commodity_code, tags, price, adult, params, status, market_status, market_sku, "
+                                 "last_result, sent_at) VALUES %1 %2 RETURNING id, offer_id")
+                      .arg(rows.join(QLatin1Char(',')), overwrite ? update : QStringLiteral("ON CONFLICT (account_id, offer_id) DO NOTHING")));
+        for (const MarketCard *c : part)
+            bindCard(q, *c);
+        if (!q.exec()) {
+            if (error)
+                *error = q.lastError().text();
+            return false;
+        }
+        QHash<QString, int> ids;
+        while (q.next())
+            ids.insert(q.value(1).toString(), q.value(0).toInt());
+        for (MarketCard *c : part) {
+            const auto it = ids.constFind(c->offerId.trimmed());
+            if (it == ids.cend()) {
+                if (skipped)
+                    skipped->append(c->offerId.trimmed());
+                continue;
+            }
+            c->id = it.value();
+            c->updatedAt = QDateTime::currentDateTime();
+        }
+    }
+    return true;
+}
+
 bool remove(const QList<int> &ids, QString *error)
 {
     if (ids.isEmpty())
@@ -241,80 +293,149 @@ QString offerIdOf(const QString &sku, const QString &marketSku)
     return m.isEmpty() ? sku.trimmed() : m;
 }
 
-QStringList publicPhotoLinks(int productId, const QString &siteUrl, QString *error)
+namespace {
+QString trimmedBase(const QString &siteUrl)
 {
-    QStringList links;
     QString base = siteUrl.trimmed();
     while (base.endsWith(QLatin1Char('/')))
         base.chop(1);
-    if (base.isEmpty()) {
-        if (error)
-            *error = QStringLiteral("не задан адрес сайта (меню «Сайт» → «Адрес сайта…»): Маркет скачивает фото по ссылке с сайта");
-        return links;
-    }
-    // Токен - секретная часть ссылки: без неё фото не отдаётся. Создаём тем фото, у которых его ещё нет.
+    return base;
+}
+const char kNoSite[] = "не задан адрес сайта (меню «Сайт» → «Адрес сайта…»): Маркет скачивает фото по ссылке с сайта";
+
+QString marks(int n) { return QStringList(n, QStringLiteral("?")).join(QLatin1Char(',')); }
+
+// Ссылки на фото нескольких товаров: одним обновлением выдаём токены, одним запросом читаем.
+QHash<int, QStringList> photoLinksFor(const QList<int> &ids, const QString &base, QString *error)
+{
+    QHash<int, QStringList> result;
+    if (ids.isEmpty())
+        return result;
     QSqlQuery up;
-    up.prepare("UPDATE product_photos SET public_token = replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '') "
-               "WHERE product_id = ? AND public_token IS NULL");
-    up.addBindValue(productId);
+    up.prepare(QStringLiteral("UPDATE product_photos SET public_token = replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '') "
+                              "WHERE public_token IS NULL AND product_id IN (%1)").arg(marks(ids.size())));
+    for (int id : ids)
+        up.addBindValue(id);
     if (!up.exec()) {
         if (error)
             *error = up.lastError().text();
-        return links;
+        return result;
     }
     QSqlQuery q;
-    q.prepare("SELECT id, public_token FROM product_photos WHERE product_id = ? ORDER BY position, id");
-    q.addBindValue(productId);
+    q.prepare(QStringLiteral("SELECT product_id, id, public_token FROM product_photos WHERE product_id IN (%1) "
+                             "ORDER BY product_id, position, id").arg(marks(ids.size())));
+    for (int id : ids)
+        q.addBindValue(id);
     if (!q.exec()) {
         if (error)
             *error = q.lastError().text();
-        return links;
+        return result;
     }
     while (q.next())
-        links << QStringLiteral("%1/pub/photo/%2/%3.jpg").arg(base).arg(q.value(0).toInt()).arg(q.value(1).toString());
-    return links;
+        result[q.value(0).toInt()] << QStringLiteral("%1/pub/photo/%2/%3.jpg").arg(base).arg(q.value(1).toInt()).arg(q.value(2).toString());
+    return result;
 }
+} // namespace
+
+QStringList publicPhotoLinks(int productId, const QString &siteUrl, QString *error)
+{
+    const QString base = trimmedBase(siteUrl);
+    if (base.isEmpty()) {
+        if (error)
+            *error = QString::fromUtf8(kNoSite);
+        return {};
+    }
+    return photoLinksFor({productId}, base, error).value(productId);
+}
+
+QHash<int, ProductData> loadProducts(const QList<int> &ids, const QString &siteUrl, bool withPhotos, QString *photoError)
+{
+    QHash<int, ProductData> result;
+    constexpr int kChunk = 500;
+    for (int start = 0; start < ids.size(); start += kChunk) {
+        const QList<int> part = ids.mid(start, kChunk);
+        QSqlQuery q;
+        q.prepare(QStringLiteral("SELECT id, sku, name, COALESCE(description, ''), price::float8, COALESCE(market_sku, '') "
+                                 "FROM products WHERE id IN (%1)").arg(marks(part.size())));
+        for (int id : part)
+            q.addBindValue(id);
+        if (q.exec()) {
+            while (q.next()) {
+                ProductData d;
+                d.id = q.value(0).toInt();
+                d.sku = q.value(1).toString();
+                d.name = q.value(2).toString();
+                d.description = q.value(3).toString();
+                d.price = qRound(q.value(4).toDouble() * 100) / 100.0;
+                d.marketSku = q.value(5).toString();
+                result.insert(d.id, d);
+            }
+        }
+        QSqlQuery b;
+        b.prepare(QStringLiteral("SELECT product_id, barcode FROM product_barcodes WHERE product_id IN (%1) ORDER BY product_id, created_at, barcode")
+                      .arg(marks(part.size())));
+        for (int id : part)
+            b.addBindValue(id);
+        if (b.exec())
+            while (b.next())
+                if (result.contains(b.value(0).toInt()))
+                    result[b.value(0).toInt()].barcodes << b.value(1).toString();
+    }
+    if (withPhotos) {
+        const QString base = trimmedBase(siteUrl);
+        if (base.isEmpty()) {
+            if (photoError)
+                *photoError = QString::fromUtf8(kNoSite);
+        } else {
+            const QHash<int, QStringList> links = photoLinksFor(result.keys(), base, photoError);
+            for (auto it = links.cbegin(); it != links.cend(); ++it)
+                result[it.key()].photoLinks = it.value();
+        }
+    }
+    return result;
+}
+
+namespace {
+void applyProduct(MarketCard *c, const ProductData &d, int fields)
+{
+    c->productId = d.id;
+    if (c->offerId.trimmed().isEmpty())
+        c->offerId = offerIdOf(d.sku, d.marketSku);
+    if (fields & FName)
+        c->name = d.name;
+    if (fields & FDescription)
+        c->description = d.description;
+    if (fields & FPrice)
+        c->price = d.price;
+    if (fields & FBarcodes)
+        c->barcodes = d.barcodes;
+    if (fields & FVendor) {
+        if (c->vendor.trimmed().isEmpty())
+            c->vendor = guessVendor(d.name);
+        if (c->vendorCode.trimmed().isEmpty())
+            c->vendorCode = d.sku;
+    }
+    if ((fields & FPhotos) && !d.photoLinks.isEmpty())
+        c->pictures = d.photoLinks;
+}
+} // namespace
 
 bool fillFromProduct(MarketCard *c, int productId, int fields, const QString &siteUrl, QString *error)
 {
-    QSqlQuery q;
-    q.prepare("SELECT sku, name, COALESCE(description, ''), price::float8, COALESCE(market_sku, '') FROM products WHERE id = ?");
-    q.addBindValue(productId);
-    if (!q.exec() || !q.next()) {
+    QString photoError;
+    const auto products = loadProducts({productId}, siteUrl, fields & FPhotos, &photoError);
+    if (!products.contains(productId)) {
         if (error)
             *error = QStringLiteral("товара уже нет в базе");
         return false;
     }
-    const QString sku = q.value(0).toString();
-    const QString name = q.value(1).toString();
-    c->productId = productId;
-    if (c->offerId.trimmed().isEmpty())
-        c->offerId = offerIdOf(sku, q.value(4).toString());
-    if (fields & FName)
-        c->name = name;
-    if (fields & FDescription)
-        c->description = q.value(2).toString();
-    if (fields & FPrice)
-        c->price = qRound(q.value(3).toDouble() * 100) / 100.0;
-    if (fields & FBarcodes)
-        c->barcodes = Barcode::forProduct(productId);
-    if (fields & FVendor) {
-        if (c->vendor.trimmed().isEmpty())
-            c->vendor = guessVendor(name);
-        if (c->vendorCode.trimmed().isEmpty())
-            c->vendorCode = sku;
-    }
-    if (fields & FPhotos) {
-        QString why;
-        const QStringList links = publicPhotoLinks(productId, siteUrl, &why);
-        if (!why.isEmpty()) {
-            if (error)
-                *error = why;
-        } else if (!links.isEmpty()) {
-            c->pictures = links;
-        } else if (error) {
+    const ProductData d = products.value(productId);
+    applyProduct(c, d, fields);
+    if ((fields & FPhotos) && error) {
+        if (!photoError.isEmpty())
+            *error = photoError;
+        else if (d.photoLinks.isEmpty())
             *error = QStringLiteral("у товара нет фото в базе");
-        }
     }
     return true;
 }
@@ -324,6 +445,77 @@ bool newFromProduct(MarketCard *c, int accountId, int productId, const QString &
     *c = MarketCard();
     c->accountId = accountId;
     return fillFromProduct(c, productId, FAll, siteUrl, error);
+}
+
+QList<MarketCard> createFromProducts(int accountId, const QList<int> &productIds, const QString &siteUrl,
+                                     QStringList *skipped, QStringList *notes, QString *error)
+{
+    QList<MarketCard> cards;
+    QString photoError;
+    const auto products = loadProducts(productIds, siteUrl, true, &photoError);
+    if (!photoError.isEmpty() && notes)
+        *notes << QStringLiteral("Фото не добавлены: ") + photoError;
+    QSet<QString> seen;
+    for (int id : productIds) {
+        if (!products.contains(id))
+            continue;
+        const ProductData d = products.value(id);
+        MarketCard c;
+        c.accountId = accountId;
+        applyProduct(&c, d, FAll);
+        if (seen.contains(c.offerId)) { // два наших товара с одним артикулом на Маркете
+            if (skipped)
+                skipped->append(c.offerId);
+            continue;
+        }
+        seen.insert(c.offerId);
+        if (photoError.isEmpty() && d.photoLinks.isEmpty() && notes)
+            *notes << QStringLiteral("%1: у товара нет фото в базе").arg(c.offerId);
+        cards.append(c);
+    }
+    QList<MarketCard *> ptrs;
+    for (MarketCard &c : cards)
+        ptrs << &c;
+    QStringList dup;
+    if (!saveMany(ptrs, false, &dup, error))
+        return {};
+    // Уже существовавшие в кабинете карточки не создаются заново.
+    QList<MarketCard> created;
+    for (const MarketCard &c : std::as_const(cards)) {
+        if (dup.contains(c.offerId.trimmed())) {
+            if (skipped)
+                skipped->append(c.offerId.trimmed());
+        } else {
+            created << c;
+        }
+    }
+    return created;
+}
+
+bool refillFromProducts(const QList<MarketCard *> &cards, int fields, const QString &siteUrl, QStringList *notes, QString *error)
+{
+    QList<int> ids;
+    for (const MarketCard *c : cards)
+        if (c->productId > 0)
+            ids << c->productId;
+    QString photoError;
+    const auto products = loadProducts(ids, siteUrl, fields & FPhotos, &photoError);
+    if ((fields & FPhotos) && !photoError.isEmpty() && notes)
+        *notes << QStringLiteral("Фото не обновлены: ") + photoError;
+    QList<MarketCard *> changed;
+    for (MarketCard *c : cards) {
+        if (c->productId <= 0 || !products.contains(c->productId)) {
+            if (notes)
+                *notes << QStringLiteral("%1: нет связанного товара в базе - пропущена").arg(c->offerId);
+            continue;
+        }
+        const ProductData d = products.value(c->productId);
+        applyProduct(c, d, fields);
+        if ((fields & FPhotos) && photoError.isEmpty() && d.photoLinks.isEmpty() && notes)
+            *notes << QStringLiteral("%1: у товара нет фото в базе").arg(c->offerId);
+        changed << c;
+    }
+    return saveMany(changed, true, nullptr, error);
 }
 
 QString describeCardStatus(const QString &s)
@@ -486,8 +678,6 @@ SendReport send(MarketApi &api, const MarketAccount &acc, const QList<MarketCard
             ++report.rejected;
             report.lines << QStringLiteral("%1: %2").arg(c->offerId, c->lastResult);
         }
-        QString saveErr;
-        save(c, &saveErr);
     };
 
     constexpr int kBatch = 100;
@@ -507,6 +697,8 @@ SendReport send(MarketApi &api, const MarketAccount &acc, const QList<MarketCard
                 // Вся пачка не принята по общей причине (ключ, права, связь) - у каждой карточки одна и та же ошибка.
                 for (MarketCard *c : std::as_const(pending))
                     finish(c, nullptr, err);
+                QString saveErr;
+                saveMany(pending, true, nullptr, &saveErr);
                 if (error)
                     *error = err;
                 pending.clear();
@@ -528,6 +720,15 @@ SendReport send(MarketApi &api, const MarketAccount &acc, const QList<MarketCard
                 }
             }
             pending = (anyFailed && pass == 0) ? retry : QList<MarketCard *>();
+            if (pass == 0 || pending.isEmpty()) {
+                // Итог по карточкам пачки - в базу одним запросом.
+                QList<MarketCard *> done;
+                for (MarketCard *c : cards.mid(start, kBatch))
+                    if (c->status != QLatin1String("draft"))
+                        done << c;
+                QString saveErr;
+                saveMany(done, true, nullptr, &saveErr);
+            }
         }
     }
     return report;

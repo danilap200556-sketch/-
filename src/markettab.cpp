@@ -42,6 +42,8 @@ QTableWidget *makeTable(const QStringList &headers, QWidget *parent)
     t->verticalHeader()->setVisible(false);
     t->horizontalHeader()->setStretchLastSection(true);
     t->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    t->horizontalHeader()->setMinimumSectionSize(110); // заголовки не должны обрезаться, пока таблица пуста
+    t->horizontalHeader()->setDefaultSectionSize(150);
     return t;
 }
 

@@ -6,6 +6,7 @@
 #include "importtab.h"
 #include "connectiondialog.h"
 #include "markettab.h"
+#include "cardstab.h"
 #include "marketautosync.h"
 #include "ordertab.h"
 #include "userstab.h"
@@ -27,6 +28,7 @@
 #include <QMenuBar>
 #include <QSettings>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QSystemTrayIcon>
 #include <QTimer>
@@ -190,6 +192,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     m_labelsTab = new LabelsTab(this);
     m_importTab = new ImportTab(this);
     m_marketTab = new MarketTab(isAdmin, this);
+    m_cardsTab = new CardsTab(this);
     m_ordersTab = new OrdersTab(this);
 
     addPage(tr("Товары"), Theme::Icon::Products, m_productsTab);
@@ -200,6 +203,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     if (canEdit) {
         // Яндекс Маркет (ключи кабинетов, отправка остатков) и заказы - только для тех, кто может редактировать.
         addPage(tr("Яндекс Маркет"), Theme::Icon::Market, m_marketTab);
+        addPage(tr("Карточки Маркета"), Theme::Icon::Cards, m_cardsTab);
         addPage(tr("Заказы Маркета"), Theme::Icon::Orders, m_ordersTab);
         // Автообновление остатков по расписанию и значок в трее, пока оно включено.
         m_autoSync = new MarketAutoSync(this);
@@ -212,6 +216,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         m_stockTab->setReadOnly(true);
         m_importTab->setReadOnly(true);
         m_marketTab->hide();
+        m_cardsTab->hide();
         m_ordersTab->hide();
     }
     if (isAdmin) {
@@ -279,6 +284,12 @@ void MainWindow::pageChanged(int row)
 {
     if (row < 0)
         return;
+    // Уходим со страницы карточек Маркета - сохраняем то, что в ней правили.
+    if (m_pages->currentWidget() == m_cardsTab && m_pages->widget(row) != m_cardsTab && !m_cardsTab->saveIfDirty()) {
+        const QSignalBlocker block(m_sidebar);
+        m_sidebar->setCurrentRow(m_pages->currentIndex());
+        return;
+    }
     m_pages->setCurrentIndex(row);
     m_pageTitle->setText(m_sidebar->item(row)->text());
     ensureLoaded(m_pages->widget(row));
@@ -298,6 +309,8 @@ void MainWindow::refreshPage(QWidget *w)
         m_importTab->refresh();
     else if (w == m_marketTab)
         m_marketTab->refresh();
+    else if (w == m_cardsTab)
+        m_cardsTab->refresh();
     else if (w == m_ordersTab)
         m_ordersTab->refresh();
     else if (w == m_usersTab)
@@ -388,6 +401,10 @@ void MainWindow::quitApp()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    if (m_canEdit && !m_cardsTab->saveIfDirty()) {
+        event->ignore(); // карточка не сохранилась - окно не закрываем, чтобы не потерять правки
+        return;
+    }
     if (!m_quitting && m_tray && m_tray->isVisible() && m_autoSync && m_autoSync->settings().enabled) {
         event->ignore();
         hide();
