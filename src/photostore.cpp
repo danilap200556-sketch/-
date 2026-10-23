@@ -25,16 +25,13 @@ QByteArray encodeJpeg(const QImage &img, int quality)
     return bytes;
 }
 
-} // namespace
-
-bool prepare(const QString &path, Prepared *out, QString *error)
+bool prepareFrom(QImageReader &reader, const QString &sourceName, Prepared *out, QString *error)
 {
     auto fail = [&](const QString &msg) {
         if (error)
             *error = msg;
         return false;
     };
-    QImageReader reader(path);
     reader.setAutoTransform(true);
     if (!reader.canRead())
         return fail(QStringLiteral("не удалось открыть как картинку (%1)").arg(reader.errorString()));
@@ -57,10 +54,27 @@ bool prepare(const QString &path, Prepared *out, QString *error)
 
     out->data = encodeJpeg(flat, 82);
     out->thumb = encodeJpeg(flat.scaled(kThumbSize, kThumbSize, Qt::KeepAspectRatio, Qt::SmoothTransformation), 78);
-    out->sourceName = QFileInfo(path).fileName();
+    out->sourceName = sourceName;
     if (out->data.isEmpty() || out->thumb.isEmpty())
         return fail(QStringLiteral("не удалось сохранить картинку в JPEG (нет поддержки JPEG в Qt?)"));
     return true;
+}
+
+} // namespace
+
+bool prepare(const QString &path, Prepared *out, QString *error)
+{
+    QImageReader reader(path);
+    return prepareFrom(reader, QFileInfo(path).fileName(), out, error);
+}
+
+bool prepare(const QByteArray &bytes, const QString &sourceName, Prepared *out, QString *error)
+{
+    QBuffer buffer;
+    buffer.setData(bytes);
+    buffer.open(QIODevice::ReadOnly);
+    QImageReader reader(&buffer);
+    return prepareFrom(reader, sourceName, out, error);
 }
 
 QList<int> ids(int productId)

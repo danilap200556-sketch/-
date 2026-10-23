@@ -585,6 +585,37 @@ bool MarketApi::offerInfo(const MarketAccount &acc, const QStringList &offerIds,
     return true;
 }
 
+bool MarketApi::offerPictures(const MarketAccount &acc, const QStringList &offerIds, QHash<QString, QStringList> *out,
+                              QString *error)
+{
+    out->clear();
+    constexpr int kChunk = 100;
+    for (int start = 0; start < offerIds.size(); start += kChunk) {
+        QJsonArray ids;
+        for (const QString &id : offerIds.mid(start, kChunk))
+            ids.append(id);
+        QUrlQuery query;
+        query.addQueryItem("limit", QString::number(kChunk));
+        const Reply r = request("POST", QStringLiteral("/v2/businesses/%1/offer-mappings").arg(acc.businessId), query,
+                                QJsonDocument(QJsonObject{{"offerIds", ids}}));
+        if (!r.error.isEmpty()) {
+            if (error)
+                *error = r.error;
+            return false;
+        }
+        for (const QJsonValue &v : r.json.object().value("result").toObject().value("offerMappings").toArray()) {
+            const QJsonObject offer = v.toObject().value("offer").toObject();
+            QStringList urls;
+            for (const QJsonValue &p : offer.value("pictures").toArray())
+                if (!p.toString().trimmed().isEmpty())
+                    urls << p.toString().trimmed();
+            if (!urls.isEmpty())
+                (*out)[offer.value("offerId").toString()] = urls;
+        }
+    }
+    return true;
+}
+
 bool MarketApi::prices(qint64 businessId, QHash<QString, MarketPrice> *out, QString *error)
 {
     out->clear();

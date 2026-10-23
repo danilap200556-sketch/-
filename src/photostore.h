@@ -25,6 +25,8 @@ struct Prepared {
 // Читает картинку (jpg/png/webp/bmp...), учитывает поворот из EXIF, подкладывает
 // белый фон под прозрачность и уменьшает.
 bool prepare(const QString &path, Prepared *out, QString *error = nullptr);
+// То же для уже скачанных байтов (sourceName - подпись для интерфейса, например ссылка).
+bool prepare(const QByteArray &bytes, const QString &sourceName, Prepared *out, QString *error = nullptr);
 
 QList<int> ids(int productId);               // в порядке показа; первое - обложка
 int count(int productId);
