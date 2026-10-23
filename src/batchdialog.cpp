@@ -1,6 +1,7 @@
 #include "batchdialog.h"
 #include "photostore.h"
 #include "productfinder.h"
+#include "productsuggest.h"
 
 #include <algorithm>
 #include <functional>
@@ -62,7 +63,7 @@ BatchDialog::BatchDialog(Kind kind, QWidget *parent)
 
     auto *scanRow = new QHBoxLayout();
     m_scan = new QLineEdit(this);
-    m_scan->setPlaceholderText(tr("Штрихкод или артикул [количество] и Enter"));
+    m_scan->setPlaceholderText(tr("Штрихкод, артикул [количество] или часть названия; Enter - добавить"));
     m_scan->setClearButtonEnabled(true);
     scanRow->addWidget(m_scan, 1);
     auto *pasteBtn = new QPushButton(tr("Вставить список из буфера"), this);
@@ -103,6 +104,13 @@ BatchDialog::BatchDialog(Kind kind, QWidget *parent)
     layout->addLayout(buttons);
 
     connect(m_scan, &QLineEdit::returnPressed, this, &BatchDialog::scanEntered);
+    // Подсказки по мере ввода: часть артикула, названия или штрихкода; выбранный товар добавляется на 1 шт.
+    m_suggest = new ProductSuggest(m_scan, this);
+    connect(m_suggest, &ProductSuggest::chosen, this, [this](int id, const QString &, const QString &) {
+        addChosen(id, 1);
+        m_scan->clear();
+        m_scan->setFocus();
+    });
     connect(pasteBtn, &QPushButton::clicked, this, &BatchDialog::pasteFromClipboard);
     connect(removeBtn, &QPushButton::clicked, this, &BatchDialog::removeSelectedRows);
     connect(clearBtn, &QPushButton::clicked, this, &BatchDialog::clearAll);
@@ -113,6 +121,10 @@ BatchDialog::BatchDialog(Kind kind, QWidget *parent)
     auto *del = new QShortcut(QKeySequence::Delete, m_table);
     del->setContext(Qt::WidgetShortcut);
     connect(del, &QShortcut::activated, this, &BatchDialog::removeSelectedRows);
+
+    // Enter в строке сканера только добавляет позицию: ни «Вставить из буфера», ни другая кнопка не должна срабатывать.
+    for (QPushButton *b : findChildren<QPushButton *>())
+        b->setAutoDefault(false);
 
     setKind(kind);
     m_scan->setFocus();
@@ -260,15 +272,48 @@ int BatchDialog::addText(const QString &text)
     return int(m_problems.size());
 }
 
+void BatchDialog::addChosen(int productId, qint64 qty)
+{
+    m_problems.clear();
+    PhotoCache::prefetch({productId});
+    m_updating = true;
+    addQuantity(productId, qty);
+    m_updating = false;
+    const int row = rowOf(productId);
+    if (row >= 0) {
+        m_table->selectRow(row);
+        m_table->scrollToItem(m_table->item(row, ColSku));
+    }
+    recompute();
+}
+
 void BatchDialog::scanEntered()
 {
     const QString text = m_scan->text().trimmed();
     if (text.isEmpty())
         return;
-    if (addText(text) == 0)
+    if (addText(text) == 0) {
         m_scan->clear();
-    else
-        m_scan->selectAll();
+        return;
+    }
+    // Точно (штрихкод, артикул целиком) не нашлось. Ввели часть артикула или названия: если подходит ровно один товар,
+    // берём его, если несколько - показываем список, чтобы выбрать.
+    const QList<BatchParser::Line> parsed = BatchParser::parse(text);
+    if (parsed.size() == 1 && parsed.first().error.isEmpty()) {
+        const QList<ProductFinder::Suggestion> found = ProductFinder::suggest(parsed.first().key, 2);
+        if (found.size() == 1) {
+            addChosen(found.first().id, parsed.first().qty);
+            m_scan->clear();
+            return;
+        }
+        if (found.size() > 1) {
+            m_problems = {tr("«%1»: подходит несколько товаров - выберите нужный в списке под строкой (стрелки и Enter) или введите артикул точнее")
+                              .arg(parsed.first().key)};
+            showProblems();
+            m_suggest->searchNow();
+        }
+    }
+    m_scan->selectAll();
 }
 
 void BatchDialog::pasteFromClipboard()

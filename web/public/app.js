@@ -118,3 +118,82 @@ document.addEventListener('submit', function (e) {
     try { localStorage.setItem('theme', next); } catch (e) { /* без запоминания */ }
   });
 })();
+
+// Подсказки при вводе артикула, названия или штрихкода: поля с data-suggest.
+//  data-suggest="sku"  - выбранный товар подставляет свой артикул в это поле (data-next - id поля, куда перейти дальше);
+//  data-suggest="line" - выбранный товар добавляется строкой «артикул 1» в список позиций (data-target - id textarea).
+(function () {
+  var inputs = document.querySelectorAll('input[data-suggest]');
+  Array.prototype.forEach.call(inputs, function (input) {
+    var mode = input.getAttribute('data-suggest');
+    var list = document.createElement('ul');
+    list.className = 'suggest';
+    list.setAttribute('role', 'listbox');
+    list.hidden = true;
+    var host = input.parentNode;
+    host.classList.add('suggest-wrap');
+    host.appendChild(list);
+    var timer = null, seq = 0, active = -1;
+
+    function hide() { list.hidden = true; active = -1; }
+    function mark(i) {
+      var items = list.children;
+      for (var k = 0; k < items.length; k++) items[k].classList.toggle('active', k === i);
+      active = i;
+      if (items[i] && items[i].scrollIntoView) items[i].scrollIntoView({ block: 'nearest' });
+    }
+    function choose(li) {
+      var sku = li.getAttribute('data-sku');
+      hide();
+      if (mode === 'line') {
+        var area = document.getElementById(input.getAttribute('data-target'));
+        if (area) {
+          var cur = area.value;
+          area.value = cur + (cur && !/\n$/.test(cur) ? '\n' : '') + sku + ' 1\n';
+          area.scrollTop = area.scrollHeight;
+        }
+        input.value = '';
+        input.focus();
+      } else {
+        input.value = sku;
+        var next = document.getElementById(input.getAttribute('data-next') || '');
+        if (next) next.focus(); else input.focus();
+      }
+    }
+    function render(items) {
+      list.textContent = '';
+      items.forEach(function (it) {
+        var li = document.createElement('li');
+        li.setAttribute('role', 'option');
+        li.setAttribute('data-sku', it.sku);
+        var b = document.createElement('b'); b.textContent = it.sku;
+        var span = document.createElement('span'); span.textContent = ' - ' + it.name;
+        li.appendChild(b); li.appendChild(span);
+        if (it.market_sku) { var m = document.createElement('small'); m.className = 'muted'; m.textContent = '  [' + it.market_sku + ']'; li.appendChild(m); }
+        li.addEventListener('mousedown', function (e) { e.preventDefault(); choose(li); });
+        list.appendChild(li);
+      });
+      list.hidden = !items.length;
+      active = -1;
+    }
+    function search() {
+      var q = input.value.trim().replace(/\s+/g, ' ');
+      if (q.length < 2 || /^[0-9 ]{8,}$/.test(q)) { hide(); return; }
+      var mine = ++seq;
+      fetch('/find/suggest?q=' + encodeURIComponent(q), { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : { items: [] }; })
+        .then(function (d) { if (mine === seq && document.activeElement === input) render(d.items || []); })
+        .catch(function () { hide(); });
+    }
+    input.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(search, 150); });
+    input.addEventListener('keydown', function (e) {
+      if (list.hidden) return;
+      var n = list.children.length;
+      if (e.key === 'ArrowDown') { e.preventDefault(); mark(active < 0 ? 0 : Math.min(active + 1, n - 1)); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); mark(active <= 0 ? n - 1 : active - 1); }
+      else if (e.key === 'Escape') { e.preventDefault(); hide(); }
+      else if (e.key === 'Enter' && active >= 0) { e.preventDefault(); choose(list.children[active]); }
+    });
+    input.addEventListener('blur', function () { setTimeout(hide, 120); });
+  });
+})();

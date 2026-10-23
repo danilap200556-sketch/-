@@ -122,3 +122,13 @@ body.guest .flash { background:rgba(214,69,69,.2); border-color:rgba(255,154,160
   .usercard a { flex:0 1 auto; } main { padding:18px 14px 40px; }
 }
 @media (max-width:520px) { nav a:not(.brand):not(.active) span { display:none; } nav a:not(.brand) { padding:9px 10px; } nav a.active span { display:inline; } }
+
+/* Подсказки при вводе артикула / названия (public/app.js, поля с data-suggest) */
+.suggest-wrap { position:relative; }
+.suggest { position:absolute; z-index:40; left:0; right:0; top:100%; margin:3px 0 0; padding:4px; list-style:none; max-height:340px; overflow:auto;
+  background:var(--card); border:1px solid var(--line2); border-radius:12px; box-shadow:0 10px 30px rgba(20,28,60,.18); }
+.suggest[hidden] { display:none; }
+.suggest li { padding:7px 10px; border-radius:8px; cursor:pointer; line-height:1.35; }
+.suggest li:hover, .suggest li.active { background:var(--accent-soft); }
+.field .suggest li span, .field .suggest li small { font-size:inherit; font-weight:400; color:var(--muted); }
+.suggest li b { color:var(--fg); }

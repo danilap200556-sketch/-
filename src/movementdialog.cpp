@@ -1,5 +1,6 @@
 #include "movementdialog.h"
 #include "database.h"
+#include "productsuggest.h"
 #include "scanfield.h"
 
 #include <QComboBox>
@@ -49,7 +50,9 @@ MovementDialog::MovementDialog(Kind kind, QWidget *parent)
     layout->addLayout(form);
 
     auto *scan = new ScanField(this);
-    form->addRow(tr("Найти по штрихкоду"), scan);
+    form->addRow(tr("Найти товар"), scan);
+    // Под строкой - подсказки по мере ввода: часть артикула, названия или штрихкода.
+    auto *suggest = new ProductSuggest(scan, this);
     m_product = new QComboBox(this);
     fillProducts(m_product);
     form->addRow(tr("Товар"), m_product);
@@ -102,6 +105,14 @@ MovementDialog::MovementDialog(Kind kind, QWidget *parent)
         if (matches > 1)
             m_stockHint->setText(tr("Найдено товаров: %1 - выбран первый, остальные - в списке «Товар». %2")
                                      .arg(matches).arg(m_stockHint->text()));
+    });
+    connect(suggest, &ProductSuggest::chosen, this, [this, scan](int id, const QString &sku, const QString &) {
+        const int idx = m_product->findData(id);
+        if (idx >= 0)
+            m_product->setCurrentIndex(idx);
+        updateStockHint();
+        scan->setText(sku);
+        scan->selectAll();
     });
     connect(scan, &ScanField::notFound, this, [this](const QString &text) {
         m_stockHint->setText(tr("«%1» не найден ни по штрихкоду, ни по артикулу.").arg(text));

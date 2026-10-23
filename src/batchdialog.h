@@ -13,6 +13,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QTableWidget;
+class ProductSuggest;
 
 // Приход или списание сразу многих позиций одним документом: сканируйте штрихкоды (каждый скан - ещё одна
 // штука), вставляйте список из Excel или буфера, правьте количество в таблице. Всё проводится одной
@@ -55,6 +56,8 @@ private:
     bool writeOff() const;
     int warehouseId() const;
     void addQuantity(int productId, qint64 qty);
+    // Добавляет выбранный в подсказках товар (qty штук) и показывает его строку.
+    void addChosen(int productId, qint64 qty);
     int rowOf(int productId) const;
     void showProblems();
     QList<Database::BatchItem> itemsFromTable() const;
@@ -69,6 +72,7 @@ private:
     QPushButton *m_commitButton = nullptr;
 
     QStringList m_problems;
+    ProductSuggest *m_suggest = nullptr;
     QString m_lastError;
     bool m_applied = false;
     QHash<int, QPair<QString, QString>> m_info; // id товара -> (артикул, название), читаются пачкой

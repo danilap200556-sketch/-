@@ -69,6 +69,41 @@ Result find(const QString &input, int limit)
     return r;
 }
 
+QList<Suggestion> suggest(const QString &input, int limit)
+{
+    QList<Suggestion> out;
+    const QStringList words = input.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts).mid(0, 5);
+    if (words.isEmpty())
+        return out;
+    QStringList where;
+    QVariantList binds;
+    for (const QString &w : words) {
+        where << QStringLiteral("(p.sku ILIKE ? OR p.name ILIKE ? OR p.market_sku ILIKE ? OR EXISTS "
+                                "(SELECT 1 FROM product_barcodes b WHERE b.product_id = p.id AND b.barcode ILIKE ?))");
+        const QString like = likePattern(w);
+        binds << like << like << like << like;
+    }
+    const QString whole = input.simplified();
+    binds << whole << whole;
+    QSqlQuery q;
+    q.prepare(QStringLiteral("SELECT p.id, p.sku, p.name, COALESCE(p.market_sku, '') FROM products p WHERE %1 "
+                             "ORDER BY (lower(p.sku) = lower(?)) DESC, starts_with(lower(p.sku), lower(?)) DESC, p.sku LIMIT %2")
+                  .arg(where.join(QStringLiteral(" AND "))).arg(limit));
+    for (const QVariant &b : std::as_const(binds))
+        q.addBindValue(b);
+    if (q.exec()) {
+        while (q.next()) {
+            Suggestion s;
+            s.id = q.value(0).toInt();
+            s.sku = q.value(1).toString();
+            s.name = q.value(2).toString();
+            s.marketSku = q.value(3).toString();
+            out << s;
+        }
+    }
+    return out;
+}
+
 int findExact(const QString &input, QString *error)
 {
     const QString text = input.trimmed();

@@ -80,12 +80,12 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
         ${csrfField(req.ctx)}
         <label class="field"><span>Что сделать</span><select name="kind" id="kind">
           ${KINDS.map(([k, t]) => html`<option value="${k}" ${k === (f.kind || 'receipt') ? html`selected` : ''}>${t}</option>`)}</select></label>
-        <label class="field"><span>Артикул или штрихкод</span>
-          <input name="product" value="${f.product ?? ''}" required maxlength="100" autocomplete="off" ${f.product ? '' : html`autofocus`}></label>
+        <label class="field"><span>Артикул, штрихкод или часть названия</span>
+          <input name="product" value="${f.product ?? ''}" required maxlength="100" autocomplete="off" data-suggest="sku" data-next="quantity-input" ${f.product ? '' : html`autofocus`}></label>
         <label class="field"><span id="wlabel">Склад</span>${wsel('warehouse', f.warehouse)}</label>
         <label class="field" data-only="transfer"><span>На склад</span>${wsel('dest', f.dest)}</label>
         <label class="field"><span id="qlabel">Количество, шт</span>
-          <input name="quantity" value="${f.quantity ?? ''}" required inputmode="numeric" maxlength="10" autocomplete="off" ${f.product ? html`autofocus` : ''}></label>
+          <input name="quantity" id="quantity-input" value="${f.quantity ?? ''}" required inputmode="numeric" maxlength="10" autocomplete="off" ${f.product ? html`autofocus` : ''}></label>
         <label class="field"><span>Комментарий</span><input name="comment" value="${f.comment ?? ''}" maxlength="300"></label>
         <button class="primary">Выполнить</button>
         <p class="muted">Много позиций сразу (например, приёмка поставки или отгрузка): <a href="/batch">приход / списание списком</a>.</p>

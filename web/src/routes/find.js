@@ -1,7 +1,7 @@
 'use strict';
 const { html } = require('../html');
 const { csrfField } = require('../layout');
-const { findProducts } = require('../finder');
+const { findProducts, suggestProducts } = require('../finder');
 const bc = require('../barcode');
 const { likeEscape, str } = require('../util');
 const { thumbImg, COVER_SQL } = require('../views');
@@ -11,6 +11,15 @@ const { thumbImg, COVER_SQL } = require('../views');
 //  - несколько -> список товаров с этим поиском
 //  - ничего: незнакомый штрихкод можно сразу привязать к нужному товару
 module.exports = (app, { db, send, requireLogin }) => {
+  // Подсказки при вводе артикула, названия или штрихкода (поля с data-suggest, public/app.js). Строки из одних цифр
+  // (8 и больше) - это штрихкод от сканера: для них подсказок нет.
+  app.get('/find/suggest', requireLogin, async (req, res) => {
+    const q = str(req.query.q, 100);
+    res.set('Cache-Control', 'no-store');
+    if (q.length < 2 || /^[0-9 ]{8,}$/.test(q)) return res.json({ items: [] });
+    res.json({ items: await suggestProducts(db, q, 12) });
+  });
+
   app.get('/find', requireLogin, async (req, res) => {
     const q = str(req.query.q, 100);
     if (!q) return res.redirect('/products');

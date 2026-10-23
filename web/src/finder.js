@@ -26,6 +26,30 @@ async function findProducts(db, input, limit = 300) {
   return { ids: r.rows.map((x) => x.id), exact: false };
 }
 
+// Подсказки «по мере ввода»: товары, у которых введённое встречается в артикуле, названии, артикуле на Маркете или
+// штрихкоде. Несколько слов через пробел - каждое должно встретиться («nike 43»). Сначала артикул целиком, потом
+// артикулы, начинающиеся с введённого, остальные - по артикулу. Те же правила, что у ProductFinder::suggest в приложении.
+// -> [{ id, sku, name, market_sku }]
+async function suggestProducts(db, input, limit = 12) {
+  const words = String(input ?? '').trim().split(/\s+/).filter(Boolean).slice(0, 5);
+  if (!words.length) return [];
+  const params = [];
+  const where = words.map((w) => {
+    params.push(`%${likeEscape(w)}%`);
+    const n = params.length;
+    return `(p.sku ILIKE $${n} OR p.name ILIKE $${n} OR p.market_sku ILIKE $${n}
+             OR EXISTS (SELECT 1 FROM product_barcodes b WHERE b.product_id = p.id AND b.barcode ILIKE $${n}))`;
+  });
+  params.push(words.join(' '));
+  const whole = params.length;
+  const r = await db.query(
+    `SELECT p.id, p.sku, p.name, COALESCE(p.market_sku, '') AS market_sku FROM products p
+      WHERE ${where.join(' AND ')}
+      ORDER BY (lower(p.sku) = lower($${whole})) DESC, starts_with(lower(p.sku), lower($${whole})) DESC, p.sku
+      LIMIT ${Math.min(Math.max(Number(limit) | 0, 1), 50)}`, params);
+  return r.rows;
+}
+
 // Только точное совпадение (для операций, которые что-то списывают/добавляют): штрихкод или артикул
 // целиком. -> { id } | { error }
 async function findExact(db, input) {
@@ -50,4 +74,4 @@ async function offerIdsFor(db, text) {
   return new Set(r.rows.map((x) => x.offer));
 }
 
-module.exports = { findProducts, findExact, offerIdsFor };
+module.exports = { findProducts, findExact, suggestProducts, offerIdsFor };

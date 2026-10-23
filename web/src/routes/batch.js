@@ -46,8 +46,11 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
             ${whs.map((w) => html`<option value="${w.id}" ${w.id === wid ? html`selected` : ''}>${w.name}</option>`)}</select></label>
           <label class="field"><span>Комментарий (в журнал)</span><input name="comment" value="${form.comment ?? ''}" maxlength="300" placeholder="например: приёмка от поставщика №15"></label>
         </div>
+        <label class="field"><span>Найти товар и добавить в список (артикул, часть названия или штрихкод)</span>
+          <input type="search" data-suggest="line" data-target="batch-lines" maxlength="100" autocomplete="off"
+            placeholder="например: nike 43 - выберите из подсказок, товар добавится строкой «артикул 1»"></label>
         <label class="field"><span>Список позиций - по одной в строке</span>
-          <textarea name="lines" rows="10" maxlength="200000" spellcheck="false" ${prep ? '' : html`autofocus`}
+          <textarea name="lines" id="batch-lines" rows="10" maxlength="200000" spellcheck="false" ${prep ? '' : html`autofocus`}
             placeholder="Сканируйте штрихкоды прямо сюда: каждый скан - 1 шт.&#10;Другое количество: 4006381333931 5&#10;Можно вставить два столбца из Excel: артикул и количество">${form.lines ?? ''}</textarea></label>
         <p class="muted">Строка - штрихкод, артикул или артикул на Маркете, затем (через пробел, «;» или Tab) количество; без количества - 1 шт.
           Одинаковые позиции складываются. Всё выполняется одним действием: если хоть одна строка не проходит, не меняется ничего.</p>

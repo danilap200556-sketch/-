@@ -17,6 +17,7 @@
 #include "database.h"
 #include "producteditor.h"
 #include "productfinder.h"
+#include "productsuggest.h"
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -179,6 +180,13 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     header->addWidget(m_scan);
     contentLayout->addLayout(header);
     connect(m_scan, &QLineEdit::returnPressed, this, &MainWindow::scanEntered);
+    // Подсказки по мере ввода (часть артикула, названия, штрихкода): выбранный товар открывается карточкой.
+    auto *scanSuggest = new ProductSuggest(m_scan, this);
+    connect(scanSuggest, &ProductSuggest::chosen, this, [this](int id, const QString &, const QString &) {
+        m_scan->clear();
+        if (ProductEditor::edit(id, this, !m_canEdit))
+            refreshAfterProductEdit();
+    });
     auto *focusScan = new QShortcut(QKeySequence::Find, this);
     connect(focusScan, &QShortcut::activated, this, [this]() {
         m_scan->setFocus();

@@ -97,6 +97,11 @@ if(NOT QRENCODE_FOUND)
     endif()
 endif()
 
+# Номер сборки и коммит - для проверки обновлений. В CI: -DAPP_BUILD=<номер запуска workflow> -DAPP_COMMIT=<короткий хеш>;
+# локальная сборка остаётся «версией для разработки» (номер 0).
+set(APP_BUILD "0" CACHE STRING "Номер сборки (в CI - номер запуска workflow)")
+set(APP_COMMIT "" CACHE STRING "Короткий хеш коммита сборки")
+
 add_executable(inventory_manager
     src/main.cpp
     src/database.cpp
@@ -124,6 +129,7 @@ add_executable(inventory_manager
     src/marketcategories.cpp
     src/marketcards.cpp
     src/productmarketbox.cpp
+    src/productsuggest.cpp
     src/paramform.cpp
     src/productmarket.cpp
     src/categorypicker.cpp
@@ -148,8 +154,10 @@ add_executable(inventory_manager
     src/productsync.cpp
     src/productimportdialog.cpp
     src/applog.cpp
+    src/appversion.cpp
     src/theme.cpp
 )
+set_source_files_properties(src/appversion.cpp PROPERTIES COMPILE_DEFINITIONS "APP_BUILD=${APP_BUILD};APP_COMMIT=${APP_COMMIT}")
 
 # Обычное оконное приложение: без чёрного окна консоли при запуске. Сообщения, которые раньше
 # печатались в консоль, пишет в файл inventory_manager.log рядом с программой src/applog.cpp.
