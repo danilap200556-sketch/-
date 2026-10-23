@@ -121,6 +121,8 @@ add_executable(inventory_manager
     src/markettab.cpp
     src/marketsync.cpp
     src/marketautosync.cpp
+    src/marketcategories.cpp
+    src/marketcards.cpp
     src/xlsx.cpp
     src/ordertab.cpp
     src/barcode.cpp

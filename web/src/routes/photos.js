@@ -21,6 +21,28 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
     res.send(r.rows[0].img);
   };
 
+  // ---- Фото для Маркета: он скачивает картинки по ссылке и входить на сайт не умеет. Отдаём только те фото,
+  // у которых есть секретный токен (его создаёт настольное приложение, когда готовит карточку для Маркета);
+  // без правильного токена - 404. Адрес: /pub/photo/<id>/<токен>.jpg
+  app.get('/pub/photo/:id/:file', async (req, res) => {
+    const id = parseId(req.params.id);
+    const m = /^([0-9a-f]{32,128})\.jpg$/.exec(req.params.file);
+    let row = null;
+    if (id && m) {
+      try {
+        row = (await db.query('SELECT data FROM product_photos WHERE id = $1 AND public_token = $2', [id, m[1]])).rows[0];
+      } catch { row = null; } // база без столбца public_token (приложение ещё не обновлено)
+    }
+    if (!row) return res.status(404).type('text').send('Нет такого фото');
+    res.set({
+      'Content-Type': 'image/jpeg',
+      'Cache-Control': 'public, max-age=86400',
+      'Content-Security-Policy': "default-src 'none'; sandbox",
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.send(row.data);
+  });
+
   // /photos/bulk объявлен выше /photos/:id, иначе "bulk" попал бы в :id.
   app.get('/photos/bulk', requireLogin, requireEditor, (req, res) =>
     send(req, res, {

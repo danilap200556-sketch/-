@@ -83,3 +83,38 @@ ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS doc_id TEXT;
 ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS reverts_id INTEGER REFERENCES stock_movements(id);
 CREATE INDEX IF NOT EXISTS stock_movements_doc_idx ON stock_movements (doc_id) WHERE doc_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS stock_movements_reverts_uq ON stock_movements (reverts_id) WHERE reverts_id IS NOT NULL;
+ALTER TABLE product_photos ADD COLUMN IF NOT EXISTS public_token TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS product_photos_token_uq ON product_photos (public_token) WHERE public_token IS NOT NULL;
+CREATE TABLE IF NOT EXISTS market_cards (
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            account_id INTEGER NOT NULL REFERENCES market_accounts(id) ON DELETE CASCADE,
+            product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+            offer_id TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            vendor TEXT NOT NULL DEFAULT '',
+            vendor_code TEXT NOT NULL DEFAULT '',
+            category_id BIGINT,
+            category_name TEXT NOT NULL DEFAULT '',
+            barcodes TEXT NOT NULL DEFAULT '',
+            pictures TEXT NOT NULL DEFAULT '',
+            videos TEXT NOT NULL DEFAULT '',
+            countries TEXT NOT NULL DEFAULT '',
+            length_cm NUMERIC(10,2) NOT NULL DEFAULT 0,
+            width_cm NUMERIC(10,2) NOT NULL DEFAULT 0,
+            height_cm NUMERIC(10,2) NOT NULL DEFAULT 0,
+            weight_kg NUMERIC(10,3) NOT NULL DEFAULT 0,
+            commodity_code TEXT NOT NULL DEFAULT '',
+            tags TEXT NOT NULL DEFAULT '',
+            price NUMERIC(12,2) NOT NULL DEFAULT 0,
+            adult BOOLEAN NOT NULL DEFAULT FALSE,
+            params TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'draft',
+            market_status TEXT NOT NULL DEFAULT '',
+            market_sku BIGINT,
+            last_result TEXT NOT NULL DEFAULT '',
+            sent_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (account_id, offer_id)
+        );
+CREATE INDEX IF NOT EXISTS market_cards_product_idx ON market_cards (product_id);

@@ -453,6 +453,138 @@ bool MarketApi::updateStocks(const MarketAccount &acc, const QList<QPair<QString
     return true;
 }
 
+bool MarketApi::categoriesTree(QJsonObject *root, QString *error)
+{
+    const Reply r = request("POST", "/v2/categories/tree", {}, QJsonDocument(QJsonObject{{"language", "RU"}}));
+    if (!r.error.isEmpty()) {
+        if (error)
+            *error = r.error;
+        return false;
+    }
+    *root = r.json.object().value("result").toObject();
+    return true;
+}
+
+bool MarketApi::categoryParameters(qint64 categoryId, qint64 businessId, QJsonArray *params, QString *error)
+{
+    QUrlQuery query;
+    if (businessId > 0)
+        query.addQueryItem("businessId", QString::number(businessId));
+    const Reply r = request("POST", QStringLiteral("/v2/category/%1/parameters").arg(categoryId), query, QJsonDocument(QJsonObject()));
+    if (!r.error.isEmpty()) {
+        if (error)
+            *error = r.error;
+        return false;
+    }
+    *params = r.json.object().value("result").toObject().value("parameters").toArray();
+    return true;
+}
+
+namespace {
+QList<MarketOfferIssue> issuesFrom(const QJsonValue &v)
+{
+    QList<MarketOfferIssue> list;
+    for (const QJsonValue &e : v.toArray()) {
+        const QJsonObject o = e.toObject();
+        list.append({o.value("type").toString(), o.value("parameterId").toInteger(), o.value("message").toString()});
+    }
+    return list;
+}
+} // namespace
+
+bool MarketApi::updateOfferMappings(qint64 businessId, const QJsonArray &offerMappings, QList<MarketOfferResult> *results,
+                                    QString *error)
+{
+    results->clear();
+    const Reply r = request("POST", QStringLiteral("/v2/businesses/%1/offer-mappings/update").arg(businessId), {},
+                            QJsonDocument(QJsonObject{{"offerMappings", offerMappings}}));
+    // Ошибки по товарам приходят и при HTTP 400 - разбираем тело в любом случае.
+    bool anyError = false;
+    for (const QJsonValue &v : r.json.object().value("results").toArray()) {
+        const QJsonObject o = v.toObject();
+        MarketOfferResult res;
+        res.offerId = o.value("offerId").toString();
+        res.errors = issuesFrom(o.value("errors"));
+        res.warnings = issuesFrom(o.value("warnings"));
+        anyError = anyError || !res.errors.isEmpty();
+        results->append(res);
+    }
+    if (!r.error.isEmpty() || anyError) {
+        if (error)
+            *error = anyError ? QStringLiteral("Маркет не принял часть товаров - подробности по каждому в списке") : r.error;
+        return false;
+    }
+    return true;
+}
+
+bool MarketApi::offerInfo(const MarketAccount &acc, const QStringList &offerIds, QHash<QString, MarketOfferInfo> *out,
+                          QString *error)
+{
+    out->clear();
+    constexpr int kChunk = 100;
+    for (int start = 0; start < offerIds.size(); start += kChunk) {
+        QJsonArray ids;
+        for (const QString &id : offerIds.mid(start, kChunk))
+            ids.append(id);
+        {
+            QUrlQuery query;
+            query.addQueryItem("limit", QString::number(kChunk));
+            const Reply r = request("POST", QStringLiteral("/v2/businesses/%1/offer-mappings").arg(acc.businessId), query,
+                                    QJsonDocument(QJsonObject{{"offerIds", ids}}));
+            if (!r.error.isEmpty()) {
+                if (error)
+                    *error = r.error;
+                return false;
+            }
+            for (const QJsonValue &v : r.json.object().value("result").toObject().value("offerMappings").toArray()) {
+                const QJsonObject om = v.toObject();
+                const QJsonObject offer = om.value("offer").toObject();
+                MarketOfferInfo &info = (*out)[offer.value("offerId").toString()];
+                info.offer = offer;
+                const QJsonObject mapping = om.value("mapping").toObject();
+                info.marketSku = mapping.value("marketSku").toInteger();
+                info.marketSkuName = mapping.value("marketSkuName").toString();
+                info.marketCategoryId = mapping.value("marketCategoryId").toInteger();
+                info.marketCategoryName = mapping.value("marketCategoryName").toString();
+                info.cardStatus = offer.value("cardStatus").toString();
+            }
+        }
+        {
+            QUrlQuery query;
+            query.addQueryItem("limit", QString::number(kChunk));
+            const Reply r = request("POST", QStringLiteral("/v2/businesses/%1/offer-cards").arg(acc.businessId), query,
+                                    QJsonDocument(QJsonObject{{"offerIds", ids}}));
+            if (!r.error.isEmpty()) {
+                if (error)
+                    *error = r.error;
+                return false;
+            }
+            for (const QJsonValue &v : r.json.object().value("result").toObject().value("offerCards").toArray()) {
+                const QJsonObject oc = v.toObject();
+                const QString id = oc.value("offerId").toString();
+                if (!out->contains(id))
+                    continue;
+                MarketOfferInfo &info = (*out)[id];
+                info.parameterValues = oc.value("parameterValues").toArray();
+                if (info.cardStatus.isEmpty())
+                    info.cardStatus = oc.value("cardStatus").toString();
+                auto messages = [](const QJsonValue &arr) {
+                    QStringList list;
+                    for (const QJsonValue &e : arr.toArray()) {
+                        const QJsonObject o = e.toObject();
+                        const QString m = o.value("message").toString(), c = o.value("comment").toString();
+                        list << (c.isEmpty() ? m : m + QStringLiteral(": ") + c);
+                    }
+                    return list;
+                };
+                info.contentErrors = messages(oc.value("errors"));
+                info.contentWarnings = messages(oc.value("warnings"));
+            }
+        }
+    }
+    return true;
+}
+
 bool MarketApi::prices(qint64 businessId, QHash<QString, MarketPrice> *out, QString *error)
 {
     out->clear();

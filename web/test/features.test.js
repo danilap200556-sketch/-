@@ -151,6 +151,28 @@ test('фото: загрузка приводит к JPEG ≤1280 + миниат
   assert.match(flash, /Добавлено фото: 3/); assert.match(flash, /evil\.svg/); assert.match(flash, /fake\.jpg/);
 });
 
+test('фото для Маркета: без входа отдаётся только по секретной ссылке', async () => {
+  const id = ids['NK-AF1-42'];
+  const [first, second] = await q('SELECT id FROM product_photos WHERE product_id = $1 ORDER BY position, id', [id]);
+  const token = 'a1b2c3d4'.repeat(8);
+  await site.sys('UPDATE product_photos SET public_token = $1 WHERE id = $2', [token, first.id]);
+  const anon = site.client();
+  const ok = await anon.get(`/pub/photo/${first.id}/${token}.jpg`);
+  assert.equal(ok.status, 200, 'без входа, с правильным токеном');
+  assert.equal(ok.headers.get('content-type'), 'image/jpeg');
+  assert.match(ok.headers.get('cache-control'), /public, max-age=\d+/);
+  assert.match(ok.headers.get('content-security-policy'), /sandbox/);
+  assert.deepEqual([...ok.raw.subarray(0, 3)], [0xff, 0xd8, 0xff], 'JPEG');
+  assert.equal((await anon.get(`/pub/photo/${first.id}/${'0'.repeat(64)}.jpg`)).status, 404, 'чужой токен');
+  assert.equal((await anon.get(`/pub/photo/${second.id}/${token}.jpg`)).status, 404, 'токен от другого фото');
+  assert.equal((await anon.get(`/pub/photo/${second.id}/${token}x.jpg`)).status, 404);
+  assert.equal((await anon.get(`/pub/photo/${first.id}/${token}`)).status, 404, 'без .jpg');
+  assert.equal((await anon.get(`/pub/photo/abc/${token}.jpg`)).status, 404);
+  assert.equal((await anon.get(`/photos/${first.id}`)).status, 302, 'обычный адрес по-прежнему только для вошедших');
+  // у фото без токена публичного адреса нет
+  assert.equal((await anon.get(`/pub/photo/${second.id}/.jpg`)).status, 404);
+});
+
 test('фото: отдача только вошедшим, нужные заголовки, миниатюры в списках и карточках', async () => {
   const id = ids['NK-AF1-42'];
   const [first] = await q('SELECT id FROM product_photos WHERE product_id = $1 ORDER BY position, id', [id]);

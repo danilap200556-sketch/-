@@ -2,7 +2,9 @@
 
 #include <QDate>
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QList>
 #include <QString>
 #include <QUrlQuery>
@@ -93,6 +95,35 @@ struct MarketOrder
     QList<MarketOrderItem> items;
 };
 
+// Ошибка или предупреждение по одному товару при передаче карточек.
+struct MarketOfferIssue
+{
+    QString type;
+    qint64 parameterId = 0;
+    QString message;
+};
+
+struct MarketOfferResult
+{
+    QString offerId;
+    QList<MarketOfferIssue> errors;   // хотя бы одна - ничего из этой пачки не принято
+    QList<MarketOfferIssue> warnings; // принято, но стоит поправить
+};
+
+// Что Маркет знает о товаре: основные данные, карточка, характеристики.
+struct MarketOfferInfo
+{
+    QJsonObject offer;          // offer из ответа offer-mappings (name, description, vendor, pictures, ...)
+    qint64 marketSku = 0;
+    QString marketSkuName;
+    qint64 marketCategoryId = 0;
+    QString marketCategoryName;
+    QString cardStatus;         // OfferCardStatusType
+    QJsonArray parameterValues; // характеристики категории (offer-cards)
+    QStringList contentErrors;
+    QStringList contentWarnings;
+};
+
 // Клиент API Яндекс Маркета для продавцов (https://api.partner.market.yandex.ru),
 // схемы запросов - по официальной спецификации
 // github.com/yandex-market/yandex-market-partner-api. Запросы синхронные
@@ -117,6 +148,19 @@ public:
     bool stocks(const MarketAccount &acc, QHash<QString, MarketStock> *out, QString *error);
     // Передаёт остатки пачками (не больше лимита API на запрос).
     bool updateStocks(const MarketAccount &acc, const QList<QPair<QString, qint64>> &items, QString *error);
+
+    // --- Карточки товаров (ассортимент)
+    // Дерево категорий Маркета (корень с вложенными children).
+    bool categoriesTree(QJsonObject *root, QString *error);
+    // Характеристики листовой категории (CategoryParameterDTO как есть).
+    bool categoryParameters(qint64 categoryId, qint64 businessId, QJsonArray *params, QString *error);
+    // Добавляет и обновляет товары: каждый элемент - {"offer": {...}, "mapping": {...}}; пачками по 100.
+    // При ошибках по товарам results заполняется, а возвращается false с общим текстом.
+    bool updateOfferMappings(qint64 businessId, const QJsonArray &offerMappings, QList<MarketOfferResult> *results,
+                             QString *error);
+    // Данные товаров с Маркета по их артикулам (offerId). Отсутствующих в результате нет.
+    bool offerInfo(const MarketAccount &acc, const QStringList &offerIds, QHash<QString, MarketOfferInfo> *out,
+                   QString *error);
 
     bool prices(qint64 businessId, QHash<QString, MarketPrice> *out, QString *error);
     bool updatePrices(qint64 businessId, const QList<MarketPriceUpdate> &items, QString *error);
