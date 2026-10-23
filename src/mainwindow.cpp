@@ -6,6 +6,7 @@
 #include "importtab.h"
 #include "connectiondialog.h"
 #include "markettab.h"
+#include "marketautosync.h"
 #include "ordertab.h"
 #include "userstab.h"
 #include "applog.h"
@@ -13,6 +14,8 @@
 #include "producteditor.h"
 #include "productfinder.h"
 
+#include <QApplication>
+#include <QCloseEvent>
 #include <QDesktopServices>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -20,10 +23,12 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMenuBar>
 #include <QSettings>
 #include <QShortcut>
 #include <QStackedWidget>
+#include <QSystemTrayIcon>
 #include <QTimer>
 #include <QToolButton>
 #include <QUrl>
@@ -196,6 +201,10 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         // Яндекс Маркет (ключи кабинетов, отправка остатков) и заказы - только для тех, кто может редактировать.
         addPage(tr("Яндекс Маркет"), Theme::Icon::Market, m_marketTab);
         addPage(tr("Заказы Маркета"), Theme::Icon::Orders, m_ordersTab);
+        // Автообновление остатков по расписанию и значок в трее, пока оно включено.
+        m_autoSync = new MarketAutoSync(this);
+        m_marketTab->setAutoSync(m_autoSync);
+        setupTray();
     } else {
         setWindowTitle(windowTitle() + tr(" (только просмотр)"));
         m_productsTab->setReadOnly(true);
@@ -328,6 +337,71 @@ void MainWindow::updateThemeButton()
     // Показываем, на какую тему переключит нажатие.
     const bool dark = Theme::current() == Theme::Mode::Dark;
     m_themeButton->setIcon(Theme::icon(dark ? Theme::Icon::Sun : Theme::Icon::Moon, QColor("#c5cde0"), 20));
+}
+
+void MainWindow::setupTray()
+{
+    if (!QSystemTrayIcon::isSystemTrayAvailable())
+        return;
+    QApplication::setQuitOnLastWindowClosed(false); // выходим сами (closeEvent / «Выход» в трее)
+    m_tray = new QSystemTrayIcon(QIcon(Theme::logo(32)), this);
+    auto *menu = new QMenu(this);
+    menu->addAction(tr("Открыть окно"), this, &MainWindow::restoreFromTray);
+    menu->addAction(tr("Обновить остатки на Маркете сейчас"), m_autoSync, &MarketAutoSync::runNow);
+    menu->addSeparator();
+    menu->addAction(tr("Выход"), this, &MainWindow::quitApp);
+    m_tray->setContextMenu(menu);
+    connect(m_tray, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
+        if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick)
+            restoreFromTray();
+    });
+    connect(m_autoSync, &MarketAutoSync::problem, this, [this](const QString &text) {
+        if (m_tray->isVisible() && !isActiveWindow())
+            m_tray->showMessage(tr("Маркет: остатки не обновились"), text, QSystemTrayIcon::Warning, 10000);
+    });
+    auto update = [this]() {
+        // Значок в трее виден, пока включено автообновление.
+        const bool on = m_autoSync->settings().enabled;
+        m_tray->setToolTip(tr("Склад. %1").arg(m_autoSync->statusText()).left(250));
+        if (m_tray->isVisible() != on)
+            m_tray->setVisible(on);
+    };
+    connect(m_autoSync, &MarketAutoSync::statusChanged, this, update);
+    update();
+}
+
+void MainWindow::restoreFromTray()
+{
+    showNormal();
+    raise();
+    activateWindow();
+}
+
+void MainWindow::quitApp()
+{
+    m_quitting = true;
+    if (m_tray)
+        m_tray->hide();
+    close();
+    QApplication::quit();
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (!m_quitting && m_tray && m_tray->isVisible() && m_autoSync && m_autoSync->settings().enabled) {
+        event->ignore();
+        hide();
+        if (!m_trayHintShown) {
+            m_trayHintShown = true;
+            m_tray->showMessage(tr("Склад работает в фоне"),
+                                tr("Остатки на Маркете обновляются по расписанию. Открыть окно - значок здесь, "
+                                   "выйти совсем - правый щелчок → «Выход»."),
+                                QSystemTrayIcon::Information, 8000);
+        }
+        return;
+    }
+    event->accept();
+    QApplication::quit();
 }
 
 void MainWindow::refreshAfterProductEdit()

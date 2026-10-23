@@ -1,6 +1,7 @@
 #include "markettab.h"
 #include "productfinder.h"
 #include "marketaccountdialog.h"
+#include "marketautosync.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -12,9 +13,11 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QSqlDatabase>
 #include <QSqlError>
@@ -92,6 +95,7 @@ MarketTab::MarketTab(bool isAdmin, QWidget *parent)
     layout->addWidget(splitter, 1);
 
     auto *pages = new QTabWidget(splitter);
+    m_pages = pages;
 
     // --- Остатки ---
     auto *stockPage = new QWidget(pages);
@@ -203,6 +207,7 @@ void MarketTab::refresh()
     }
     m_accountCombo->blockSignals(false);
     updateAccountInfo();
+    fillAutoAccounts();
 }
 
 bool MarketTab::currentAccount(MarketAccount *acc)
@@ -281,34 +286,6 @@ void MarketTab::deleteAccount()
 // ---------------------------------------------------------------------------
 // Наши данные
 
-QHash<QString, MarketTab::LocalItem> MarketTab::loadLocal(const MarketAccount &acc) const
-{
-    QString warehouseFilter;
-    if (!acc.localWarehouseIds.isEmpty()) {
-        QStringList ids;
-        for (int id : acc.localWarehouseIds)
-            ids << QString::number(id);
-        warehouseFilter = QStringLiteral(" AND s.warehouse_id IN (%1)").arg(ids.join(','));
-    }
-    QSqlQuery q(QStringLiteral(
-                    "SELECT p.id, COALESCE(NULLIF(TRIM(p.market_sku), ''), p.sku), p.name, p.price, "
-                    "COALESCE((SELECT SUM(s.quantity) FROM stock s WHERE s.product_id = p.id%1), 0) "
-                    "FROM products p")
-                    .arg(warehouseFilter));
-    QHash<QString, LocalItem> result;
-    while (q.next()) {
-        // Несколько наших товаров могут быть привязаны к одному артикулу
-        // Маркета - тогда их остатки складываются.
-        LocalItem &item = result[q.value(1).toString().trimmed()];
-        item.productIds.append(q.value(0).toInt());
-        item.name = item.name.isEmpty() ? q.value(2).toString() : item.name + " + " + q.value(2).toString();
-        if (item.price <= 0)
-            item.price = q.value(3).toDouble();
-        item.stock += qMax<qint64>(0, q.value(4).toLongLong());
-    }
-    return result;
-}
-
 // ---------------------------------------------------------------------------
 // Остатки
 
@@ -320,52 +297,14 @@ void MarketTab::syncStocks()
     QApplication::setOverrideCursor(Qt::WaitCursor);
     log(tr("«%1»: загружаю каталог и остатки с Маркета...").arg(acc.name));
     MarketApi api(acc.apiKey, [this](const QString &s) { log(s); });
-    QHash<QString, MarketOffer> catalog;
-    QHash<QString, MarketStock> stocks;
     QString err;
-    const bool ok = api.catalog(acc, &catalog, &err) && api.stocks(acc, &stocks, &err);
+    const bool ok = MarketSync::compareStocks(acc, api, &m_stockRows, &err);
     QApplication::restoreOverrideCursor();
     if (!ok) {
+        m_stockRows.clear();
         log(tr("Ошибка: %1").arg(err));
         QMessageBox::warning(this, tr("Маркет"), tr("Не удалось получить данные с Маркета:\n%1").arg(err));
         return;
-    }
-
-    const auto local = loadLocal(acc);
-    m_stockRows.clear();
-    for (auto it = local.cbegin(); it != local.cend(); ++it) {
-        StockRow row;
-        row.offerId = it.key();
-        row.name = it->name;
-        row.local = it->stock;
-        const MarketStock ms = stocks.value(it.key());
-        row.marketFit = ms.fit;
-        row.marketAvailable = ms.available;
-        const auto cat = catalog.constFind(it.key());
-        if (cat == catalog.cend())
-            row.status = Status::NotInCatalog;
-        else if (cat->archived)
-            row.status = Status::Archived;
-        else if (!cat->inCampaign)
-            row.status = Status::NotInCampaign;
-        else
-            row.status = row.local == row.marketFit ? Status::Match : Status::Differ;
-        m_stockRows.append(row);
-    }
-    // Товары, которые есть на Маркете с ненулевым остатком, но которых нет у нас.
-    for (auto it = catalog.cbegin(); it != catalog.cend(); ++it) {
-        if (local.contains(it.key()) || it->archived || !it->inCampaign)
-            continue;
-        const MarketStock ms = stocks.value(it.key());
-        if (ms.fit <= 0)
-            continue;
-        StockRow row;
-        row.offerId = it.key();
-        row.name = it->name;
-        row.marketFit = ms.fit;
-        row.marketAvailable = ms.available;
-        row.status = Status::NotInApp;
-        m_stockRows.append(row);
     }
     m_stockAccountId = acc.id;
     fillStockTable();
@@ -428,16 +367,8 @@ void MarketTab::pushStocks()
                                     "отправляется ровно то, что показано в таблице сверки."));
         return;
     }
-    QList<QPair<QString, qint64>> items;
     int zeroed = 0;
-    for (const auto &r : m_stockRows) {
-        if (r.status == Status::Differ) {
-            items.append({r.offerId, r.local});
-        } else if (r.status == Status::NotInApp && m_zeroMissing->isChecked()) {
-            items.append({r.offerId, 0});
-            ++zeroed;
-        }
-    }
+    const auto items = MarketSync::itemsToPush(m_stockRows, m_zeroMissing->isChecked(), &zeroed);
     if (items.isEmpty()) {
         QMessageBox::information(this, tr("Нечего отправлять"), tr("Все остатки уже совпадают с Маркетом."));
         return;
@@ -495,7 +426,7 @@ void MarketTab::syncPrices()
         return;
     }
 
-    const auto local = loadLocal(acc);
+    const auto local = MarketSync::loadLocal(acc);
     m_priceRows.clear();
     for (auto it = local.cbegin(); it != local.cend(); ++it) {
         PriceRow row;
@@ -696,4 +627,137 @@ void MarketTab::applyFilter()
     };
     apply(m_stockTable, SColStatus, SColOffer, SColName);
     apply(m_priceTable, PColStatus, PColOffer, PColName);
+}
+
+// ---------------------------------------------------------------------------
+// Автообновление остатков
+
+void MarketTab::setAutoSync(MarketAutoSync *sync)
+{
+    m_auto = sync;
+    auto *page = new QWidget(m_pages);
+    auto *l = new QVBoxLayout(page);
+
+    m_autoEnabled = new QCheckBox(tr("Автоматически обновлять остатки на Маркете"), page);
+    QFont bold = m_autoEnabled->font();
+    bold.setBold(true);
+    m_autoEnabled->setFont(bold);
+    l->addWidget(m_autoEnabled);
+
+    auto *every = new QHBoxLayout();
+    every->addWidget(new QLabel(tr("Раз в"), page));
+    m_autoEvery = new QSpinBox(page);
+    m_autoEvery->setRange(1, 999);
+    every->addWidget(m_autoEvery);
+    m_autoUnit = new QComboBox(page);
+    m_autoUnit->addItem(tr("минут"), 1);
+    m_autoUnit->addItem(tr("часов"), 60);
+    every->addWidget(m_autoUnit);
+    every->addWidget(new QLabel(tr("(не чаще, чем раз в %1 минут)").arg(MarketAutoSync::kMinIntervalMinutes), page));
+    every->addStretch();
+    l->addLayout(every);
+
+    l->addWidget(new QLabel(tr("Какие кабинеты обновлять:"), page));
+    m_autoAccounts = new QListWidget(page);
+    m_autoAccounts->setMaximumHeight(110);
+    l->addWidget(m_autoAccounts);
+
+    m_autoZero = new QCheckBox(tr("обнулять на Маркете товары, которых нет в приложении"), page);
+    l->addWidget(m_autoZero);
+
+    auto *note = new QLabel(tr("Сверка и отправка идут сами, как кнопки «Сверить» и «Отправить» на вкладке «Остатки», "
+                               "только без вопросов: отправляются расхождения. Работает, пока запущено приложение: "
+                               "если закрыть окно, оно свернётся в значок у часов (трей) и продолжит работать, "
+                               "выйти совсем - значок → «Выход». Расписание хранится на этом компьютере."), page);
+    note->setWordWrap(true);
+    note->setObjectName("muted");
+    l->addWidget(note);
+
+    m_autoStatus = new QLabel(page);
+    m_autoStatus->setWordWrap(true);
+    l->addWidget(m_autoStatus);
+
+    auto *buttons = new QHBoxLayout();
+    auto *saveBtn = new QPushButton(tr("Сохранить расписание"), page);
+    saveBtn->setProperty("primary", true);
+    m_autoRunBtn = new QPushButton(tr("Обновить остатки сейчас"), page);
+    buttons->addWidget(saveBtn);
+    buttons->addWidget(m_autoRunBtn);
+    buttons->addStretch();
+    l->addLayout(buttons);
+    l->addStretch();
+    m_pages->addTab(page, tr("Автообновление"));
+
+    const auto s = sync->settings();
+    m_autoEnabled->setChecked(s.enabled);
+    const bool hours = s.intervalMinutes % 60 == 0 && s.intervalMinutes >= 60;
+    m_autoUnit->setCurrentIndex(hours ? 1 : 0);
+    m_autoEvery->setValue(hours ? s.intervalMinutes / 60 : s.intervalMinutes);
+    m_autoZero->setChecked(s.zeroMissing);
+    fillAutoAccounts();
+
+    connect(saveBtn, &QPushButton::clicked, this, &MarketTab::saveAutoSettings);
+    connect(m_autoRunBtn, &QPushButton::clicked, this, [this]() {
+        if (m_auto->isRunning())
+            return;
+        m_auto->runNow();
+        QMessageBox::information(this, tr("Маркет"), m_auto->lastResult().isEmpty() ? tr("Готово.") : m_auto->lastResult());
+    });
+    connect(sync, &MarketAutoSync::message, this, &MarketTab::log);
+    connect(sync, &MarketAutoSync::statusChanged, this, &MarketTab::updateAutoStatus);
+    updateAutoStatus();
+}
+
+void MarketTab::fillAutoAccounts()
+{
+    if (!m_auto)
+        return;
+    const auto chosen = m_auto->settings().accountIds;
+    m_autoAccounts->clear();
+    for (const MarketAccount &a : std::as_const(m_accounts)) {
+        auto *item = new QListWidgetItem(a.name, m_autoAccounts);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(chosen.isEmpty() || chosen.contains(a.id) ? Qt::Checked : Qt::Unchecked);
+        item->setData(Qt::UserRole, a.id);
+    }
+}
+
+void MarketTab::saveAutoSettings()
+{
+    if (!m_auto)
+        return;
+    MarketAutoSync::Settings s;
+    s.enabled = m_autoEnabled->isChecked();
+    s.intervalMinutes = m_autoEvery->value() * m_autoUnit->currentData().toInt();
+    if (s.intervalMinutes < MarketAutoSync::kMinIntervalMinutes) {
+        s.intervalMinutes = MarketAutoSync::kMinIntervalMinutes;
+        m_autoUnit->setCurrentIndex(0);
+        m_autoEvery->setValue(s.intervalMinutes);
+        QMessageBox::information(this, tr("Маркет"),
+                                 tr("Чаще, чем раз в %1 минут, остатки не обновляются (у Маркета есть лимиты на запросы). "
+                                    "Поставлено %1.").arg(MarketAutoSync::kMinIntervalMinutes));
+    }
+    int checked = 0;
+    for (int i = 0; i < m_autoAccounts->count(); ++i) {
+        if (m_autoAccounts->item(i)->checkState() == Qt::Checked) {
+            ++checked;
+            s.accountIds << m_autoAccounts->item(i)->data(Qt::UserRole).toInt();
+        }
+    }
+    if (s.enabled && m_autoAccounts->count() > 0 && checked == 0) {
+        QMessageBox::warning(this, tr("Маркет"), tr("Отметьте хотя бы один кабинет."));
+        return;
+    }
+    if (checked == m_autoAccounts->count())
+        s.accountIds.clear(); // все (и те, что добавят позже)
+    s.zeroMissing = m_autoZero->isChecked();
+    m_auto->setSettings(s);
+}
+
+void MarketTab::updateAutoStatus()
+{
+    if (m_auto && m_autoStatus) {
+        m_autoStatus->setText(m_auto->statusText());
+        m_autoRunBtn->setEnabled(!m_auto->isRunning());
+    }
 }

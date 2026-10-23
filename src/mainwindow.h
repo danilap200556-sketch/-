@@ -20,12 +20,18 @@ class QLineEdit;
 class QListWidget;
 class QStackedWidget;
 class QToolButton;
+class QSystemTrayIcon;
+class MarketAutoSync;
 
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
     explicit MainWindow(const QString &username, QWidget *parent = nullptr);
+
+protected:
+    // Если включено автообновление остатков Маркета, окно прячется в трей, а не закрывает программу.
+    void closeEvent(QCloseEvent *event) override;
 
 private slots:
     void scanEntered();
@@ -45,6 +51,9 @@ private:
     void markDirty(QWidget *page);
     void toggleTheme();
     void updateThemeButton();
+    void setupTray();
+    void restoreFromTray();
+    void quitApp();
 
     QListWidget *m_sidebar = nullptr;
     QStackedWidget *m_pages = nullptr;
@@ -52,6 +61,10 @@ private:
     QSet<QWidget *> m_dirty;
     QHash<QWidget *, qint64> m_loadedAt;
     QElapsedTimer m_clock;
+    MarketAutoSync *m_autoSync = nullptr;
+    QSystemTrayIcon *m_tray = nullptr;
+    bool m_quitting = false;
+    bool m_trayHintShown = false;
     QToolButton *m_themeButton = nullptr;
     QLineEdit *m_scan = nullptr;
     bool m_canEdit = true;

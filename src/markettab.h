@@ -1,6 +1,7 @@
 #pragma once
 
 #include "marketapi.h"
+#include "marketsync.h"
 
 #include <QWidget>
 
@@ -11,6 +12,10 @@ class QLabel;
 class QPlainTextEdit;
 class QPushButton;
 class QTableWidget;
+class QListWidget;
+class QSpinBox;
+class QTabWidget;
+class MarketAutoSync;
 
 // Работа с кабинетами Яндекс Маркета: сверка и передача остатков и цен.
 // Всё, что уходит на Маркет, сначала показывается в таблице сверки с
@@ -21,6 +26,9 @@ class MarketTab : public QWidget
     Q_OBJECT
 public:
     explicit MarketTab(bool isAdmin, QWidget *parent = nullptr);
+
+    // Подключает страницу «Автообновление» (расписание отправки остатков).
+    void setAutoSync(MarketAutoSync *sync);
 
 public slots:
     void refresh();
@@ -38,16 +46,10 @@ private slots:
     void applyFilter();
 
 private:
-    enum class Status { Match, Differ, NotInCatalog, NotInCampaign, Archived, NotInApp, NoMarketPrice, NoLocalPrice };
+    using Status = MarketSync::Status;
+    using StockRow = MarketSync::StockRow;
+    using LocalItem = MarketSync::LocalItem;
 
-    struct StockRow {
-        QString offerId;
-        QString name;
-        qint64 local = 0;
-        qint64 marketFit = 0;
-        qint64 marketAvailable = 0;
-        Status status = Status::Match;
-    };
     struct PriceRow {
         QString offerId;
         QString name;
@@ -57,19 +59,14 @@ private:
         double discountBase = 0;
         Status status = Status::Match;
     };
-    struct LocalItem {
-        QString name;
-        QList<int> productIds;
-        qint64 stock = 0;
-        double price = 0;
-    };
-
     bool currentAccount(MarketAccount *acc);
-    QHash<QString, LocalItem> loadLocal(const MarketAccount &acc) const;
     void log(const QString &text);
     void updateAccountInfo();
     void fillStockTable();
     void fillPriceTable();
+    void fillAutoAccounts();
+    void saveAutoSettings();
+    void updateAutoStatus();
 
     bool m_isAdmin;
     QList<MarketAccount> m_accounts;
@@ -88,4 +85,14 @@ private:
     QTableWidget *m_priceTable;
     QLabel *m_priceSummary;
     QPlainTextEdit *m_log;
+
+    QTabWidget *m_pages = nullptr;
+    MarketAutoSync *m_auto = nullptr;
+    QCheckBox *m_autoEnabled = nullptr;
+    QSpinBox *m_autoEvery = nullptr;
+    QComboBox *m_autoUnit = nullptr;
+    QListWidget *m_autoAccounts = nullptr;
+    QCheckBox *m_autoZero = nullptr;
+    QLabel *m_autoStatus = nullptr;
+    QPushButton *m_autoRunBtn = nullptr;
 };
