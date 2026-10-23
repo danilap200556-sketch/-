@@ -137,7 +137,6 @@ StockTab::StockTab(QWidget *parent)
     movementLayout->addWidget(m_movementTable);
     splitter->addWidget(movementBox);
 
-    refresh();
 
     connect(receiptBtn, &QPushButton::clicked, this, &StockTab::doReceipt);
     connect(writeOffBtn, &QPushButton::clicked, this, &StockTab::doWriteOff);

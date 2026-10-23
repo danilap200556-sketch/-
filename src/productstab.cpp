@@ -55,6 +55,22 @@ public:
         }
         return QSqlTableModel::data(idx, role);
     }
+
+protected:
+    // Описание и старый путь к фото в списке не показываются (колонки скрыты), а описания бывают длинными:
+    // не тянем их с сервера на каждом обновлении списка.
+    QString selectStatement() const override
+    {
+        QString s = QSqlTableModel::selectStatement();
+        const int from = s.indexOf(QLatin1String(" FROM "));
+        if (from > 0) {
+            QString head = s.left(from);
+            head.replace(QLatin1String("\"description\""), QLatin1String("NULL AS \"description\""));
+            head.replace(QLatin1String("\"photo_path\""), QLatin1String("NULL AS \"photo_path\""));
+            s = head + s.mid(from);
+        }
+        return s;
+    }
 };
 
 } // namespace
@@ -116,7 +132,6 @@ ProductsTab::ProductsTab(QWidget *parent)
     m_table->verticalHeader()->setDefaultSectionSize(PhotoCache::kIconSize + 6);
     layout->addWidget(m_table);
 
-    refresh();
 
     connect(addBtn, &QPushButton::clicked, this, &ProductsTab::addProduct);
     connect(editBtn, &QPushButton::clicked, this, &ProductsTab::editProduct);
@@ -266,30 +281,41 @@ void ProductsTab::addProduct()
         return;
 
     const auto d = dlg.data();
-    QSqlRecord rec = m_model->record();
-    rec.setValue("sku", d.sku);
-    rec.setValue("name", d.name);
-    rec.setValue("description", d.description);
-    rec.setValue("photo_path", d.photoPath);
-    rec.setValue("price", d.price);
-    rec.setValue("custom_code", d.customCode);
-    rec.setValue("market_sku", d.marketSku);
-    rec.remove(rec.indexOf("id"));
-    rec.remove(rec.indexOf("created_at"));
-
-    if (!m_model->insertRecord(-1, rec) || !m_model->submitAll()) {
-        QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось сохранить товар:\n%1")
-                                                       .arg(m_model->lastError().text()));
-        m_model->revertAll();
+    // Товар и его штрихкоды - одним запросом (а не вставка через модель с перечитыванием всей таблицы,
+    // потом запрос id и отдельная запись штрихкодов).
+    QStringList codes;
+    for (const QString &raw : d.barcodes) {
+        const QString c = Barcode::normalize(raw);
+        if (!c.isEmpty() && !codes.contains(c))
+            codes << c;
+    }
+    QString sql = QStringLiteral(
+        "WITH p AS (INSERT INTO products (sku, name, description, photo_path, price, custom_code, market_sku) "
+        "           VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id)");
+    if (!codes.isEmpty())
+        sql += QStringLiteral(", b AS (INSERT INTO product_barcodes (barcode, product_id) SELECT c.code, p.id FROM p, "
+                              "(VALUES %1) c(code))").arg(QStringList(codes.size(), QStringLiteral("(?)")).join(QLatin1Char(',')));
+    sql += QStringLiteral(" SELECT id FROM p");
+    QSqlQuery ins;
+    ins.prepare(sql);
+    ins.addBindValue(d.sku);
+    ins.addBindValue(d.name);
+    ins.addBindValue(d.description);
+    ins.addBindValue(d.photoPath);
+    ins.addBindValue(d.price);
+    ins.addBindValue(d.customCode);
+    ins.addBindValue(d.marketSku);
+    for (const QString &c : codes)
+        ins.addBindValue(c);
+    if (!ins.exec() || !ins.next()) {
+        const QString text = ins.lastError().text();
+        const bool barcodeClash = ins.lastError().nativeErrorCode() == QLatin1String("23505") && text.contains(QLatin1String("product_barcodes"));
+        QMessageBox::warning(this, tr("Ошибка"),
+                             barcodeClash ? tr("Не удалось сохранить товар:\nодин из штрихкодов уже привязан к другому товару.")
+                                          : tr("Не удалось сохранить товар:\n%1").arg(text));
         return;
     }
-    QSqlQuery idQuery;
-    idQuery.prepare("SELECT id FROM products WHERE sku = ?");
-    idQuery.addBindValue(d.sku);
-    if (idQuery.exec() && idQuery.next()) {
-        saveBarcodes(idQuery.value(0).toInt(), d.barcodes);
-        savePhotos(idQuery.value(0).toInt(), dlg.photoChanges());
-    }
+    savePhotos(ins.value(0).toInt(), dlg.photoChanges());
     refresh();
     emit productsChanged();
 }
@@ -300,10 +326,18 @@ void ProductsTab::editProduct()
     if (!cur.isValid())
         return;
     const int productId = m_model->data(m_model->index(cur.row(), ColId)).toInt();
+    const QString oldSku = m_model->data(m_model->index(cur.row(), ColSku)).toString();
     if (!ProductEditor::edit(productId, this, m_readOnly))
         return;
-    refresh();
-    selectProduct(productId);
+    // Перечитываем только правленую строку, а не весь список (в большом каталоге это секунды). Если артикул
+    // поменялся, строка могла сменить место при сортировке - тогда обновляем весь список.
+    PhotoCache::invalidate(productId);
+    if (m_model->selectRow(cur.row()) && m_model->data(m_model->index(cur.row(), ColSku)).toString() == oldSku) {
+        prefetchVisible();
+    } else {
+        refresh();
+        selectProduct(productId);
+    }
     emit productsChanged();
 }
 

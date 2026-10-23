@@ -24,6 +24,7 @@
 #include <QSettings>
 #include <QShortcut>
 #include <QStackedWidget>
+#include <QTimer>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -52,8 +53,9 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
             QDesktopServices::openUrl(QUrl::fromLocalFile(path));
     });
 
-    const bool isAdmin = AuthService::isAdmin(username);
-    const bool canEdit = AuthService::canEdit(username); // false - роль "только просмотр"
+    bool isAdmin = false;
+    bool canEdit = false; // false - роль "только просмотр"
+    AuthService::permissions(username, &isAdmin, &canEdit);
     m_canEdit = canEdit;
 
     auto *accountMenu = menuBar()->addMenu(tr("Учётная запись"));
@@ -208,29 +210,39 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         addPage(tr("Пользователи"), Theme::Icon::Users, m_usersTab);
     }
 
-    // Изменения товаров/складов должны сразу отражаться там, где на них
-    // ссылаются другие вкладки (комбобоксы, сводные таблицы).
-    connect(m_productsTab, &ProductsTab::productsChanged, m_stockTab, &StockTab::refresh);
-    connect(m_productsTab, &ProductsTab::productsChanged, m_labelsTab, &LabelsTab::refresh);
-    connect(m_warehousesTab, &WarehousesTab::warehousesChanged, m_stockTab, &StockTab::refresh);
-    connect(m_warehousesTab, &WarehousesTab::warehousesChanged, m_labelsTab, &LabelsTab::refresh);
-    connect(m_warehousesTab, &WarehousesTab::warehousesChanged, m_importTab, &ImportTab::refresh);
-    connect(m_importTab, &ImportTab::dataImported, m_stockTab, &StockTab::refresh);
-    connect(m_importTab, &ImportTab::dataImported, m_productsTab, &ProductsTab::refresh);
-    connect(m_importTab, &ImportTab::dataImported, m_labelsTab, &LabelsTab::refresh);
-    connect(m_warehousesTab, &WarehousesTab::warehousesChanged, m_marketTab, &MarketTab::refresh);
+    // Изменения товаров/складов должны отражаться там, где на них ссылаются другие страницы
+    // (комбобоксы, сводные таблицы): помечаем такие страницы устаревшими, а обновляются они,
+    // когда на них перейдут (или сразу, если страница открыта).
+    connect(m_productsTab, &ProductsTab::productsChanged, this, [this]() {
+        markDirty(m_stockTab);
+        markDirty(m_labelsTab);
+    });
+    connect(m_warehousesTab, &WarehousesTab::warehousesChanged, this, [this]() {
+        markDirty(m_stockTab);
+        markDirty(m_labelsTab);
+        markDirty(m_importTab);
+        markDirty(m_marketTab);
+    });
+    connect(m_importTab, &ImportTab::dataImported, this, [this]() {
+        markDirty(m_stockTab);
+        markDirty(m_productsTab);
+        markDirty(m_labelsTab);
+    });
     connect(m_stockTab, &StockTab::productEdited, this, [this]() {
-        m_productsTab->refresh();
-        m_labelsTab->refresh();
+        markDirty(m_productsTab);
+        markDirty(m_labelsTab);
     });
     connect(m_ordersTab, &OrdersTab::productEdited, this, [this]() {
-        m_productsTab->refresh();
-        m_stockTab->refresh();
-        m_labelsTab->refresh();
+        markDirty(m_productsTab);
+        markDirty(m_stockTab);
+        markDirty(m_labelsTab);
     });
 
+    m_clock.start();
     connect(m_sidebar, &QListWidget::currentRowChanged, this, &MainWindow::pageChanged);
     m_sidebar->setCurrentRow(0);
+    // Окно сначала рисуется, и только потом подгружается список товаров.
+    QTimer::singleShot(0, this, [this]() { ensureLoaded(m_pages->currentWidget()); });
 }
 
 void MainWindow::addPage(const QString &title, Theme::Icon icon, QWidget *page)
@@ -260,17 +272,49 @@ void MainWindow::pageChanged(int row)
         return;
     m_pages->setCurrentIndex(row);
     m_pageTitle->setText(m_sidebar->item(row)->text());
-    QWidget *w = m_pages->widget(row);
-    if (w == m_stockTab)
+    ensureLoaded(m_pages->widget(row));
+}
+
+void MainWindow::refreshPage(QWidget *w)
+{
+    if (w == m_productsTab)
+        m_productsTab->refresh();
+    else if (w == m_warehousesTab)
+        m_warehousesTab->refresh();
+    else if (w == m_stockTab)
         m_stockTab->refresh();
     else if (w == m_labelsTab)
         m_labelsTab->refresh();
     else if (w == m_importTab)
         m_importTab->refresh();
+    else if (w == m_marketTab)
+        m_marketTab->refresh();
     else if (w == m_ordersTab)
         m_ordersTab->refresh();
     else if (w == m_usersTab)
         m_usersTab->refresh();
+    m_dirty.remove(w);
+    m_loadedAt[w] = m_clock.elapsed();
+}
+
+void MainWindow::ensureLoaded(QWidget *w)
+{
+    if (!w)
+        return;
+    // Списки, которые правят и с других компьютеров, перечитываем и без пометки, если им больше 20 секунд;
+    // список товаров - только по пометке (иначе при возврате на него сбрасывалось бы выделение).
+    constexpr qint64 kStaleMs = 20000;
+    const bool never = !m_loadedAt.contains(w);
+    const bool stale = w != m_productsTab && w != m_warehousesTab && m_clock.elapsed() - m_loadedAt.value(w) > kStaleMs;
+    if (never || stale || m_dirty.contains(w))
+        refreshPage(w);
+}
+
+void MainWindow::markDirty(QWidget *w)
+{
+    m_dirty.insert(w);
+    if (m_pages->currentWidget() == w)
+        ensureLoaded(w);
 }
 
 void MainWindow::toggleTheme()
@@ -288,9 +332,9 @@ void MainWindow::updateThemeButton()
 
 void MainWindow::refreshAfterProductEdit()
 {
-    m_productsTab->refresh();
-    m_stockTab->refresh();
-    m_labelsTab->refresh();
+    markDirty(m_productsTab);
+    markDirty(m_stockTab);
+    markDirty(m_labelsTab);
 }
 
 void MainWindow::scanEntered()

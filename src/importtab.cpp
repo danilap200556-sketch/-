@@ -5,6 +5,7 @@
 #include "xlsx.h"
 #include "barcode.h"
 
+#include <QHash>
 #include <QRegularExpression>
 
 #include <QCheckBox>
@@ -151,7 +152,6 @@ ImportTab::ImportTab(QWidget *parent)
 
     splitter->addWidget(rightBox);
 
-    refresh();
 
     connect(pickBtn, &QPushButton::clicked, this, &ImportTab::pickFile);
     connect(exportBtn, &QPushButton::clicked, this, &ImportTab::exportStock);
@@ -362,11 +362,43 @@ void ImportTab::runImport()
     }
 
     QMap<QString, int> productBySku;
+    QHash<int, QString> skuById;
     {
         QSqlQuery q("SELECT id, sku FROM products");
-        while (q.next())
+        while (q.next()) {
             productBySku[q.value(1).toString()] = q.value(0).toInt();
+            skuById[q.value(0).toInt()] = q.value(1).toString();
+        }
     }
+    // Штрихкоды читаем один раз: проверка каждого кода по строкам файла отдельным запросом - это сотни ожиданий
+    // на удалённой базе.
+    QHash<QString, int> productByBarcode;
+    {
+        QSqlQuery q("SELECT barcode, product_id FROM product_barcodes");
+        while (q.next())
+            productByBarcode[q.value(0).toString()] = q.value(1).toInt();
+    }
+    auto attachCode = [&](int pid, const QString &code, QString *err) {
+        if (!Barcode::isValid(code, err))
+            return false;
+        const int owner = productByBarcode.value(code, -1);
+        if (owner == pid)
+            return true;
+        if (owner >= 0) {
+            *err = QStringLiteral("штрихкод %1 уже привязан к товару %2").arg(code, skuById.value(owner));
+            return false;
+        }
+        QSqlQuery q;
+        q.prepare("INSERT INTO product_barcodes (barcode, product_id) VALUES (?, ?)");
+        q.addBindValue(code);
+        q.addBindValue(pid);
+        if (!q.exec()) {
+            *err = q.lastError().text();
+            return false;
+        }
+        productByBarcode[code] = pid;
+        return true;
+    };
 
     const bool asInventory = m_modeInventory->isChecked();
     const bool asWriteOff = m_modeWriteOff->isChecked();
@@ -396,12 +428,12 @@ void ImportTab::runImport()
         int productId = key.isEmpty() ? -1 : productBySku.value(key, -1);
         for (const QString &c : codes)
             if (productId < 0)
-                productId = Barcode::productIdFor(c);
+                productId = productByBarcode.value(c, -1);
         auto linkBarcodes = [&](int pid) {
             for (const QString &c : codes) {
                 QString err;
-                const bool isNew = Barcode::productIdFor(c) != pid;
-                if (!Barcode::attach(pid, c, &err))
+                const bool isNew = productByBarcode.value(c, -1) != pid;
+                if (!attachCode(pid, c, &err))
                     logLines << tr("Строка %1: штрихкод «%2» не привязан - %3").arg(r + 1).arg(c, err);
                 else if (isNew)
                     ++linked;
@@ -477,6 +509,7 @@ void ImportTab::runImport()
             }
             productId = ins.lastInsertId().toInt();
             productBySku[key] = productId;
+            skuById[productId] = key;
             ++created;
             logLines << tr("Строка %1: создан новый товар «%2»").arg(r + 1).arg(key);
         }

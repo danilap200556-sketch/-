@@ -180,6 +180,16 @@ AuthService::Role AuthService::roleOf(const User &user)
     return user.isAdmin ? Role::Admin : (user.readOnly ? Role::Viewer : Role::Editor);
 }
 
+void AuthService::permissions(const QString &username, bool *isAdmin, bool *canEdit)
+{
+    QSqlQuery q;
+    q.prepare("SELECT is_admin, NOT (read_only AND NOT is_admin) FROM users WHERE username = ?");
+    q.addBindValue(username.trimmed());
+    const bool found = q.exec() && q.next();
+    *isAdmin = found && q.value(0).toBool();
+    *canEdit = found && q.value(1).toBool();
+}
+
 bool AuthService::canEdit(const QString &username)
 {
     QSqlQuery q;

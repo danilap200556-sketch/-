@@ -5,6 +5,7 @@
 
 #include <QDialog>
 #include <QHash>
+#include <QPair>
 #include <QStringList>
 
 class QComboBox;
@@ -70,5 +71,6 @@ private:
     QStringList m_problems;
     QString m_lastError;
     bool m_applied = false;
+    QHash<int, QPair<QString, QString>> m_info; // id товара -> (артикул, название), читаются пачкой
     bool m_updating = false;
 };

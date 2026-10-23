@@ -1,4 +1,6 @@
 #include "labelstab.h"
+
+#include <QSignalBlocker>
 #include "barcode.h"
 #include "qrlabel.h"
 
@@ -119,7 +121,6 @@ LabelsTab::LabelsTab(QWidget *parent)
     previewLayout->addWidget(m_previewArea);
     mainLayout->addWidget(previewBox, 2);
 
-    refresh();
     onTypeChanged();
 
     connect(m_type, &QComboBox::currentIndexChanged, this, &LabelsTab::onTypeChanged);
@@ -135,10 +136,30 @@ LabelsTab::LabelsTab(QWidget *parent)
 
 void LabelsTab::refresh()
 {
+    // Выбранное сохраняем, а сигналы комбобоксов глушим: иначе каждое addItem() вызывало бы свой запрос
+    // (штрихкоды товара, места склада), а выбор человека сбрасывался бы при каждом обновлении.
+    const QSignalBlocker blockProduct(m_product);
+    const QSignalBlocker blockWarehouse(m_warehouse);
+    const QString prevProductId = m_product->currentData().toStringList().value(0);
+    const int prevWarehouse = m_warehouse->currentData().toInt();
+    const int prevLocation = m_location->currentData().toInt();
+
     fillProductCombo();
-    fillBarcodeCombo();
+    for (int i = 0; i < m_product->count() && !prevProductId.isEmpty(); ++i) {
+        if (m_product->itemData(i).toStringList().value(0) == prevProductId) {
+            m_product->setCurrentIndex(i);
+            break;
+        }
+    }
     fillWarehouseCombo();
+    const int wi = m_warehouse->findData(prevWarehouse);
+    if (wi >= 0)
+        m_warehouse->setCurrentIndex(wi);
     fillLocationCombo();
+    const int li = m_location->findData(prevLocation);
+    if (li >= 0)
+        m_location->setCurrentIndex(li);
+    fillBarcodeCombo();
 }
 
 void LabelsTab::fillProductCombo()

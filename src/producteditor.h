@@ -13,6 +13,10 @@ namespace ProductEditor {
 
 struct Changes {
     ProductDialog::ProductData data; // data.barcodes - итоговый список штрихкодов
+    // Штрихкоды, с которыми карточку открыли: по разнице с итоговым списком понятно, что добавить и убрать,
+    // и не нужно перечитывать их из базы. Если hasOriginal == false, список читается из базы.
+    bool hasOriginal = false;
+    QStringList originalBarcodes;
     QList<ProductDialog::StockEdit> stock;
     QString stockComment;
 };

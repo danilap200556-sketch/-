@@ -40,7 +40,6 @@ WarehousesTab::WarehousesTab(QWidget *parent)
     warehouseLayout->addLayout(warehouseToolbar);
 
     m_warehouseModel = new QSqlTableModel(this);
-    m_warehouseModel->setTable("warehouses");
     m_warehouseModel->setEditStrategy(QSqlTableModel::OnManualSubmit);
     m_warehouseModel->setSort(WColName, Qt::AscendingOrder);
 
@@ -68,7 +67,6 @@ WarehousesTab::WarehousesTab(QWidget *parent)
     locationLayout->addLayout(locationToolbar);
 
     m_locationModel = new QSqlTableModel(this);
-    m_locationModel->setTable("locations");
     m_locationModel->setEditStrategy(QSqlTableModel::OnManualSubmit);
     m_locationModel->setSort(LColCode, Qt::AscendingOrder);
 
@@ -81,7 +79,6 @@ WarehousesTab::WarehousesTab(QWidget *parent)
     locationLayout->addWidget(m_locationTable);
     splitter->addWidget(locationBox);
 
-    refresh();
 
     connect(addWhBtn, &QPushButton::clicked, this, &WarehousesTab::addWarehouse);
     connect(editWhBtn, &QPushButton::clicked, this, &WarehousesTab::editWarehouse);
@@ -101,6 +98,12 @@ void WarehousesTab::setReadOnly(bool readOnly)
 
 void WarehousesTab::refresh()
 {
+    // setTable() сам читает у базы описание таблицы (два запроса на каждую), поэтому откладываем его до
+    // первого показа страницы: пока на неё не зашли, базу не трогаем.
+    if (m_warehouseModel->tableName().isEmpty())
+        m_warehouseModel->setTable("warehouses");
+    if (m_locationModel->tableName().isEmpty())
+        m_locationModel->setTable("locations");
     m_warehouseModel->select();
     m_warehouseModel->setHeaderData(WColName, Qt::Horizontal, tr("Название"));
     m_warehouseModel->setHeaderData(WColAddress, Qt::Horizontal, tr("Адрес"));

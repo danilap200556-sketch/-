@@ -140,7 +140,6 @@ UsersTab::UsersTab(const QString &currentUsername, QWidget *parent)
     connect(deleteBtn, &QPushButton::clicked, this, &UsersTab::deleteUser);
     connect(m_table, &QTableWidget::cellDoubleClicked, this, &UsersTab::changeSelectedPassword);
 
-    refresh();
 }
 
 void UsersTab::refresh()

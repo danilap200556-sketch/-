@@ -168,7 +168,6 @@ MarketTab::MarketTab(bool isAdmin, QWidget *parent)
     connect(m_search, &QLineEdit::textChanged, this, &MarketTab::applyFilter);
     connect(m_accountCombo, &QComboBox::currentIndexChanged, this, &MarketTab::updateAccountInfo);
 
-    refresh();
 }
 
 void MarketTab::updateAccountInfo()

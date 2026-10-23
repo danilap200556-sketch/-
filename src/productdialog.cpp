@@ -1,6 +1,7 @@
 #include "productdialog.h"
 #include "barcode.h"
 #include "photoviewer.h"
+#include "database.h"
 
 #include <QComboBox>
 #include <QFileInfo>
@@ -159,8 +160,13 @@ ProductDialog::ProductDialog(QWidget *parent)
         // Недобавленный код в поле ввода - почти наверняка забыли нажать Enter.
         if (!m_barcodeInput->text().trimmed().isEmpty() && !addBarcodeCode(m_barcodeInput->text()))
             return;
+        // Занятость проверяем только у новых кодов: уже привязанные к этому товару были свободны.
+        QStringList added;
+        for (const QString &c : data().barcodes)
+            if (m_productId <= 0 || !m_originalBarcodes.contains(c))
+                added << c;
         QString code, otherSku;
-        if (Barcode::findConflict(m_productId, data().barcodes, &code, &otherSku)) {
+        if (!added.isEmpty() && Barcode::findConflict(m_productId, added, &code, &otherSku)) {
             QMessageBox::warning(this, tr("Штрихкод занят"),
                                  tr("Штрихкод %1 уже привязан к товару %2. Один штрихкод может быть только у "
                                     "одного товара.").arg(code, otherSku));
@@ -179,44 +185,102 @@ void ProductDialog::setProductId(int id)
     loadStock();
 }
 
+bool ProductDialog::loadCard(int productId, Card *out)
+{
+    QString error;
+    const auto sets = Database::queryMulti(
+        "SELECT sku, name, COALESCE(description, ''), COALESCE(photo_path, ''), price, "
+        "COALESCE(custom_code, ''), COALESCE(market_sku, '') FROM products WHERE id = ?;"
+        "SELECT barcode FROM product_barcodes WHERE product_id = ? ORDER BY created_at, barcode;"
+        "SELECT id, thumb FROM product_photos WHERE product_id = ? ORDER BY position, id;"
+        "SELECT w.id, w.name, COALESCE(s.quantity, 0), COALESCE(s.location_id, 0) "
+        "FROM warehouses w LEFT JOIN stock s ON s.warehouse_id = w.id AND s.product_id = ? ORDER BY w.name;"
+        "SELECT id, warehouse_id, code FROM locations ORDER BY code",
+        {productId, productId, productId, productId}, &error);
+    if (sets.size() < 5 || sets[0].isEmpty())
+        return false;
+    const QVariantList &p = sets[0].first();
+    ProductData &d = out->data;
+    d.sku = p[0].toString();
+    d.name = p[1].toString();
+    d.description = p[2].toString();
+    d.photoPath = p[3].toString();
+    d.price = p[4].toDouble();
+    d.customCode = p[5].toString();
+    d.marketSku = p[6].toString();
+    d.barcodes.clear();
+    for (const QVariantList &r : sets[1])
+        d.barcodes << r[0].toString();
+    out->photos.clear();
+    for (const QVariantList &r : sets[2])
+        out->photos.append({r[0].toInt(), r[1].toByteArray()});
+    out->stock.clear();
+    for (const QVariantList &r : sets[3])
+        out->stock.append({r[0].toInt(), r[1].toString(), r[2].toInt(), r[3].toInt()});
+    out->locations.clear();
+    for (const QVariantList &r : sets[4])
+        out->locations.append({r[0].toInt(), r[1].toInt(), r[2].toString()});
+    return true;
+}
+
+void ProductDialog::setCard(int productId, const Card &card)
+{
+    m_productId = productId;
+    m_gallery->clear();
+    m_changes = PhotoStore::Changes();
+    for (const PhotoThumb &ph : card.photos)
+        addGalleryItem(ph.thumb, ph.id, -1);
+    m_stockTable->setRowCount(0);
+    m_stockBox->setVisible(m_productId > 0);
+    if (m_productId > 0)
+        fillStock(card.stock, card.locations);
+    setData(card.data);
+}
+
 void ProductDialog::loadStock()
 {
     m_stockTable->setRowCount(0);
     m_stockBox->setVisible(m_productId > 0);
     if (m_productId <= 0)
         return;
+    QList<StockRow> stock;
+    QList<Location> locations;
     QSqlQuery q;
     q.prepare("SELECT w.id, w.name, COALESCE(s.quantity, 0), COALESCE(s.location_id, 0) "
               "FROM warehouses w LEFT JOIN stock s ON s.warehouse_id = w.id AND s.product_id = ? ORDER BY w.name");
     q.addBindValue(m_productId);
     if (!q.exec())
         return;
-    while (q.next()) {
+    while (q.next())
+        stock.append({q.value(0).toInt(), q.value(1).toString(), q.value(2).toInt(), q.value(3).toInt()});
+    QSqlQuery lq("SELECT id, warehouse_id, code FROM locations ORDER BY code");
+    while (lq.next())
+        locations.append({lq.value(0).toInt(), lq.value(1).toInt(), lq.value(2).toString()});
+    fillStock(stock, locations);
+}
+
+void ProductDialog::fillStock(const QList<StockRow> &stock, const QList<Location> &locations)
+{
+    for (const StockRow &sr : stock) {
         const int row = m_stockTable->rowCount();
         m_stockTable->insertRow(row);
-        const int whId = q.value(0).toInt();
-        const int qty = q.value(2).toInt();
-        const int locId = q.value(3).toInt();
-        auto *name = new QTableWidgetItem(q.value(1).toString());
-        name->setData(Qt::UserRole, whId);
+        auto *name = new QTableWidgetItem(sr.warehouseName);
+        name->setData(Qt::UserRole, sr.warehouseId);
         m_stockTable->setItem(row, 0, name);
-        auto *now = new QTableWidgetItem(QString::number(qty));
-        now->setData(Qt::UserRole, qty);
+        auto *now = new QTableWidgetItem(QString::number(sr.quantity));
+        now->setData(Qt::UserRole, sr.quantity);
         m_stockTable->setItem(row, 1, now);
         auto *spin = new QSpinBox(m_stockTable);
         spin->setRange(0, 1'000'000);
-        spin->setValue(qty);
+        spin->setValue(sr.quantity);
         m_stockTable->setCellWidget(row, 2, spin);
         auto *loc = new QComboBox(m_stockTable);
         loc->addItem(tr("— не указано —"), 0);
-        QSqlQuery lq;
-        lq.prepare("SELECT id, code FROM locations WHERE warehouse_id = ? ORDER BY code");
-        lq.addBindValue(whId);
-        if (lq.exec())
-            while (lq.next())
-                loc->addItem(lq.value(1).toString(), lq.value(0).toInt());
-        loc->setCurrentIndex(qMax(0, loc->findData(locId)));
-        loc->setProperty("was", locId);
+        for (const Location &l : locations)
+            if (l.warehouseId == sr.warehouseId)
+                loc->addItem(l.code, l.id);
+        loc->setCurrentIndex(qMax(0, loc->findData(sr.locationId)));
+        loc->setProperty("was", sr.locationId);
         m_stockTable->setCellWidget(row, 3, loc);
     }
     m_stockTable->resizeColumnsToContents();
@@ -394,6 +458,7 @@ void ProductDialog::setData(const ProductData &data)
     m_marketSku->setText(data.marketSku);
     m_barcodes->clear();
     m_barcodes->addItems(data.barcodes);
+    m_originalBarcodes = data.barcodes;
 }
 
 ProductDialog::ProductData ProductDialog::data() const

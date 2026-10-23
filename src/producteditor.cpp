@@ -13,20 +13,10 @@ namespace ProductEditor {
 
 bool load(int productId, ProductDialog::ProductData *out)
 {
-    QSqlQuery q;
-    q.prepare("SELECT sku, name, COALESCE(description, ''), COALESCE(photo_path, ''), price, "
-              "COALESCE(custom_code, ''), COALESCE(market_sku, '') FROM products WHERE id = ?");
-    q.addBindValue(productId);
-    if (!q.exec() || !q.next())
+    ProductDialog::Card card;
+    if (!ProductDialog::loadCard(productId, &card))
         return false;
-    out->sku = q.value(0).toString();
-    out->name = q.value(1).toString();
-    out->description = q.value(2).toString();
-    out->photoPath = q.value(3).toString();
-    out->price = q.value(4).toDouble();
-    out->customCode = q.value(5).toString();
-    out->marketSku = q.value(6).toString();
-    out->barcodes = Barcode::forProduct(productId);
+    *out = card.data;
     return true;
 }
 
@@ -50,18 +40,25 @@ bool save(int productId, const Changes &c, QString *error)
         if (!codes.contains(code))
             codes << code;
     }
-    QString conflictCode, otherSku;
-    if (Barcode::findConflict(productId, codes, &conflictCode, &otherSku))
-        return fail(QStringLiteral("Штрихкод %1 уже привязан к товару %2. Один штрихкод может быть только у одного "
-                                   "товара.").arg(conflictCode, otherSku));
 
-    QSqlDatabase db = QSqlDatabase::database();
-    if (!db.transaction())
-        return fail(db.lastError().text());
-    auto rollback = [&](const QString &msg) {
-        db.rollback();
-        return fail(msg);
-    };
+    // Что добавить и что убрать - по разнице с тем, с чем карточку открыли.
+    QStringList have;
+    if (c.hasOriginal) {
+        for (const QString &raw : c.originalBarcodes)
+            have << Barcode::normalize(raw);
+    } else {
+        have = Barcode::forProduct(productId);
+    }
+    QStringList toAdd, toRemove;
+    for (const QString &code : codes)
+        if (!have.contains(code))
+            toAdd << code;
+    for (const QString &h : have)
+        if (!codes.contains(h))
+            toRemove << h;
+    bool stockWrites = false;
+    for (const auto &e : c.stock)
+        stockWrites = stockWrites || e.setCount || e.setLocation;
 
     QSqlQuery up;
     up.prepare("UPDATE products SET sku = ?, name = ?, description = ?, price = ?, custom_code = ?, market_sku = ? "
@@ -73,43 +70,64 @@ bool save(int productId, const Changes &c, QString *error)
     up.addBindValue(d.customCode);
     up.addBindValue(d.marketSku);
     up.addBindValue(productId);
-    if (!up.exec()) {
-        return rollback(up.lastError().nativeErrorCode() == QLatin1String("23505")
-                            ? QStringLiteral("Товар с артикулом %1 уже есть.").arg(d.sku.trimmed())
-                            : up.lastError().text());
+    const auto updateError = [&]() {
+        return up.lastError().nativeErrorCode() == QLatin1String("23505")
+                   ? QStringLiteral("Товар с артикулом %1 уже есть.").arg(d.sku.trimmed())
+                   : up.lastError().text();
+    };
+
+    // Правятся только поля товара: одна команда, она и так выполняется целиком (без BEGIN/COMMIT - два лишних
+    // обращения к удалённой базе).
+    if (toAdd.isEmpty() && toRemove.isEmpty() && !stockWrites) {
+        if (!up.exec())
+            return fail(updateError());
+        if (up.numRowsAffected() == 0)
+            return fail(QStringLiteral("Товар уже удалён (возможно, с другого компьютера)."));
+        return true;
     }
+
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.transaction())
+        return fail(db.lastError().text());
+    auto rollback = [&](const QString &msg) {
+        db.rollback();
+        return fail(msg);
+    };
+    if (!up.exec())
+        return rollback(updateError());
     if (up.numRowsAffected() == 0)
         return rollback(QStringLiteral("Товар уже удалён (возможно, с другого компьютера)."));
 
-    // Штрихкоды: убрать лишние, добавить новые. Если за это время код занял другой товар - откат.
-    QSqlQuery existing;
-    existing.prepare("SELECT barcode FROM product_barcodes WHERE product_id = ?");
-    existing.addBindValue(productId);
-    QStringList have;
-    if (existing.exec())
-        while (existing.next())
-            have << existing.value(0).toString();
-    for (const QString &h : have) {
-        if (codes.contains(h))
-            continue;
+    // Штрихкоды: убрать лишние, добавить новые. Если код успели занять другим товаром - откат.
+    if (!toRemove.isEmpty()) {
         QSqlQuery del;
-        del.prepare("DELETE FROM product_barcodes WHERE product_id = ? AND barcode = ?");
+        del.prepare(QStringLiteral("DELETE FROM product_barcodes WHERE product_id = ? AND barcode IN (%1)")
+                        .arg(QStringList(toRemove.size(), QStringLiteral("?")).join(QLatin1Char(','))));
         del.addBindValue(productId);
-        del.addBindValue(h);
+        for (const QString &h : toRemove)
+            del.addBindValue(h);
         if (!del.exec())
             return rollback(del.lastError().text());
     }
-    for (const QString &code : codes) {
-        if (have.contains(code))
-            continue;
+    if (!toAdd.isEmpty()) {
         QSqlQuery ins;
-        ins.prepare("INSERT INTO product_barcodes (barcode, product_id) VALUES (?, ?) ON CONFLICT (barcode) DO NOTHING");
-        ins.addBindValue(code);
-        ins.addBindValue(productId);
+        ins.prepare(QStringLiteral("INSERT INTO product_barcodes (barcode, product_id) VALUES %1 "
+                                   "ON CONFLICT (barcode) DO NOTHING")
+                        .arg(QStringList(toAdd.size(), QStringLiteral("(?, ?)")).join(QLatin1Char(','))));
+        for (const QString &code : toAdd) {
+            ins.addBindValue(code);
+            ins.addBindValue(productId);
+        }
         if (!ins.exec())
             return rollback(ins.lastError().text());
-        if (ins.numRowsAffected() == 0)
-            return rollback(QStringLiteral("Штрихкод %1 только что привязали к другому товару.").arg(code));
+        if (ins.numRowsAffected() < toAdd.size()) {
+            db.rollback();
+            QString conflictCode, otherSku;
+            if (Barcode::findConflict(productId, toAdd, &conflictCode, &otherSku))
+                return fail(QStringLiteral("Штрихкод %1 уже привязан к товару %2. Один штрихкод может быть только у "
+                                           "одного товара.").arg(conflictCode, otherSku));
+            return fail(QStringLiteral("Штрихкод только что привязали к другому товару."));
+        }
     }
 
     // Остатки: пересчёт (запись в журнал) и места хранения - в той же транзакции.
@@ -137,15 +155,14 @@ bool save(int productId, const Changes &c, QString *error)
 
 bool edit(int productId, QWidget *parent, bool readOnly)
 {
-    ProductDialog::ProductData d;
-    if (!load(productId, &d)) {
+    ProductDialog::Card card;
+    if (!ProductDialog::loadCard(productId, &card)) {
         QMessageBox::warning(parent, QObject::tr("Товар не найден"),
                              QObject::tr("Этого товара уже нет в базе (возможно, его удалили с другого компьютера)."));
         return false;
     }
     ProductDialog dlg(parent);
-    dlg.setProductId(productId);
-    dlg.setData(d);
+    dlg.setCard(productId, card);
     if (readOnly) {
         dlg.setReadOnly(true);
         dlg.exec();
@@ -156,6 +173,8 @@ bool edit(int productId, QWidget *parent, bool readOnly)
             return false;
         Changes c;
         c.data = dlg.data();
+        c.hasOriginal = true;
+        c.originalBarcodes = dlg.originalBarcodes();
         c.stock = dlg.stockEdits();
         c.stockComment = dlg.stockComment();
         QString err;

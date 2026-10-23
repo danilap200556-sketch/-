@@ -179,19 +179,34 @@ int productIdFor(const QString &code)
 
 bool findConflict(int productId, const QStringList &codes, QString *code, QString *otherSku)
 {
-    for (const QString &c : codes) {
-        QSqlQuery q;
-        q.prepare("SELECT p.sku FROM product_barcodes b JOIN products p ON p.id = b.product_id "
-                  "WHERE b.barcode = ? AND b.product_id <> ?");
+    if (codes.isEmpty())
+        return false;
+    // Одним запросом на все коды (а не по запросу на код).
+    QSqlQuery q;
+    q.prepare(QStringLiteral("SELECT b.barcode, p.sku FROM product_barcodes b JOIN products p ON p.id = b.product_id "
+                             "WHERE b.product_id <> ? AND b.barcode IN (%1)")
+                  .arg(QStringList(codes.size(), QStringLiteral("?")).join(QLatin1Char(','))));
+    q.addBindValue(productId);
+    for (const QString &c : codes)
         q.addBindValue(c);
-        q.addBindValue(productId);
-        if (q.exec() && q.next()) {
-            *code = c;
-            *otherSku = q.value(0).toString();
-            return true;
+    if (!q.exec())
+        return false;
+    // Если занято несколько, называем первый по порядку в списке - как раньше.
+    QString firstCode, firstSku;
+    int bestIndex = codes.size();
+    while (q.next()) {
+        const int idx = codes.indexOf(q.value(0).toString());
+        if (idx >= 0 && idx < bestIndex) {
+            bestIndex = idx;
+            firstCode = q.value(0).toString();
+            firstSku = q.value(1).toString();
         }
     }
-    return false;
+    if (bestIndex == codes.size())
+        return false;
+    *code = firstCode;
+    *otherSku = firstSku;
+    return true;
 }
 
 bool setForProduct(int productId, const QStringList &codes, QString *error)
@@ -209,13 +224,14 @@ bool setForProduct(int productId, const QStringList &codes, QString *error)
     del.addBindValue(productId);
     bool ok = del.exec();
     QString err = del.lastError().text();
-    for (const QString &c : codes) {
-        if (!ok)
-            break;
-        QSqlQuery ins;
-        ins.prepare("INSERT INTO product_barcodes (barcode, product_id) VALUES (?, ?)");
-        ins.addBindValue(c);
-        ins.addBindValue(productId);
+    if (ok && !codes.isEmpty()) {
+        QSqlQuery ins; // все коды одним INSERT
+        ins.prepare(QStringLiteral("INSERT INTO product_barcodes (barcode, product_id) VALUES %1")
+                        .arg(QStringList(codes.size(), QStringLiteral("(?, ?)")).join(QLatin1Char(','))));
+        for (const QString &c : codes) {
+            ins.addBindValue(c);
+            ins.addBindValue(productId);
+        }
         ok = ins.exec();
         err = ins.lastError().text();
     }

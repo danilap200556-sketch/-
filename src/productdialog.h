@@ -2,7 +2,9 @@
 
 #include "photostore.h"
 
+#include <QByteArray>
 #include <QDialog>
+#include <QList>
 #include <QStringList>
 
 class QLineEdit;
@@ -42,12 +44,43 @@ public:
         int locationId = 0; // 0 - место не указано
     };
 
+    // Всё, что форме нужно показать кроме самих полей товара: фото (уменьшенные), остатки по складам
+    // и места хранения. Читается вместе с карточкой одним обращением к базе (см. loadCard).
+    struct PhotoThumb {
+        int id = 0;
+        QByteArray thumb;
+    };
+    struct StockRow {
+        int warehouseId = 0;
+        QString warehouseName;
+        int quantity = 0;
+        int locationId = 0; // 0 - не указано
+    };
+    struct Location {
+        int id = 0;
+        int warehouseId = 0;
+        QString code;
+    };
+    struct Card {
+        ProductData data;
+        QList<PhotoThumb> photos;
+        QList<StockRow> stock;
+        QList<Location> locations;
+    };
+
     explicit ProductDialog(QWidget *parent = nullptr);
+
+    // Читает всю карточку одним запросом к базе (а не по запросу на штрихкоды, фото, склады и места).
+    static bool loadCard(int productId, Card *out);
+    // Показывает прочитанную карточку (id товара нужен для проверки штрихкодов).
+    void setCard(int productId, const Card &card);
 
     void setData(const ProductData &data);
     // id редактируемого товара (0 - новый), нужен для проверки штрихкодов.
     void setProductId(int id);
     ProductData data() const;
+    // Штрихкоды, с которыми карточку открыли (для сохранения изменений без перечитывания базы).
+    QStringList originalBarcodes() const { return m_originalBarcodes; }
     // Исправления остатков и мест хранения (пустой список - не трогали).
     QList<StockEdit> stockEdits() const;
     QString stockComment() const;
@@ -73,8 +106,10 @@ private:
     void addGalleryItem(const QByteArray &thumbJpeg, int existingId, int addedIndex, bool atFront = false);
     void loadExistingPhotos();
     void loadStock();
+    void fillStock(const QList<StockRow> &stock, const QList<Location> &locations);
 
     int m_productId = 0;
+    QStringList m_originalBarcodes;
     QListWidget *m_barcodes;
     QLineEdit *m_barcodeInput;
     QLineEdit *m_sku;

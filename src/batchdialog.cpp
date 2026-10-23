@@ -159,18 +159,23 @@ void BatchDialog::addQuantity(int productId, qint64 qty)
 {
     int row = rowOf(productId);
     if (row < 0) {
-        QSqlQuery q;
-        q.prepare("SELECT sku, name FROM products WHERE id = ?");
-        q.addBindValue(productId);
-        if (!q.exec() || !q.next())
-            return;
+        // Артикулы и названия уже прочитаны пачкой (см. addText); одиночный запрос - на всякий случай.
+        if (!m_info.contains(productId)) {
+            QSqlQuery q;
+            q.prepare("SELECT sku, name FROM products WHERE id = ?");
+            q.addBindValue(productId);
+            if (!q.exec() || !q.next())
+                return;
+            m_info.insert(productId, {q.value(0).toString(), q.value(1).toString()});
+        }
+        const auto info = m_info.value(productId);
         row = m_table->rowCount();
         m_table->insertRow(row);
-        auto *sku = new QTableWidgetItem(q.value(0).toString());
+        auto *sku = new QTableWidgetItem(info.first);
         sku->setData(Qt::UserRole, productId);
         sku->setIcon(PhotoCache::thumb(productId));
         m_table->setItem(row, ColSku, sku);
-        m_table->setItem(row, ColName, new QTableWidgetItem(q.value(1).toString()));
+        m_table->setItem(row, ColName, new QTableWidgetItem(info.second));
         for (int c : {ColCurrent, ColAfter}) {
             auto *it = new QTableWidgetItem();
             it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -225,6 +230,19 @@ int BatchDialog::addText(const QString &text)
             }
         }
         PhotoCache::prefetch(order);
+        {
+            // Артикул и название всех новых строк - одним запросом, а не по запросу на строку.
+            QStringList marks;
+            for (int id : std::as_const(order))
+                if (rowOf(id) < 0 && !m_info.contains(id))
+                    marks << QString::number(id);
+            if (!marks.isEmpty()) {
+                QSqlQuery q;
+                if (q.exec(QStringLiteral("SELECT id, sku, name FROM products WHERE id IN (%1)").arg(marks.join(QLatin1Char(',')))))
+                    while (q.next())
+                        m_info.insert(q.value(0).toInt(), {q.value(1).toString(), q.value(2).toString()});
+            }
+        }
         m_updating = true;
         for (int id : std::as_const(order))
             addQuantity(id, qtyById.value(id));

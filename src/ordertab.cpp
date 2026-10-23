@@ -222,7 +222,6 @@ OrdersTab::OrdersTab(QWidget *parent)
     connect(excelBtn, &QPushButton::clicked, this, &OrdersTab::exportExcel);
     connect(labelsBtn, &QPushButton::clicked, this, &OrdersTab::downloadLabels);
 
-    refresh();
 }
 
 void OrdersTab::refresh()

@@ -3,6 +3,7 @@
 #include <QList>
 #include <QString>
 #include <QStringList>
+#include <QVariantList>
 #include <optional>
 
 struct ServerConfig;
@@ -17,6 +18,13 @@ class Database
 {
 public:
     static bool open(const ServerConfig &config, QString *error = nullptr);
+
+    // Несколько SELECT одним обращением к серверу: результаты приходят разом, а не по очереди. База удалённая,
+    // и каждое обращение - это ожидание (десятки миллисекунд), поэтому всё, что нужно окну, читаем так.
+    // sql - запросы через «;» с метками ?, binds - значения для них по порядку. Результат: по набору строк
+    // на каждый запрос (порядок как в sql).
+    using Rows = QList<QVariantList>;
+    static QList<Rows> queryMulti(const QString &sql, const QVariantList &binds = {}, QString *error = nullptr);
 
     // Добавляет к тексту ошибки подключения понятную подсказку, что проверить (адрес не находится,
     // сервер не отвечает, неверный пароль, подключились к реплике и т. п.).

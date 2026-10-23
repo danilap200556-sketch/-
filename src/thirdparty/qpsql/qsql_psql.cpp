@@ -743,24 +743,9 @@ QSqlRecord QPSQLResult::record() const
     QSqlField f;
     for (int i = 0; i < count; ++i) {
         f.setName(QString::fromUtf8(PQfname(d->result, i)));
-        const int tableOid = PQftable(d->result, i);
-        // WARNING: We cannot execute any other SQL queries on
-        // the same db connection while forward-only mode is active
-        // (this would discard all results of forward-only query).
-        // So we just skip this...
-        if (tableOid != InvalidOid && !isForwardOnly()) {
-            auto &tableName = d->drv_d_func()->oidToTable[tableOid];
-            if (tableName.isEmpty()) {
-                QSqlQuery qry(driver()->createResult());
-                if (qry.exec(QStringLiteral("SELECT relname FROM pg_class WHERE pg_class.oid = %1")
-                            .arg(tableOid)) && qry.next()) {
-                    tableName = qry.value(0).toString();
-                }
-            }
-            f.setTableName(tableName);
-        } else {
-            f.setTableName(QString());
-        }
+        // Оригинал на каждую новую таблицу отдельным запросом (SELECT relname FROM pg_class ...) узнаёт
+        // имя таблицы поля. Нам оно не нужно, а на удалённой базе каждый такой запрос - лишнее ожидание.
+        f.setTableName(QString());
         int ptype = PQftype(d->result, i);
         f.setMetaType(qDecodePSQLType(ptype));
         f.setValue(QVariant(f.metaType())); // only set in setType() when it's invalid before

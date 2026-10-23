@@ -4,10 +4,12 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QSqlError>
+#include <QSqlRecord>
 #include <QVariant>
 #include <QDebug>
 #include <QThread>
 #include <QUuid>
+#include <QHash>
 #include <QMap>
 #include <QSet>
 
@@ -188,6 +190,21 @@ PGconn *connectRaw(const ServerConfig &config, QString *error)
     return conn;
 }
 
+// Обычный QPSQLDriver на каждый QSqlQuery::prepare()/exec() отправляет серверу три отдельных запроса
+// (PREPARE, EXECUTE, а потом DEALLOCATE) - это три обращения по сети вместо одного, и на удалённой
+// базе (десятки миллисекунд на обращение) именно они съедают время открытия вкладок и сохранения.
+// Значения всё равно подставляются на стороне клиента (так делает и сам драйвер при EXECUTE), поэтому
+// отключаем серверные подготовленные запросы: QSqlResult подставит значения в текст и отправит ОДИН запрос.
+class PlainQueryDriver : public QPSQLDriver
+{
+public:
+    using QPSQLDriver::QPSQLDriver;
+    bool hasFeature(DriverFeature f) const override
+    {
+        return f == PreparedQueries ? false : QPSQLDriver::hasFeature(f);
+    }
+};
+
 // Открывает соединение НАПРЯМУЮ через libpq (в обход QSqlDatabase::open()) и
 // сразу одним пакетным запросом (все CREATE TABLE через ';' в одном PQexec)
 // создаёт схему - это ровно ОДИН запрос с точки зрения соединения, а не 6+
@@ -226,7 +243,7 @@ bool tryConnectEmbedded(const ServerConfig &config, QString *error)
     // QPSQLDriver берёт на себя владение conn (включая PQfinish при закрытии) -
     // сами conn больше не трогаем. QSqlDatabase::addDatabase(QSqlDriver*)
     // берёт на себя владение самим драйвером.
-    auto *driver = new QPSQLDriver(conn);
+    auto *driver = new PlainQueryDriver(conn);
     QSqlDatabase db = QSqlDatabase::addDatabase(driver);
     if (!db.isOpen()) {
         if (error)
@@ -257,17 +274,42 @@ bool tryConnectViaQtDriver(const ServerConfig &config, QString *error)
         return false;
     }
 
+    // Вся схема одним запросом (PQexec выполняет несколько команд через «;»): одно обращение к серверу вместо
+    // десятков.
     QSqlQuery q(db);
-    for (const QString &stmt : schemaDdl()) {
-        if (!execOrFail(q, stmt, error))
-            return false;
-    }
-    return true;
+    return execOrFail(q, schemaDdl().join(QLatin1String(";\n")), error);
 }
 
 #endif
 
 } // namespace
+
+QList<Database::Rows> Database::queryMulti(const QString &sql, const QVariantList &binds, QString *error)
+{
+    QList<Rows> result;
+    QSqlQuery q;
+    q.prepare(sql);
+    for (const QVariant &b : binds)
+        q.addBindValue(b);
+    if (!q.exec()) {
+        if (error)
+            *error = q.lastError().text();
+        return result;
+    }
+    do {
+        Rows rows;
+        const int cols = q.record().count();
+        while (q.next()) {
+            QVariantList row;
+            row.reserve(cols);
+            for (int i = 0; i < cols; ++i)
+                row << q.value(i);
+            rows << row;
+        }
+        result << rows;
+    } while (q.nextResult());
+    return result;
+}
 
 QString Database::explainConnectionError(const QString &error)
 {
@@ -405,59 +447,109 @@ int Database::currentStock(int productId, int warehouseId)
 
 namespace {
 
-// Выполняет одну проводку (запись в журнал + обновление агрегированного остатка)
-// без управления транзакцией - вызывающая сторона решает, когда commit/rollback.
+struct Movement {
+    int productId = 0;
+    int warehouseId = 0;
+    int delta = 0;
+    QString type;
+    std::optional<int> related;
+    QString comment;
+};
+
+// Позиция, на которую не хватило остатка.
+struct Shortage {
+    QString sku;
+    qint64 have = 0;
+    qint64 delta = 0; // итоговое изменение по товару на складе (отрицательное)
+};
+
+enum class MovementResult { Ok, Insufficient, Failed };
+
+// Применяет несколько проводок (запись в журнал + агрегированный остаток) ОДНИМ запросом. Всё или ничего:
+// если хоть где-то не хватает остатка, не записывается ничего, а в *shortages попадают нехватки. Раньше
+// каждая проводка была отдельной транзакцией из 4-5 обращений к серверу; на удалённой базе это секунды ожидания
+// на списке из десятков позиций.
+MovementResult applyMovements(const QList<Movement> &mvs, QList<Shortage> *shortages, QString *error)
+{
+    if (mvs.isEmpty())
+        return MovementResult::Ok;
+    QStringList rows;
+    QVariantList binds;
+    for (int i = 0; i < mvs.size(); ++i) {
+        const Movement &m = mvs[i];
+        rows << (i == 0 ? QStringLiteral("(?::int, ?::int, ?::int, ?::int, ?::text, ?::int, ?::text)")
+                        : QStringLiteral("(?, ?, ?, ?, ?, ?, ?)"));
+        binds << i << m.productId << m.warehouseId << m.delta << m.type
+              << (m.related ? QVariant(*m.related) : QVariant(QMetaType(QMetaType::Int))) << m.comment;
+    }
+    binds << (g_document.isEmpty() ? QVariant(QMetaType(QMetaType::QString)) : QVariant(g_document));
+
+    const QString sql = QStringLiteral(
+        "WITH items(n, product_id, warehouse_id, delta, type, related, comment) AS (VALUES %1), "
+        "agg AS (SELECT product_id, warehouse_id, SUM(delta)::int AS delta FROM items GROUP BY product_id, warehouse_id), "
+        "chk AS (SELECT a.product_id, a.warehouse_id, a.delta, COALESCE(s.quantity, 0) AS have FROM agg a "
+        "        LEFT JOIN stock s ON s.product_id = a.product_id AND s.warehouse_id = a.warehouse_id), "
+        "ok AS (SELECT NOT EXISTS (SELECT 1 FROM chk WHERE have + delta < 0) AS good), "
+        "mv AS (INSERT INTO stock_movements (product_id, warehouse_id, related_warehouse_id, type, delta, comment, doc_id) "
+        "       SELECT i.product_id, i.warehouse_id, i.related, i.type, i.delta, i.comment, ?::text "
+        "       FROM items i, ok WHERE ok.good ORDER BY i.n RETURNING id), "
+        "st AS (INSERT INTO stock (product_id, warehouse_id, quantity) "
+        "       SELECT a.product_id, a.warehouse_id, a.delta FROM agg a, ok WHERE ok.good "
+        "       ORDER BY a.product_id, a.warehouse_id "
+        "       ON CONFLICT (product_id, warehouse_id) DO UPDATE SET quantity = stock.quantity + EXCLUDED.quantity "
+        "       WHERE stock.quantity + EXCLUDED.quantity >= 0 RETURNING 1) "
+        // Если между проверкой и записью остаток успели списать другим окном, деление на ноль откатывает весь запрос
+        // (делитель - не константа, иначе планировщик посчитал бы 1/0 ещё до выполнения, даже в неисполняемой ветке CASE).
+        "SELECT ok.good, CASE WHEN ok.good AND (SELECT count(*) FROM st) <> (SELECT count(*) FROM agg) "
+        "                     THEN 1 / (SELECT count(*) - count(*) FROM st) ELSE 0 END, "
+        "       sh.sku, sh.have, sh.delta "
+        "FROM ok LEFT JOIN (SELECT p.sku, c.have, c.delta FROM chk c JOIN products p ON p.id = c.product_id "
+        "                   WHERE c.have + c.delta < 0) sh ON TRUE").arg(rows.join(QLatin1Char(',')));
+
+    QSqlQuery q;
+    q.prepare(sql);
+    for (const QVariant &b : binds)
+        q.addBindValue(b);
+    if (!q.exec()) {
+        const QString code = q.lastError().nativeErrorCode();
+        if (error) {
+            if (code == QLatin1String("23503"))
+                *error = QStringLiteral("Товар или склад уже удалён (возможно, с другого компьютера).");
+            else if (code == QLatin1String("22012"))
+                *error = QStringLiteral("Остаток изменили в другом окне, пока шла запись. Повторите.");
+            else if (code == QLatin1String("22003"))
+                *error = QStringLiteral("Остаток получится слишком большим.");
+            else
+                *error = q.lastError().text();
+        }
+        return MovementResult::Failed;
+    }
+    bool good = true;
+    while (q.next()) {
+        good = q.value(0).toBool();
+        if (!good && shortages)
+            shortages->append({q.value(2).toString(), q.value(3).toLongLong(), q.value(4).toLongLong()});
+    }
+    return good ? MovementResult::Ok : MovementResult::Insufficient;
+}
+
+// Выполняет одну проводку (запись в журнал + обновление агрегированного остатка).
 bool applyMovementInternal(int productId, int warehouseId, int delta,
                             Database::MovementType type,
                             std::optional<int> relatedWarehouseId,
                             const QString &comment, QString *error)
 {
-    if (delta < 0) {
-        const int have = Database::currentStock(productId, warehouseId);
-        if (have + delta < 0) {
-            if (error)
-                *error = QStringLiteral("Недостаточно остатка: на складе %1 шт, требуется списать %2 шт")
-                             .arg(have).arg(-delta);
-            return false;
-        }
-    }
-
-    QSqlQuery q;
-    q.prepare("INSERT INTO stock_movements (product_id, warehouse_id, related_warehouse_id, type, delta, comment, doc_id) "
-              "VALUES (?, ?, ?, ?, ?, ?, ?)");
-    q.addBindValue(productId);
-    q.addBindValue(warehouseId);
-    if (relatedWarehouseId)
-        q.addBindValue(*relatedWarehouseId);
-    else
-        q.addBindValue(QVariant(QMetaType(QMetaType::Int)));
-    q.addBindValue(Database::movementTypeLabel(type));
-    q.addBindValue(delta);
-    q.addBindValue(comment);
-    if (g_document.isEmpty())
-        q.addBindValue(QVariant(QMetaType(QMetaType::QString)));
-    else
-        q.addBindValue(g_document);
-    if (!q.exec()) {
+    QList<Shortage> shortages;
+    const MovementResult r = applyMovements({{productId, warehouseId, delta, Database::movementTypeLabel(type),
+                                              relatedWarehouseId, comment}}, &shortages, error);
+    if (r == MovementResult::Insufficient) {
         if (error)
-            *error = q.lastError().text();
+            *error = QStringLiteral("Недостаточно остатка: на складе %1 шт, требуется списать %2 шт")
+                         .arg(shortages.isEmpty() ? 0 : shortages.first().have)
+                         .arg(shortages.isEmpty() ? -delta : -shortages.first().delta);
         return false;
     }
-
-    QSqlQuery upsert;
-    upsert.prepare(
-        "INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (?, ?, ?) "
-        "ON CONFLICT(product_id, warehouse_id) DO UPDATE SET quantity = stock.quantity + excluded.quantity");
-    upsert.addBindValue(productId);
-    upsert.addBindValue(warehouseId);
-    upsert.addBindValue(delta);
-    if (!upsert.exec()) {
-        if (error)
-            *error = upsert.lastError().text();
-        return false;
-    }
-
-    return true;
+    return r == MovementResult::Ok;
 }
 
 } // namespace
@@ -465,25 +557,8 @@ bool applyMovementInternal(int productId, int warehouseId, int delta,
 bool Database::adjustStock(int productId, int warehouseId, int delta, MovementType type,
                             const QString &comment, QString *error)
 {
-    QSqlDatabase db = QSqlDatabase::database();
-    if (!db.transaction()) {
-        if (error)
-            *error = db.lastError().text();
-        return false;
-    }
-
-    if (!applyMovementInternal(productId, warehouseId, delta, type, std::nullopt, comment, error)) {
-        db.rollback();
-        return false;
-    }
-
-    if (!db.commit()) {
-        if (error)
-            *error = db.lastError().text();
-        db.rollback();
-        return false;
-    }
-    return true;
+    // Одна проводка - один запрос, транзакция не нужна.
+    return applyMovementInternal(productId, warehouseId, delta, type, std::nullopt, comment, error);
 }
 
 bool Database::adjustStockBatch(const QList<BatchItem> &items, int warehouseId, bool writeOff,
@@ -507,62 +582,71 @@ bool Database::adjustStockBatch(const QList<BatchItem> &items, int warehouseId, 
         return false;
     }
 
-    QSqlDatabase db = QSqlDatabase::database();
-    if (!db.transaction()) {
-        if (error)
-            *error = db.lastError().text();
-        return false;
-    }
-    auto fail = [&](const QString &msg) {
-        db.rollback();
-        if (error)
-            *error = msg;
-        return false;
-    };
-
-    // Сначала читаем и блокируем строки остатков, проверяем все позиции, и только потом пишем.
-    QStringList bad;
-    for (auto it = total.cbegin(); it != total.cend(); ++it) {
-        QSqlQuery q;
-        q.prepare("SELECT p.sku, COALESCE((SELECT quantity FROM stock s WHERE s.product_id = p.id AND s.warehouse_id = ? "
-                  "FOR UPDATE), 0) FROM products p WHERE p.id = ?");
-        q.addBindValue(warehouseId);
-        q.addBindValue(it.key());
-        if (!q.exec())
-            return fail(q.lastError().text());
-        if (!q.next()) {
-            bad << QStringLiteral("товар №%1 уже удалён").arg(it.key());
-            continue;
-        }
-        const QString sku = q.value(0).toString();
-        const qint64 have = q.value(1).toLongLong();
-        if (it.value() > 100'000'000)
-            bad << QStringLiteral("%1: слишком большое количество (%2)").arg(sku).arg(it.value());
-        else if (writeOff && have < it.value())
-            bad << QStringLiteral("%1: на складе %2 шт, а списать нужно %3 шт").arg(sku).arg(have).arg(it.value());
-        else if (!writeOff && have + it.value() > 2'000'000'000LL)
-            bad << QStringLiteral("%1: остаток получится слишком большим").arg(sku);
-    }
-    if (!bad.isEmpty()) {
-        db.rollback();
+    auto refuse = [&](const QStringList &bad) {
         if (problems)
             *problems = bad;
         if (error)
             *error = QStringLiteral("Ничего не выполнено: %1").arg(bad.join(QStringLiteral("; ")));
         return false;
+    };
+    // Названия артикулов для сообщений (читаем только когда есть что объяснять).
+    auto skuOf = [](const QList<int> &ids) {
+        QHash<int, QString> sku;
+        if (ids.isEmpty())
+            return sku;
+        QStringList marks(ids.size(), QStringLiteral("?"));
+        QSqlQuery q;
+        q.prepare(QStringLiteral("SELECT id, sku FROM products WHERE id IN (%1)").arg(marks.join(QLatin1Char(','))));
+        for (int id : ids)
+            q.addBindValue(id);
+        if (q.exec())
+            while (q.next())
+                sku.insert(q.value(0).toInt(), q.value(1).toString());
+        return sku;
+    };
+
+    QList<int> tooBig;
+    for (auto it = total.cbegin(); it != total.cend(); ++it)
+        if (it.value() > 100'000'000)
+            tooBig << it.key();
+    if (!tooBig.isEmpty()) {
+        const auto sku = skuOf(tooBig);
+        QStringList bad;
+        for (int id : tooBig)
+            bad << QStringLiteral("%1: слишком большое количество (%2)").arg(sku.value(id, QStringLiteral("товар №%1").arg(id))).arg(total[id]);
+        return refuse(bad);
     }
 
     const MovementType type = writeOff ? MovementType::WriteOff : MovementType::Receipt;
-    Document doc; // все позиции - один документ: отменяется разом
-    for (auto it = total.cbegin(); it != total.cend(); ++it) {
-        QString err;
-        const int delta = int(writeOff ? -it.value() : it.value());
-        if (!applyMovementInternal(it.key(), warehouseId, delta, type, std::nullopt, comment, &err))
-            return fail(err);
+    QList<Movement> mvs;
+    for (auto it = total.cbegin(); it != total.cend(); ++it)
+        mvs.append({it.key(), warehouseId, int(writeOff ? -it.value() : it.value()), movementTypeLabel(type), std::nullopt, comment});
+
+    // Все позиции - один документ: отменяется разом; и один запрос к серверу на весь список.
+    Document doc;
+    QList<Shortage> shortages;
+    QString err;
+    const MovementResult r = applyMovements(mvs, &shortages, &err);
+    if (r == MovementResult::Ok)
+        return true;
+    if (r == MovementResult::Insufficient) {
+        QStringList bad;
+        for (const Shortage &sh : shortages)
+            bad << QStringLiteral("%1: на складе %2 шт, а списать нужно %3 шт").arg(sh.sku).arg(sh.have).arg(-sh.delta);
+        return refuse(bad);
     }
-    if (!db.commit())
-        return fail(db.lastError().text());
-    return true;
+    // Не прошло: если часть товаров успели удалить с другого компьютера, называем их.
+    QList<int> ids = total.keys();
+    const auto existing = skuOf(ids);
+    QStringList gone;
+    for (int id : ids)
+        if (!existing.contains(id))
+            gone << QStringLiteral("товар №%1 уже удалён").arg(id);
+    if (!gone.isEmpty())
+        return refuse(gone);
+    if (error)
+        *error = err;
+    return false;
 }
 
 bool Database::transferStock(int productId, int srcWarehouseId, int dstWarehouseId,
@@ -579,32 +663,20 @@ bool Database::transferStock(int productId, int srcWarehouseId, int dstWarehouse
         return false;
     }
 
-    QSqlDatabase db = QSqlDatabase::database();
-    if (!db.transaction()) {
+    // Расход и приход - один документ (отменяются только вместе) и один запрос к серверу.
+    Document doc;
+    QList<Shortage> shortages;
+    const MovementResult r = applyMovements(
+        {{productId, srcWarehouseId, -quantity, movementTypeLabel(MovementType::TransferOut), dstWarehouseId, comment},
+         {productId, dstWarehouseId, quantity, movementTypeLabel(MovementType::TransferIn), srcWarehouseId, comment}},
+        &shortages, error);
+    if (r == MovementResult::Insufficient) {
         if (error)
-            *error = db.lastError().text();
+            *error = QStringLiteral("Недостаточно остатка: на складе %1 шт, требуется списать %2 шт")
+                         .arg(shortages.isEmpty() ? 0 : shortages.first().have).arg(quantity);
         return false;
     }
-
-    Document doc; // расход и приход - один документ: отменяются только вместе
-    if (!applyMovementInternal(productId, srcWarehouseId, -quantity, MovementType::TransferOut,
-                                dstWarehouseId, comment, error)) {
-        db.rollback();
-        return false;
-    }
-    if (!applyMovementInternal(productId, dstWarehouseId, quantity, MovementType::TransferIn,
-                                srcWarehouseId, comment, error)) {
-        db.rollback();
-        return false;
-    }
-
-    if (!db.commit()) {
-        if (error)
-            *error = db.lastError().text();
-        db.rollback();
-        return false;
-    }
-    return true;
+    return r == MovementResult::Ok;
 }
 
 bool Database::inventorySetInTransaction(int productId, int warehouseId, int countedQuantity,
@@ -631,31 +703,9 @@ bool Database::inventorySetInTransaction(int productId, int warehouseId, int cou
 bool Database::inventoryAdjust(int productId, int warehouseId, int countedQuantity,
                                 const QString &comment, QString *error)
 {
-    if (countedQuantity < 0) {
-        if (error)
-            *error = QStringLiteral("Посчитанное количество не может быть отрицательным");
-        return false;
-    }
-    if (currentStock(productId, warehouseId) == countedQuantity)
-        return true;
-
-    QSqlDatabase db = QSqlDatabase::database();
-    if (!db.transaction()) {
-        if (error)
-            *error = db.lastError().text();
-        return false;
-    }
-    if (!inventorySetInTransaction(productId, warehouseId, countedQuantity, comment, error)) {
-        db.rollback();
-        return false;
-    }
-    if (!db.commit()) {
-        if (error)
-            *error = db.lastError().text();
-        db.rollback();
-        return false;
-    }
-    return true;
+    // Пересчёт: один запрос на чтение текущего остатка и один на запись (проводка сама атомарна, транзакция
+    // с BEGIN/COMMIT добавляла бы ещё два обращения к серверу).
+    return inventorySetInTransaction(productId, warehouseId, countedQuantity, comment, error);
 }
 
 namespace {
@@ -748,26 +798,26 @@ Database::CancelPlan Database::planCancel(const QList<int> &movementIds, bool lo
 
     // Перемещение - это две записи: расход и приход. Отменяются только вместе. Время сравнивается в базе
     // (с точностью до микросекунд) - так находится пара и у старых записей, сделанных до появления документов.
-    const QList<LoadedRow> snapshot = found.values();
-    for (const LoadedRow &r : snapshot) {
-        if (r.row.type != QLatin1String("transfer_out") && r.row.type != QLatin1String("transfer_in"))
-            continue;
+    QStringList transferIds;
+    for (const LoadedRow &r : std::as_const(found))
+        if (r.row.type == QLatin1String("transfer_out") || r.row.type == QLatin1String("transfer_in"))
+            transferIds << QString::number(r.row.id);
+    if (!transferIds.isEmpty()) {
         QSqlQuery q;
-        q.prepare(QString::fromLatin1(kCancelRowSql) +
-                  QStringLiteral("JOIN stock_movements o ON o.id = ? "
-                                 "WHERE m.id <> o.id AND m.type IN ('transfer_out', 'transfer_in') AND ("
-                                 "  (o.doc_id IS NOT NULL AND m.doc_id = o.doc_id) "
-                                 "  OR (o.doc_id IS NULL AND m.doc_id IS NULL AND m.product_id = o.product_id "
-                                 "      AND m.created_at = o.created_at AND m.type <> o.type "
-                                 "      AND m.warehouse_id = o.related_warehouse_id AND m.related_warehouse_id = o.warehouse_id "
-                                 "      AND m.delta = -o.delta)) "
-                                 "ORDER BY m.id%1").arg(forUpdate));
-        q.addBindValue(r.row.id);
-        if (!q.exec())
-            continue;
-        while (q.next()) {
-            const LoadedRow mate = readCancelRow(q);
-            found.insert(mate.row.id, mate);
+        // Одним запросом на все перемещения из списка (раньше - по запросу на запись).
+        if (q.exec(QString::fromLatin1(kCancelRowSql) +
+                   QStringLiteral("JOIN stock_movements o ON o.id IN (%1) "
+                                  "WHERE m.id <> o.id AND m.type IN ('transfer_out', 'transfer_in') AND ("
+                                  "  (o.doc_id IS NOT NULL AND m.doc_id = o.doc_id) "
+                                  "  OR (o.doc_id IS NULL AND m.doc_id IS NULL AND m.product_id = o.product_id "
+                                  "      AND m.created_at = o.created_at AND m.type <> o.type "
+                                  "      AND m.warehouse_id = o.related_warehouse_id AND m.related_warehouse_id = o.warehouse_id "
+                                  "      AND m.delta = -o.delta)) "
+                                  "ORDER BY m.id%2").arg(transferIds.join(QLatin1Char(',')), forUpdate))) {
+            while (q.next()) {
+                const LoadedRow mate = readCancelRow(q);
+                found.insert(mate.row.id, mate);
+            }
         }
     }
 
@@ -793,13 +843,25 @@ Database::CancelPlan Database::planCancel(const QList<int> &movementIds, bool lo
         names[k] = {r.sku, r.warehouse};
     }
     QMap<Key, QPair<qint64, qint64>> levels; // сейчас / станет
-    for (auto it = net.cbegin(); it != net.cend(); ++it) {
+    QMap<Key, qint64> current;
+    if (!net.isEmpty()) {
+        QStringList pairs;
+        QVariantList binds;
+        for (auto it = net.cbegin(); it != net.cend(); ++it) {
+            pairs << QStringLiteral("(?, ?)");
+            binds << it.key().pid << it.key().wid;
+        }
         QSqlQuery q;
-        q.prepare(QStringLiteral("SELECT quantity FROM stock WHERE product_id = ? AND warehouse_id = ?%1")
-                      .arg(lock ? QStringLiteral(" FOR UPDATE") : QString()));
-        q.addBindValue(it.key().pid);
-        q.addBindValue(it.key().wid);
-        const qint64 cur = (q.exec() && q.next()) ? q.value(0).toLongLong() : 0;
+        q.prepare(QStringLiteral("SELECT product_id, warehouse_id, quantity FROM stock WHERE (product_id, warehouse_id) IN (%1)%2")
+                      .arg(pairs.join(QLatin1Char(',')), lock ? QStringLiteral(" FOR UPDATE") : QString()));
+        for (const QVariant &b : binds)
+            q.addBindValue(b);
+        if (q.exec())
+            while (q.next())
+                current[Key{q.value(0).toInt(), q.value(1).toInt()}] = q.value(2).toLongLong();
+    }
+    for (auto it = net.cbegin(); it != net.cend(); ++it) {
+        const qint64 cur = current.value(it.key(), 0);
         const qint64 next = cur + it.value();
         levels[it.key()] = {cur, next};
         const auto &nm = names[it.key()];
@@ -850,30 +912,41 @@ bool Database::cancelMovements(const QList<int> &movementIds, const QString &rea
     QMap<Key, qint64> net;
     for (const CancelRow &r : plan.rows)
         net[Key{r.productId, r.warehouseId}] -= r.delta;
-    for (auto it = net.cbegin(); it != net.cend(); ++it) {
+    {
+        QStringList rows;
         QSqlQuery q;
-        q.prepare("INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (?, ?, ?) "
-                  "ON CONFLICT(product_id, warehouse_id) DO UPDATE SET quantity = stock.quantity + excluded.quantity");
-        q.addBindValue(it.key().pid);
-        q.addBindValue(it.key().wid);
-        q.addBindValue(it.value());
+        for (auto it = net.cbegin(); it != net.cend(); ++it)
+            rows << QStringLiteral("(?, ?, ?)");
+        q.prepare(QStringLiteral("INSERT INTO stock (product_id, warehouse_id, quantity) VALUES %1 "
+                                 "ON CONFLICT(product_id, warehouse_id) DO UPDATE SET quantity = stock.quantity + excluded.quantity")
+                      .arg(rows.join(QLatin1Char(','))));
+        for (auto it = net.cbegin(); it != net.cend(); ++it) {
+            q.addBindValue(it.key().pid);
+            q.addBindValue(it.key().wid);
+            q.addBindValue(it.value());
+        }
         if (!q.exec())
             return refuse({}, q.lastError().text());
     }
-    for (const CancelRow &r : plan.rows) {
+    {
+        QStringList rows;
         QSqlQuery q;
-        q.prepare("INSERT INTO stock_movements (product_id, warehouse_id, related_warehouse_id, type, delta, comment, doc_id, reverts_id) "
-                  "VALUES (?, ?, ?, 'cancel', ?, ?, ?, ?)");
-        q.addBindValue(r.productId);
-        q.addBindValue(r.warehouseId);
-        if (r.relatedWarehouseId)
-            q.addBindValue(r.relatedWarehouseId);
-        else
-            q.addBindValue(QVariant(QMetaType(QMetaType::Int)));
-        q.addBindValue(-r.delta);
-        q.addBindValue(comment);
-        q.addBindValue(g_document);
-        q.addBindValue(r.id);
+        for (int i = 0; i < plan.rows.size(); ++i)
+            rows << QStringLiteral("(?, ?, ?, 'cancel', ?, ?, ?, ?)");
+        q.prepare(QStringLiteral("INSERT INTO stock_movements (product_id, warehouse_id, related_warehouse_id, type, delta, comment, doc_id, reverts_id) "
+                                 "VALUES %1").arg(rows.join(QLatin1Char(','))));
+        for (const CancelRow &r : plan.rows) {
+            q.addBindValue(r.productId);
+            q.addBindValue(r.warehouseId);
+            if (r.relatedWarehouseId)
+                q.addBindValue(r.relatedWarehouseId);
+            else
+                q.addBindValue(QVariant(QMetaType(QMetaType::Int)));
+            q.addBindValue(-r.delta);
+            q.addBindValue(comment);
+            q.addBindValue(g_document);
+            q.addBindValue(r.id);
+        }
         if (!q.exec()) {
             // Две отмены одной записи одновременно: вторую останавливает уникальный индекс reverts_id.
             if (q.lastError().nativeErrorCode() == QLatin1String("23505"))

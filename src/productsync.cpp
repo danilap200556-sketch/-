@@ -619,31 +619,44 @@ bool apply(const QVector<QStringList> &rows, int headerIdx, const QList<int> &ro
     if (!linkCodes(pairs, 0))
         return refuse(QStringLiteral("Не удалось привязать штрихкоды"));
 
+    // Новые товары - пачками по несколько штук одним запросом (а не по запросу на товар и ещё один на штрихкоды).
     int created = 0;
-    for (const Item &it : std::as_const(p.items)) {
-        if (it.status != QLatin1String("create"))
-            continue;
+    QList<const Item *> toCreate;
+    for (const Item &it : std::as_const(p.items))
+        if (it.status == QLatin1String("create"))
+            toCreate << &it;
+    for (int i = 0; i < toCreate.size(); i += 100) {
+        const auto part = toCreate.mid(i, 100);
+        QStringList marks;
+        for (int k = 0; k < part.size(); ++k)
+            marks << QStringLiteral("(?, ?, ?, '', ?, ?, ?)");
         QSqlQuery q;
-        q.prepare("INSERT INTO products (sku, name, description, photo_path, price, custom_code, market_sku) VALUES (?, ?, ?, '', ?, ?, ?) "
-                  "ON CONFLICT (sku) DO NOTHING RETURNING id");
-        q.addBindValue(it.sku);
-        q.addBindValue(it.createName);
-        q.addBindValue(it.createDescription);
-        q.addBindValue(it.createPrice);
-        q.addBindValue(it.createCustomCode);
-        q.addBindValue(it.createMarketSku);
+        q.prepare(QStringLiteral("INSERT INTO products (sku, name, description, photo_path, price, custom_code, market_sku) VALUES %1 "
+                                 "ON CONFLICT (sku) DO NOTHING RETURNING id, sku").arg(marks.join(QLatin1Char(','))));
+        for (const Item *it : part) {
+            q.addBindValue(it->sku);
+            q.addBindValue(it->createName);
+            q.addBindValue(it->createDescription);
+            q.addBindValue(it->createPrice);
+            q.addBindValue(it->createCustomCode);
+            q.addBindValue(it->createMarketSku);
+        }
         if (!q.exec())
             return refuse(q.lastError().text());
-        if (!q.next()) {
-            res.problems << Problem{it.n, QStringLiteral("товар «%1» за это время уже создали - пропущен").arg(it.sku)};
-            continue;
-        }
-        ++created;
-        const int newId = q.value(0).toInt();
+        QHash<QString, int> newIds;
+        while (q.next())
+            newIds.insert(q.value(1).toString(), q.value(0).toInt());
         QList<QPair<QString, int>> codePairs;
-        for (const QString &c : it.newCodes)
-            codePairs << qMakePair(c, newId);
-        if (!linkCodes(codePairs, it.n))
+        for (const Item *it : part) {
+            if (!newIds.contains(it->sku)) {
+                res.problems << Problem{it->n, QStringLiteral("товар «%1» за это время уже создали - пропущен").arg(it->sku)};
+                continue;
+            }
+            ++created;
+            for (const QString &c : it->newCodes)
+                codePairs << qMakePair(c, newIds.value(it->sku));
+        }
+        if (!codePairs.isEmpty() && !linkCodes(codePairs, 0))
             return refuse(QStringLiteral("Не удалось привязать штрихкоды"));
     }
     if (!db.commit())

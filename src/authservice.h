@@ -33,6 +33,9 @@ public:
 
     static QList<User> listUsers();
     static bool isAdmin(const QString &username);
+    // Администратор ли пользователь и можно ли ему править данные - одним запросом (два отдельных - это
+    // два ожидания при запуске).
+    static void permissions(const QString &username, bool *isAdmin, bool *canEdit);
     // Может ли пользователь менять данные (false - роль "только просмотр").
     static bool canEdit(const QString &username);
     static QString roleName(Role role);
