@@ -60,6 +60,7 @@ private:
     QRadioButton *m_modeInventory;
     QRadioButton *m_modeReceipt;
     QRadioButton *m_modeWriteOff;
+    QCheckBox *m_zeroMissing;   // обнулить то, чего нет в файле (только фактический остаток)
     QCheckBox *m_createMissing;
 
     QPlainTextEdit *m_log;

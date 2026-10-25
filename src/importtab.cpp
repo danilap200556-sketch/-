@@ -7,6 +7,9 @@
 
 #include <QHash>
 #include <QRegularExpression>
+#include <QSet>
+
+#include <memory>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -135,6 +138,14 @@ ImportTab::ImportTab(QWidget *parent)
     paramsLayout->addWidget(m_modeReceipt);
     paramsLayout->addWidget(m_modeWriteOff);
 
+    m_zeroMissing = new QCheckBox(tr("Обнулить остатки товаров, которых нет в файле"), paramsGroup);
+    m_zeroMissing->setToolTip(tr("Только для «фактического остатка». Всё, что сейчас числится на складе и не указано в файле, получит остаток 0.\n"
+                                 "Склады берутся из файла (колонка «Склад»), а без неё - выбранный выше склад; остальные склады не трогаются.\n"
+                                 "Перед загрузкой покажем, сколько позиций обнулится. Обнуление записывается отдельным документом - "
+                                 "в разделе «Документы» его можно отменить."));
+    m_zeroMissing->setStyleSheet(QStringLiteral("margin-left: 20px;"));
+    paramsLayout->addWidget(m_zeroMissing);
+
     m_createMissing = new QCheckBox(tr("Создавать новые товары, если ключ не найден"), paramsGroup);
     m_createMissing->setChecked(true);
     paramsLayout->addWidget(m_createMissing);
@@ -161,6 +172,10 @@ ImportTab::ImportTab(QWidget *parent)
     connect(m_modeWriteOff, &QRadioButton::toggled, this, [this](bool on) {
         // Списывать товары, которых у нас нет, бессмысленно.
         m_createMissing->setEnabled(!on);
+    });
+    connect(m_modeInventory, &QRadioButton::toggled, this, [this](bool on) {
+        // Обнулять «лишнее» имеет смысл, только когда файл задаёт полный остаток.
+        m_zeroMissing->setEnabled(on);
     });
     connect(m_headerRow, &QSpinBox::valueChanged, this, &ImportTab::onHeaderRowChanged);
     connect(importBtn, &QPushButton::clicked, this, &ImportTab::runImport);
@@ -403,33 +418,124 @@ void ImportTab::runImport()
     const bool asInventory = m_modeInventory->isChecked();
     const bool asWriteOff = m_modeWriteOff->isChecked();
     const bool createMissing = m_createMissing->isChecked() && !asWriteOff;
+    const bool zeroMissing = m_zeroMissing->isChecked() && asInventory && !barcodesOnly;
     const QString comment = tr("импорт из %1").arg(m_fileName);
-    // Весь импорт - один документ (приход, списание или инвентаризация): его можно открыть и отменить целиком.
-    Database::Document doc(asInventory ? QStringLiteral("inventory") : asWriteOff ? QStringLiteral("writeoff") : QStringLiteral("receipt"), comment);
 
-    int processed = 0, created = 0, updated = 0, skipped = 0, errors = 0, linked = 0;
+    // Артикул и штрихкоды строки; false - строка пустая или итоговая.
+    auto readIdentity = [&](const QStringList &row, QString *key, QStringList *codes) {
+        *key = keyCol >= 0 ? row.value(keyCol).trimmed() : QString();
+        codes->clear();
+        // В одной ячейке может быть несколько штрихкодов через запятую/пробел.
+        if (barcodeCol >= 0)
+            for (const QString &part : row.value(barcodeCol).split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts))
+                *codes << Barcode::normalize(part);
+        if (key->isEmpty() && codes->isEmpty())
+            return false;
+        return !key->toLower().startsWith(QStringLiteral("итого"));
+    };
+    // Товар ищем по артикулу, а если его нет - по штрихкоду.
+    auto findProduct = [&](const QString &key, const QStringList &codes) {
+        int id = key.isEmpty() ? -1 : productBySku.value(key, -1);
+        for (const QString &c : codes)
+            if (id < 0)
+                id = productByBarcode.value(c, -1);
+        return id;
+    };
+
+    // --- Что обнулить: позиции складов из файла, которые сейчас в остатке, а в файле их нет.
+    struct ZeroItem {
+        int productId;
+        int warehouseId;
+        int quantity;
+        QString sku;
+        QString warehouse;
+    };
+    QList<ZeroItem> zeroPlan;
+    QString zeroNote; // почему обнуление не выполняется (пусто - выполняется или не просили)
+    if (zeroMissing) {
+        QSet<QPair<int, int>> mentioned; // (товар, склад), которые в файле есть
+        QSet<int> mentionedAnywhere;     // товары, у которых склад в строке не прочитался - не трогаем нигде
+        QSet<int> matchedProducts;
+        QSet<int> warehouses;
+        for (int r = headerIdx + 1; r < m_rows.size(); ++r) {
+            const QStringList &row = m_rows[r];
+            QString key;
+            QStringList codes;
+            if (!readIdentity(row, &key, &codes))
+                continue;
+            const int pid = findProduct(key, codes);
+            if (pid >= 0)
+                matchedProducts.insert(pid);
+            int wh = defaultWarehouseId;
+            if (warehouseCol >= 0)
+                wh = warehouseByName.value(row.value(warehouseCol).trimmed(), 0);
+            if (wh <= 0) {
+                if (pid >= 0)
+                    mentionedAnywhere.insert(pid);
+                continue;
+            }
+            warehouses.insert(wh);
+            if (pid >= 0)
+                mentioned.insert({pid, wh});
+        }
+        if (matchedProducts.isEmpty()) {
+            zeroNote = tr("Обнуление пропущено: ни один товар из файла не найден в базе. Проверьте, правильно ли указаны колонки "
+                          "«Ключ товара» и «Остаток», - иначе обнулилось бы всё.");
+        } else if (!warehouses.isEmpty()) {
+            QSqlQuery q("SELECT s.product_id, s.warehouse_id, s.quantity, p.sku, w.name FROM stock s "
+                        "JOIN products p ON p.id = s.product_id JOIN warehouses w ON w.id = s.warehouse_id "
+                        "WHERE s.quantity <> 0 ORDER BY w.name, p.sku");
+            while (q.next()) {
+                const int pid = q.value(0).toInt(), wh = q.value(1).toInt();
+                if (!warehouses.contains(wh) || mentionedAnywhere.contains(pid) || mentioned.contains({pid, wh}))
+                    continue;
+                zeroPlan.append({pid, wh, q.value(2).toInt(), q.value(3).toString(), q.value(4).toString()});
+            }
+        }
+    }
+    if (!zeroPlan.isEmpty()) {
+        QSet<int> products;
+        QSet<QString> warehouseNames;
+        qint64 units = 0;
+        QStringList sample;
+        for (const ZeroItem &z : std::as_const(zeroPlan)) {
+            products.insert(z.productId);
+            warehouseNames.insert(z.warehouse);
+            units += z.quantity;
+            if (sample.size() < 12)
+                sample << QStringLiteral("%1 (%2): %3 шт.").arg(z.sku, z.warehouse).arg(z.quantity);
+        }
+        QStringList names = warehouseNames.values();
+        names.sort();
+        const QString text = tr("Товаров, которых нет в файле, но которые сейчас на складе: %1 (позиций %2, всего %3 шт.).\n"
+                                "Склады: %4.\n\nПервые из них:\n%5%6\n\nИх остаток станет 0. Обнуление запишется отдельным документом, "
+                                "его можно будет отменить. Продолжить загрузку?")
+                                 .arg(products.size()).arg(zeroPlan.size()).arg(units).arg(names.join(QStringLiteral(", ")), sample.join(QLatin1Char('\n')),
+                                                                                           zeroPlan.size() > sample.size() ? tr("\n…") : QString());
+        QMessageBox box(QMessageBox::Question, tr("Обнулить то, чего нет в файле?"), text, QMessageBox::NoButton, this);
+        QPushButton *go = box.addButton(tr("Загрузить и обнулить"), QMessageBox::AcceptRole);
+        box.addButton(tr("Отмена"), QMessageBox::RejectRole);
+        box.exec();
+        if (box.clickedButton() != go)
+            return;
+    }
+
+    // Весь импорт - один документ (приход, списание или инвентаризация): его можно открыть и отменить целиком.
+    auto doc = std::make_unique<Database::Document>(asInventory ? QStringLiteral("inventory") : asWriteOff ? QStringLiteral("writeoff") : QStringLiteral("receipt"), comment);
+
+    int processed = 0, created = 0, updated = 0, skipped = 0, errors = 0, linked = 0, zeroed = 0;
     QStringList logLines;
 
     for (int r = headerIdx + 1; r < m_rows.size(); ++r) {
         const QStringList &row = m_rows[r];
-        QString key = keyCol >= 0 ? row.value(keyCol).trimmed() : QString();
-        // В одной ячейке может быть несколько штрихкодов через запятую/пробел.
+        QString key;
         QStringList codes;
-        if (barcodeCol >= 0)
-            for (const QString &part : row.value(barcodeCol).split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts))
-                codes << Barcode::normalize(part);
-        if (key.isEmpty() && codes.isEmpty())
-            continue;
-        if (key.toLower().startsWith(QStringLiteral("итого")))
+        if (!readIdentity(row, &key, &codes))
             continue;
 
         ++processed;
 
-        // Товар ищем по артикулу, а если его нет - по штрихкоду.
-        int productId = key.isEmpty() ? -1 : productBySku.value(key, -1);
-        for (const QString &c : codes)
-            if (productId < 0)
-                productId = productByBarcode.value(c, -1);
+        int productId = findProduct(key, codes);
         auto linkBarcodes = [&](int pid) {
             for (const QString &c : codes) {
                 QString err;
@@ -533,13 +639,36 @@ void ImportTab::runImport()
         ++updated;
     }
 
+    doc.reset(); // документ загрузки закрыт: обнуление будет отдельным
+
+    if (!zeroPlan.isEmpty()) {
+        const QString zeroComment = tr("импорт из %1: нет в файле").arg(m_fileName);
+        Database::Document zeroDoc(QStringLiteral("inventory"), zeroComment);
+        for (const ZeroItem &z : std::as_const(zeroPlan)) {
+            QString err;
+            if (Database::inventoryAdjust(z.productId, z.warehouseId, 0, zeroComment, &err)) {
+                ++zeroed;
+                logLines << tr("Обнулено: «%1», склад «%2» (было %3)").arg(z.sku, z.warehouse).arg(z.quantity);
+            } else {
+                ++errors;
+                logLines << tr("Не удалось обнулить «%1», склад «%2»: %3").arg(z.sku, z.warehouse, err);
+            }
+        }
+    } else if (!zeroNote.isEmpty()) {
+        logLines << zeroNote;
+    } else if (zeroMissing) {
+        logLines << tr("Обнулять нечего: всё, что числится на складах из файла, есть и в файле.");
+    }
+
     logLines << QString();
-    logLines << tr("Готово: обработано %1, создано товаров %2, обновлено остатков %3, привязано штрихкодов %4, "
-                   "пропущено %5, ошибок %6")
-                     .arg(processed).arg(created).arg(updated).arg(linked).arg(skipped).arg(errors);
+    logLines << tr("Готово: обработано %1, создано товаров %2, обновлено остатков %3, %4привязано штрихкодов %5, "
+                   "пропущено %6, ошибок %7")
+                     .arg(processed).arg(created).arg(updated)
+                     .arg(zeroMissing ? tr("обнулено позиций %1, ").arg(zeroed) : QString())
+                     .arg(linked).arg(skipped).arg(errors);
     m_log->setPlainText(logLines.join('\n'));
 
-    if (updated > 0 || created > 0 || linked > 0)
+    if (updated > 0 || created > 0 || linked > 0 || zeroed > 0)
         emit dataImported();
 }
 

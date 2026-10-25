@@ -143,6 +143,8 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
         <label class="check"><input type="radio" name="mode" value="inventory" ${(req.body?.mode ?? 'inventory') === 'inventory' ? html`checked` : ''}> Задать как фактический остаток (рекомендуется)</label>
         <label class="check"><input type="radio" name="mode" value="receipt" ${req.body?.mode === 'receipt' ? html`checked` : ''}> Добавить к остатку (приход)</label>
         <label class="check"><input type="radio" name="mode" value="writeoff" ${req.body?.mode === 'writeoff' ? html`checked` : ''}> Убрать из остатка (списание)</label>
+        <label class="check"><input type="checkbox" name="zero" value="1" ${req.body?.zero === '1' ? html`checked` : ''}> Обнулить остатки товаров, которых нет в файле
+          (только для «фактического остатка»; склады берутся из файла, а без колонки «Склад» - выбранный выше; перед загрузкой покажем, что обнулится)</label>
         <label class="check"><input type="checkbox" name="create_missing" value="1" ${Object.keys(req.body || {}).length ? (req.body.create_missing === '1' ? html`checked` : '') : html`checked`}> Создавать новые товары, если ключ не найден (не для списания)</label>
         <button class="primary">Импортировать</button>
       </form>`,
@@ -166,12 +168,51 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
       return Number.isInteger(v) && v >= 0 && v <= 5 ? v : 0;
     });
     const mode = ['inventory', 'receipt', 'writeoff'].includes(b.mode) ? b.mode : 'inventory';
+    const opts = {
+      rows: e.rows, headerIdx: Math.max(0, (parseInt(b.header, 10) || 1) - 1), roles, mode,
+      warehouseId: parseId(b.warehouse), createMissing: b.create_missing === '1', zeroMissing: b.zero === '1',
+      fileName: e.fileName, user: req.ctx.user.username,
+    };
+    // «Обнулить то, чего нет в файле»: сначала показываем, что именно обнулится, и ждём подтверждения.
+    if (opts.zeroMissing && mode === 'inventory' && b.confirm !== '1') {
+      let plan;
+      try {
+        plan = await imp.zeroPreview(db, opts);
+      } catch (err) {
+        if (!(err instanceof ops.UserError)) throw err;
+        return mapPage(req, res, e, err.message, 400);
+      }
+      if (plan.items.length) {
+        const products = new Set(plan.items.map((i) => i.productId)).size;
+        const units = plan.items.reduce((a, i) => a + i.quantity, 0);
+        const whs = [...new Set(plan.items.map((i) => i.warehouse))];
+        const kept = Object.entries(b).filter(([k]) => /^(header|warehouse|mode|create_missing|zero|role_\d+)$/.test(k));
+        return send(req, res, {
+          title: 'Обнулить то, чего нет в файле?', active: 'import',
+          body: html`
+          <div class="card">
+            <p>Товаров, которых нет в файле, но которые сейчас на складе: <b>${products}</b> (позиций ${plan.items.length}, всего ${units} шт.).
+            Склады: ${whs.join(', ')}.</p>
+            <p>Их остаток станет 0. Обнуление записывается отдельным документом - его можно отменить в разделе «Документы».</p>
+            <div class="table-wrap"><table>
+              <thead><tr><th>Артикул</th><th>Склад</th><th class="num">Сейчас</th></tr></thead>
+              <tbody>${plan.items.slice(0, 50).map((i) => html`<tr><td>${i.sku}</td><td>${i.warehouse}</td><td class="num">${i.quantity}</td></tr>`)}</tbody>
+            </table></div>
+            ${plan.items.length > 50 ? html`<p class="muted">… и ещё ${plan.items.length - 50}.</p>` : ''}
+            <form method="post" action="/import/run/${req.params.id}" class="inline-row">
+              ${csrfField(req.ctx)}
+              ${kept.map(([k, v]) => html`<input type="hidden" name="${k}" value="${v}">`)}
+              <input type="hidden" name="confirm" value="1">
+              <button class="primary">Загрузить и обнулить</button>
+              <a class="button" href="/import/map/${req.params.id}">Назад</a>
+            </form>
+          </div>`,
+        });
+      }
+    }
     let result;
     try {
-      result = await imp.run(db, {
-        rows: e.rows, headerIdx: Math.max(0, (parseInt(b.header, 10) || 1) - 1), roles, mode,
-        warehouseId: parseId(b.warehouse), createMissing: b.create_missing === '1', fileName: e.fileName, user: req.ctx.user.username,
-      });
+      result = await imp.run(db, opts);
     } catch (err) {
       if (!(err instanceof ops.UserError)) throw err;
       return mapPage(req, res, e, err.message, 400);

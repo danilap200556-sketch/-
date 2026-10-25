@@ -74,9 +74,9 @@ function parseFile(buffer, fileName) {
   return { rows };
 }
 
-// opts: { rows, headerIdx, roles: number[] (по колонкам), warehouseId, mode: inventory|receipt|writeoff, createMissing, fileName }
-async function run(db, opts) {
-  const { rows, headerIdx, roles, mode, fileName } = opts;
+// Разбор параметров загрузки остатков: колонки и режим; неверные - ValidationError.
+function parseOpts(opts) {
+  const { roles, mode } = opts;
   const col = (role) => roles.indexOf(role);
   const keyCol = col(ROLES.key); const stockCol = col(ROLES.stock); const nameCol = col(ROLES.name);
   const whCol = col(ROLES.warehouse); const codeCol = col(ROLES.barcode);
@@ -88,28 +88,98 @@ async function run(db, opts) {
   if (whCol < 0 && !opts.warehouseId) throw new ops.ValidationError('Выберите склад (или добавьте склад на странице «Склады»).');
   const asInventory = mode === 'inventory';
   const asWriteOff = mode === 'writeoff';
-  const createMissing = opts.createMissing && !asWriteOff;
+  return {
+    keyCol, stockCol, nameCol, whCol, codeCol, barcodesOnly, asInventory, asWriteOff,
+    createMissing: opts.createMissing && !asWriteOff,
+    // «обнулить то, чего нет в файле» имеет смысл, только когда файл задаёт полный остаток
+    zeroMissing: Boolean(opts.zeroMissing) && asInventory && !barcodesOnly,
+  };
+}
+
+// Артикул и штрихкоды строки; null - строка пустая или итоговая.
+function identity(row, p) {
+  const key = p.keyCol >= 0 ? String(row[p.keyCol] ?? '').trim() : '';
+  const codes = p.codeCol >= 0
+    ? String(row[p.codeCol] ?? '').split(/[,;\s]+/).filter(Boolean).map(bc.normalize)
+    : [];
+  if (!key && !codes.length) return null;
+  if (key.toLowerCase().startsWith('итого')) return null;
+  return { key, codes };
+}
+
+async function loadMaps(q) {
+  return {
+    warehouseByName: new Map((await q.query('SELECT id, name FROM warehouses')).rows.map((w) => [w.name, w.id])),
+    productBySku: new Map((await q.query('SELECT id, sku FROM products')).rows.map((r) => [r.sku, r.id])),
+    productByCode: new Map((await q.query('SELECT barcode, product_id FROM product_barcodes')).rows.map((b) => [b.barcode, b.product_id])),
+  };
+}
+
+// Что обнулить при «обнулить то, чего нет в файле»: позиции складов, которые есть в файле, с ненулевым остатком, а в самом файле
+// их нет. Осторожно: товар, чья строка есть в файле (пусть и с ошибкой в числе), не трогаем; если склад в строке не опознан -
+// не трогаем этот товар нигде; склады, которых в файле нет вовсе, не затрагиваются; если ни один товар файла не найден в базе
+// (скорее всего, указаны не те колонки) - не обнуляем ничего.
+// -> { items: [{ productId, warehouseId, quantity, sku, warehouse }], note }
+async function zeroPlan(q, opts, p, maps) {
+  const mentioned = new Set(); const anywhere = new Set(); const matched = new Set(); const warehouses = new Set();
+  const { rows, headerIdx } = opts;
+  for (let r = headerIdx + 1; r < rows.length; r++) {
+    const id = identity(rows[r], p);
+    if (!id) continue;
+    let productId = id.key ? (maps.productBySku.get(id.key) ?? null) : null;
+    for (const code of id.codes) if (productId === null) productId = maps.productByCode.get(code) ?? null;
+    if (productId !== null) matched.add(productId);
+    const wid = p.whCol >= 0 ? (maps.warehouseByName.get(String(rows[r][p.whCol] ?? '').trim()) ?? null) : (opts.warehouseId || null);
+    if (!wid) { if (productId !== null) anywhere.add(productId); continue; }
+    warehouses.add(wid);
+    if (productId !== null) mentioned.add(`${productId}:${wid}`);
+  }
+  if (!matched.size) {
+    return { items: [], note: 'Обнуление пропущено: ни один товар из файла не найден в базе. Проверьте, правильно ли указаны колонки ' +
+      '«Ключ товара» и «Остаток», - иначе обнулилось бы всё.' };
+  }
+  if (!warehouses.size) return { items: [], note: '' };
+  const { rows: stock } = await q.query(
+    `SELECT s.product_id, s.warehouse_id, s.quantity, p.sku, w.name AS wname FROM stock s
+       JOIN products p ON p.id = s.product_id JOIN warehouses w ON w.id = s.warehouse_id
+      WHERE s.quantity <> 0 AND s.warehouse_id = ANY($1::int[]) ORDER BY w.name, p.sku`, [[...warehouses]]);
+  const items = stock
+    .filter((x) => !anywhere.has(x.product_id) && !mentioned.has(`${x.product_id}:${x.warehouse_id}`))
+    .map((x) => ({ productId: x.product_id, warehouseId: x.warehouse_id, quantity: x.quantity, sku: x.sku, warehouse: x.wname }));
+  return { items, note: '' };
+}
+
+// Для страницы подтверждения: что обнулится (то же, что сделает run). Пустой items - обнулять нечего или не просили.
+async function zeroPreview(db, opts) {
+  const p = parseOpts(opts);
+  if (!p.zeroMissing) return { items: [], note: '' };
+  return zeroPlan(db, opts, p, await loadMaps(db));
+}
+
+// opts: { rows, headerIdx, roles: number[] (по колонкам), warehouseId, mode: inventory|receipt|writeoff, createMissing, zeroMissing, fileName, user }
+async function run(db, opts) {
+  const { rows, headerIdx, fileName } = opts;
+  const p = parseOpts(opts);
+  const { keyCol, stockCol, nameCol, whCol, codeCol, barcodesOnly, asInventory, asWriteOff, createMissing } = p;
   const comment = `импорт из ${fileName}`;
   const doc = ops.newDoc(asInventory ? 'inventory' : asWriteOff ? 'writeoff' : 'receipt', comment, opts.user); // весь импорт - один документ: отменяется разом
 
-  const stats = { processed: 0, created: 0, updated: 0, skipped: 0, errors: 0, linked: 0 };
+  const stats = { processed: 0, created: 0, updated: 0, skipped: 0, errors: 0, linked: 0, zeroed: 0 };
   const log = [];
+  let zeroDoc = null;
   const note = (s) => { if (log.length < MAX_LOG) log.push(s); else if (log.length === MAX_LOG) log.push('… (остальные сообщения не показаны)'); };
 
   await db.tx(async (c) => {
-    const warehouseByName = new Map((await c.query('SELECT id, name FROM warehouses')).rows.map((w) => [w.name, w.id]));
-    const productBySku = new Map((await c.query('SELECT id, sku FROM products')).rows.map((p) => [p.sku, p.id]));
-    const productByCode = new Map((await c.query('SELECT barcode, product_id FROM product_barcodes')).rows.map((b) => [b.barcode, b.product_id]));
+    const maps = await loadMaps(c);
+    const { warehouseByName, productBySku, productByCode } = maps;
+    const zero = p.zeroMissing ? await zeroPlan(c, opts, p, maps) : { items: [], note: '' }; // до загрузки: потом строки файла уже изменят остатки
 
     for (let r = headerIdx + 1; r < rows.length; r++) {
       const row = rows[r];
       const rowNo = r + 1;
-      const key = keyCol >= 0 ? String(row[keyCol] ?? '').trim() : '';
-      const codes = codeCol >= 0
-        ? String(row[codeCol] ?? '').split(/[,;\s]+/).filter(Boolean).map(bc.normalize)
-        : [];
-      if (!key && !codes.length) continue;
-      if (key.toLowerCase().startsWith('итого')) continue;
+      const id = identity(row, p);
+      if (!id) continue;
+      const { key, codes } = id;
       stats.processed++;
 
       let productId = key ? (productBySku.get(key) ?? null) : null;
@@ -200,13 +270,38 @@ async function run(db, opts) {
         }
       }
     }
+
+    // Обнуление - отдельный документ: если окажется ошибкой, его можно отменить, не трогая саму загрузку.
+    if (zero.items.length) {
+      zeroDoc = ops.newDoc('inventory', `${comment}: нет в файле`, opts.user);
+      for (const it of zero.items) {
+        await c.query('SAVEPOINT zero_sp');
+        try {
+          await ops.inventory(c, it.productId, it.warehouseId, 0, `${comment}: нет в файле`, zeroDoc);
+          await c.query('RELEASE SAVEPOINT zero_sp');
+          stats.zeroed++;
+          note(`Обнулено: «${it.sku}», склад «${it.warehouse}» (было ${it.quantity})`);
+        } catch (e) {
+          await c.query('ROLLBACK TO SAVEPOINT zero_sp');
+          ops.docRolledBack(zeroDoc);
+          if (!(e instanceof ops.UserError) && e.code !== '23514') throw e;
+          stats.errors++; note(`Не удалось обнулить «${it.sku}», склад «${it.warehouse}»: ${e.message}`);
+        }
+      }
+    } else if (zero.note) {
+      note(zero.note);
+    } else if (p.zeroMissing) {
+      note('Обнулять нечего: всё, что числится на складах из файла, есть и в файле.');
+    }
   });
   log.push('');
+  const zeroNo = zeroDoc && (await ops.docsSupported(db)) ? (await db.query('SELECT id FROM stock_documents WHERE doc_key = $1', [zeroDoc.key])).rows[0]?.id : null;
   const docNo = (await ops.docsSupported(db)) ? (await db.query('SELECT id FROM stock_documents WHERE doc_key = $1', [doc.key])).rows[0]?.id : null;
   if (docNo) log.push(`Создан документ №${docNo}: он виден в разделе «Документы», там же его можно отменить целиком.`);
+  if (zeroNo) log.push(`Обнуление записано отдельным документом №${zeroNo} (нет в файле): его можно отменить, не отменяя загрузку.`);
   log.push(`Готово: обработано ${stats.processed}, создано товаров ${stats.created}, обновлено остатков ${stats.updated}, ` +
-    `привязано штрихкодов ${stats.linked}, пропущено ${stats.skipped}, ошибок ${stats.errors}`);
-  return { stats, log, doc: docNo ?? null };
+    `${p.zeroMissing ? `обнулено позиций ${stats.zeroed}, ` : ''}привязано штрихкодов ${stats.linked}, пропущено ${stats.skipped}, ошибок ${stats.errors}`);
+  return { stats, log, doc: docNo ?? null, zeroDoc: zeroNo ?? null };
 }
 
 // Выгрузка остатков в том же виде, что в приложении: Артикул | Название | Склад | Остаток | Место хранения.
@@ -231,4 +326,4 @@ async function exportRows(db, { q = '', warehouseId = null, defaultWarehouseName
     ...rows.map((r) => [r.sku, r.name, r.wname ?? '', String(r.quantity), r.location ?? ''])];
 }
 
-module.exports = { ROLES, ROLE_LABELS, guessRole, guessHeaderRow, parseFile, parseCsv, run, exportRows };
+module.exports = { ROLES, ROLE_LABELS, guessRole, guessHeaderRow, parseFile, parseCsv, run, zeroPreview, exportRows };
