@@ -21,6 +21,7 @@ public:
 
     // Кто работает в программе: попадает в документы остатков как автор.
     static void setCurrentUser(const QString &username);
+    static QString currentUser();
     // Номер документа, который последним создала эта программа (0 - ничего не записано): чтобы показать «Создан документ №N».
     static int lastDocumentId();
 
@@ -129,6 +130,17 @@ public:
     // (чтобы несколько правок карточки применялись все вместе или ни одной).
     static bool inventorySetInTransaction(int productId, int warehouseId, int countedQuantity,
                                           const QString &comment, QString *error = nullptr);
+
+    // Инвентаризация целого склада: остатки перечисленных товаров становятся равными посчитанным, а при zeroOthers
+    // у всех остальных товаров склада с остатком - нулю. Пишет в журнал только расхождения (по записи на товар)
+    // и вызывается внутри уже открытой транзакции, под документом (Database::Document) инвентаризации. В *changed -
+    // сколько товаров изменено.
+    struct StockLevel {
+        int productId = 0;
+        int counted = 0;
+    };
+    static bool setStockLevelsInTransaction(int warehouseId, const QList<StockLevel> &levels, bool zeroOthers,
+                                            const QString &comment, int *changed = nullptr, QString *error = nullptr);
 
     static int currentStock(int productId, int warehouseId);
 

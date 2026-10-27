@@ -5,6 +5,7 @@
 -- Пользователя (web_user) создайте в консоли Яндекс Облака (Managed Service for PostgreSQL ->
 -- Пользователи), затем выполните этот файл под владельцем базы (тем же, под кем работает приложение).
 GRANT SELECT, INSERT, UPDATE, DELETE ON
-  products, warehouses, locations, stock, stock_movements, stock_documents, users, product_barcodes, product_photos
+  products, warehouses, locations, stock, stock_movements, stock_documents, users, product_barcodes, product_photos,
+  stocktakes, stocktake_items
 TO web_user;
 GRANT SELECT ON market_accounts TO web_user;

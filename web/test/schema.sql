@@ -109,6 +109,26 @@ INSERT INTO stock_documents (doc_key, kind, comment, created_at)
             ORDER BY g.first_at
            ON CONFLICT (doc_key) DO NOTHING;
 CREATE INDEX IF NOT EXISTS stock_documents_created_idx ON stock_documents (created_at DESC);
+CREATE TABLE IF NOT EXISTS stocktakes (
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            warehouse_id INTEGER NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'open',
+            started_by TEXT NOT NULL DEFAULT '',
+            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            finished_at TIMESTAMPTZ,
+            finished_by TEXT NOT NULL DEFAULT '',
+            document_id INTEGER,
+            zero_missing BOOLEAN NOT NULL DEFAULT TRUE
+        );
+CREATE UNIQUE INDEX IF NOT EXISTS stocktakes_one_open ON stocktakes (warehouse_id) WHERE status = 'open';
+CREATE TABLE IF NOT EXISTS stocktake_items (
+            stocktake_id INTEGER NOT NULL REFERENCES stocktakes(id) ON DELETE CASCADE,
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            counted INTEGER NOT NULL CHECK (counted >= 0),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_by TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (stocktake_id, product_id)
+        );
 ALTER TABLE product_photos ADD COLUMN IF NOT EXISTS public_token TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS product_photos_token_uq ON product_photos (public_token) WHERE public_token IS NOT NULL;
 CREATE TABLE IF NOT EXISTS market_cards (

@@ -12,6 +12,7 @@
 #include <QHash>
 #include <QMap>
 #include <QSet>
+#include <algorithm>
 
 #ifdef QPSQL_EMBEDDED_AVAILABLE
 #include "thirdparty/qpsql/qsql_psql_p.h"
@@ -190,6 +191,29 @@ const QStringList &schemaDdl()
             ORDER BY g.first_at
            ON CONFLICT (doc_key) DO NOTHING)",
         "CREATE INDEX IF NOT EXISTS stock_documents_created_idx ON stock_documents (created_at DESC)",
+        // --- Инвентаризация по штрихкодам: подсчёт склада (stocktakes) и посчитанное по товарам (stocktake_items).
+        // Подсчёт общий: на складе открыт не больше одного, в него считают с разных компьютеров и с сайта.
+        // status: open | done | discarded; document_id - номер документа «Инвентаризация», когда подсчёт проведён.
+        R"(CREATE TABLE IF NOT EXISTS stocktakes (
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            warehouse_id INTEGER NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'open',
+            started_by TEXT NOT NULL DEFAULT '',
+            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            finished_at TIMESTAMPTZ,
+            finished_by TEXT NOT NULL DEFAULT '',
+            document_id INTEGER,
+            zero_missing BOOLEAN NOT NULL DEFAULT TRUE
+        ))",
+        "CREATE UNIQUE INDEX IF NOT EXISTS stocktakes_one_open ON stocktakes (warehouse_id) WHERE status = 'open'",
+        R"(CREATE TABLE IF NOT EXISTS stocktake_items (
+            stocktake_id INTEGER NOT NULL REFERENCES stocktakes(id) ON DELETE CASCADE,
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            counted INTEGER NOT NULL CHECK (counted >= 0),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_by TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (stocktake_id, product_id)
+        ))",
         // --- Ссылки на фото для Маркета: у фото, которое нужно отдать наружу, появляется секретный токен; сайт отдаёт
         // такое фото по адресу /pub/photo/<id>/<токен>.jpg без входа (Маркет скачивает картинки по ссылке).
         "ALTER TABLE product_photos ADD COLUMN IF NOT EXISTS public_token TEXT",
@@ -546,6 +570,11 @@ void Database::setCurrentUser(const QString &username)
     g_currentUser = nn(username.trimmed().left(100));
 }
 
+QString Database::currentUser()
+{
+    return g_currentUser;
+}
+
 int Database::currentStock(int productId, int warehouseId)
 {
     QSqlQuery q;
@@ -830,6 +859,73 @@ bool Database::inventorySetInTransaction(int productId, int warehouseId, int cou
     fullComment += QStringLiteral("(инвентаризация: было %1, стало %2)").arg(current).arg(countedQuantity);
     return applyMovementInternal(productId, warehouseId, delta, MovementType::InventoryAdjust, std::nullopt,
                                  fullComment, error);
+}
+
+bool Database::setStockLevelsInTransaction(int warehouseId, const QList<StockLevel> &levels, bool zeroOthers,
+                                            const QString &comment, int *changed, QString *error)
+{
+    if (changed)
+        *changed = 0;
+    // Остатки склада блокируем на время проводки: пока идёт запись, их не изменит другое окно, поэтому «было» верно.
+    QHash<int, int> have;
+    {
+        QSqlQuery q;
+        q.prepare("SELECT product_id, quantity FROM stock WHERE warehouse_id = ? FOR UPDATE");
+        q.addBindValue(warehouseId);
+        if (!q.exec()) {
+            if (error)
+                *error = q.lastError().text();
+            return false;
+        }
+        while (q.next())
+            have.insert(q.value(0).toInt(), q.value(1).toInt());
+    }
+    QList<Movement> mvs;
+    QSet<int> seen;
+    auto setTo = [&](int productId, int counted) {
+        const int current = have.value(productId, 0);
+        if (counted == current)
+            return;
+        QString full = comment;
+        if (!full.isEmpty())
+            full += QLatin1Char(' ');
+        full += QStringLiteral("(инвентаризация: было %1, стало %2)").arg(current).arg(counted);
+        mvs.append({productId, warehouseId, counted - current, movementTypeLabel(MovementType::InventoryAdjust), std::nullopt, full});
+    };
+    for (const StockLevel &l : levels) {
+        if (l.counted < 0 || l.counted > 100'000'000) {
+            if (error)
+                *error = QStringLiteral("Посчитанное количество должно быть от 0 до 100 000 000");
+            return false;
+        }
+        if (seen.contains(l.productId))
+            continue;
+        seen.insert(l.productId);
+        setTo(l.productId, l.counted);
+    }
+    if (zeroOthers) {
+        QList<int> others;
+        for (auto it = have.cbegin(); it != have.cend(); ++it)
+            if (it.value() != 0 && !seen.contains(it.key()))
+                others << it.key();
+        std::sort(others.begin(), others.end());
+        for (int id : std::as_const(others))
+            setTo(id, 0);
+    }
+    // Пачками, чтобы запрос не разрастался; все пачки - один документ.
+    constexpr int kChunk = 400;
+    for (int start = 0; start < mvs.size(); start += kChunk) {
+        QList<Shortage> shortages;
+        QString err;
+        if (applyMovements(mvs.mid(start, kChunk), &shortages, &err) != MovementResult::Ok) {
+            if (error)
+                *error = err.isEmpty() ? QStringLiteral("Остаток изменили в другом окне, пока шла запись. Повторите.") : err;
+            return false;
+        }
+    }
+    if (changed)
+        *changed = int(mvs.size());
+    return true;
 }
 
 bool Database::inventoryAdjust(int productId, int warehouseId, int countedQuantity,

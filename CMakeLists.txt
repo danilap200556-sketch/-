@@ -150,6 +150,8 @@ add_executable(inventory_manager
     src/photoviewer.cpp
     src/bulkphotosdialog.cpp
     src/imagesearch.cpp
+    src/stocktake.cpp
+    src/stocktaketab.cpp
     src/photofetch.cpp
     src/photofetchdialog.cpp
     src/bulkeditdialog.cpp

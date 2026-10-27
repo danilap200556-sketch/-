@@ -138,6 +138,37 @@ async function inventory(c, productId, warehouseId, counted, comment, doc = null
   await addMovement(c, productId, warehouseId, null, 'inventory_adjust', delta, full, doc);
 }
 
+// Инвентаризация склада: остатки товаров из changes ([{ productId, from, to }]) становятся равными to - одним
+// запросом на пачку (в подсчёте могут быть тысячи товаров). Пишет в журнал по записи на товар; вызывать внутри
+// транзакции, остатки склада к этому моменту должны быть заблокированы (SELECT ... FOR UPDATE).
+async function setLevels(c, warehouseId, changes, comment, doc = null) {
+  const CHUNK = 1000;
+  for (let i = 0; i < changes.length; i += CHUNK) {
+    const part = changes.slice(i, i + CHUNK);
+    const pids = part.map((x) => x.productId);
+    const to = part.map((x) => x.to);
+    const deltas = part.map((x) => x.to - x.from);
+    const comments = part.map((x) => `${comment ? comment + ' ' : ''}(инвентаризация: было ${x.from}, стало ${x.to})`);
+    await c.query(
+      `INSERT INTO stock (product_id, warehouse_id, quantity)
+       SELECT x.pid, $2::int, x.q FROM unnest($1::int[], $3::int[]) AS x(pid, q)
+       ON CONFLICT (product_id, warehouse_id) DO UPDATE SET quantity = EXCLUDED.quantity`,
+      [pids, warehouseId, to]);
+    if (await cancelSupported(c)) {
+      if (doc && await docsSupported(c)) await ensureDoc(c, doc);
+      await c.query(
+        `INSERT INTO stock_movements (product_id, warehouse_id, type, delta, comment, doc_id)
+         SELECT x.pid, $2::int, 'inventory_adjust', x.d, x.c, $5::text FROM unnest($1::int[], $3::int[], $4::text[]) AS x(pid, d, c)`,
+        [pids, warehouseId, deltas, comments, doc ? doc.key : null]);
+    } else {
+      await c.query(
+        `INSERT INTO stock_movements (product_id, warehouse_id, type, delta, comment)
+         SELECT x.pid, $2::int, 'inventory_adjust', x.d, x.c FROM unnest($1::int[], $3::int[], $4::text[]) AS x(pid, d, c)`,
+        [pids, warehouseId, deltas, comments]);
+    }
+  }
+}
+
 const TYPE_LABELS = {
   receipt: 'Приход',
   writeoff: 'Списание',
@@ -265,6 +296,6 @@ async function cancel(db, ids, reason = '', user = '') {
 }
 
 module.exports = {
-  UserError, ValidationError, CancelRefused, qty, receive, takeOut, transfer, inventory, newDoc, docRolledBack,
+  UserError, ValidationError, CancelRefused, qty, receive, takeOut, transfer, inventory, setLevels, newDoc, docRolledBack,
   cancelSupported, docsSupported, resetFeatureCache, documentIds, planCancel, cancel, TYPE_LABELS, MAX_QTY,
 };

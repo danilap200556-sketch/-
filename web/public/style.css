@@ -132,3 +132,6 @@ body.guest .flash { background:rgba(214,69,69,.2); border-color:rgba(255,154,160
 .suggest li:hover, .suggest li.active { background:var(--accent-soft); }
 .field .suggest li span, .field .suggest li small { font-size:inherit; font-weight:400; color:var(--muted); }
 .suggest li b { color:var(--fg); }
+
+.scanbox { padding:12px; } .scanbox .scaninput { width:100%; font-size:1.35rem; padding:.7rem .9rem; box-sizing:border-box; }
+input.qty { text-align:right; width:5.5em; }

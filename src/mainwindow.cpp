@@ -2,6 +2,7 @@
 #include "productstab.h"
 #include "warehousestab.h"
 #include "stocktab.h"
+#include "stocktaketab.h"
 #include "labelstab.h"
 #include "importtab.h"
 #include "connectiondialog.h"
@@ -207,6 +208,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     m_productsTab = new ProductsTab(this);
     m_warehousesTab = new WarehousesTab(this);
     m_stockTab = new StockTab(this);
+    m_stocktakeTab = new StocktakeTab(this);
     m_labelsTab = new LabelsTab(this);
     m_importTab = new ImportTab(this);
     m_marketTab = new MarketTab(isAdmin, this);
@@ -217,6 +219,8 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     addPage(tr("Товары"), Theme::Icon::Products, m_productsTab);
     addPage(tr("Склады"), Theme::Icon::Warehouses, m_warehousesTab);
     addPage(tr("Остатки и движения"), Theme::Icon::Stock, m_stockTab);
+    if (canEdit)
+        addPage(tr("Инвентаризация"), Theme::Icon::Stocktake, m_stocktakeTab);
     addPage(tr("Документы"), Theme::Icon::Documents, m_documentsTab);
     addPage(tr("Этикетки"), Theme::Icon::Labels, m_labelsTab);
     addPage(canEdit ? tr("Импорт") : tr("Экспорт"), Theme::Icon::Import, m_importTab);
@@ -234,6 +238,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         m_productsTab->setReadOnly(true);
         m_warehousesTab->setReadOnly(true);
         m_stockTab->setReadOnly(true);
+        m_stocktakeTab->hide();
         m_documentsTab->setReadOnly(true);
         m_importTab->setReadOnly(true);
         m_marketTab->hide();
@@ -269,6 +274,19 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         markDirty(m_stockTab);
         markDirty(m_productsTab);
         markDirty(m_labelsTab);
+    });
+    connect(m_stocktakeTab, &StocktakeTab::stockChanged, this, [this]() {
+        markDirty(m_stockTab);
+        markDirty(m_labelsTab);
+        markDirty(m_importTab);
+    });
+    connect(m_stocktakeTab, &StocktakeTab::documentCreated, this, [this](int id) {
+        if (id <= 0)
+            return;
+        markDirty(m_documentsTab);
+        const Documents::Info d = Documents::get(id);
+        statusBar()->showMessage(tr("Создан документ: %1. Открыть и при необходимости отменить целиком - раздел «Документы».")
+                                     .arg(Documents::title(d)), 15000);
     });
     connect(m_stockTab, &StockTab::documentCreated, this, [this](int id) {
         if (id <= 0)
@@ -340,6 +358,8 @@ void MainWindow::refreshPage(QWidget *w)
         m_warehousesTab->refresh();
     else if (w == m_stockTab)
         m_stockTab->refresh();
+    else if (w == m_stocktakeTab)
+        m_stocktakeTab->refresh();
     else if (w == m_documentsTab)
         m_documentsTab->refresh();
     else if (w == m_labelsTab)

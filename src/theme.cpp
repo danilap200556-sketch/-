@@ -314,6 +314,13 @@ QIcon icon(Icon which, const QColor &color, int size)
         p.drawLine(P(9, 13), P(16, 13)); p.drawLine(P(9, 16.5), P(14, 16.5));
         break;
     }
+    case Icon::Stocktake: {
+        // планшет с галочкой: инвентаризация
+        p.drawRoundedRect(QRectF(5.5 * u, 4.5 * u, 13 * u, 16 * u), 2 * u, 2 * u);
+        p.drawRect(QRectF(9 * u, 3 * u, 6 * u, 3.4 * u));
+        p.drawLine(P(8.5, 13), P(10.8, 15.4)); p.drawLine(P(10.8, 15.4), P(15.5, 10.6));
+        break;
+    }
     case Icon::Update: {
         // круговая стрелка «обновить»
         p.drawArc(QRectF(5 * u, 5 * u, 14 * u, 14 * u), 40 * 16, 270 * 16);

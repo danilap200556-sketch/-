@@ -10,6 +10,7 @@
 class ProductsTab;
 class WarehousesTab;
 class StockTab;
+class StocktakeTab;
 class LabelsTab;
 class ImportTab;
 class MarketTab;
@@ -84,6 +85,7 @@ private:
     ProductsTab *m_productsTab;
     WarehousesTab *m_warehousesTab;
     StockTab *m_stockTab;
+    StocktakeTab *m_stocktakeTab;
     LabelsTab *m_labelsTab;
     ImportTab *m_importTab;
     MarketTab *m_marketTab;
