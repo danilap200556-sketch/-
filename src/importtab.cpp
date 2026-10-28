@@ -33,6 +33,10 @@
 
 namespace {
 
+constexpr int kPreviewRows = 100;        // сколько строк файла показываем (остальные всё равно импортируются)
+constexpr int kMinPreviewColumn = 230;   // под выпадающий список «Ключ товара (артикул)»
+constexpr int kMaxPreviewColumn = 320;
+
 const QStringList kRoleLabels = {
     QStringLiteral("Игнорировать"),
     QStringLiteral("Ключ товара (артикул)"),
@@ -89,12 +93,14 @@ ImportTab::ImportTab(QWidget *parent)
     layout->addLayout(fileRow);
     m_importWidgets << hint << m_fileLabel << pickBtn;
 
+    // Слева файл на всю доступную ширину: над каждой колонкой выбирают, что в ней лежит. Справа узкая панель с
+    // параметрами и результатом - так на большом экране видно много колонок сразу, а не только пять-шесть.
     auto *splitter = new QSplitter(this);
+    splitter->setChildrenCollapsible(false);
     layout->addWidget(splitter, 1);
     m_importWidgets << splitter;
 
-    // --- Левая часть: сырой предпросмотр + номер строки заголовков ---
-    auto *previewBox = new QGroupBox(tr("Предпросмотр файла"), this);
+    auto *previewBox = new QGroupBox(tr("Файл: что в какой колонке"), this);
     auto *previewLayout = new QVBoxLayout(previewBox);
 
     auto *headerRowLayout = new QHBoxLayout();
@@ -102,33 +108,35 @@ ImportTab::ImportTab(QWidget *parent)
     m_headerRow = new QSpinBox(previewBox);
     m_headerRow->setMinimum(1);
     headerRowLayout->addWidget(m_headerRow);
-    headerRowLayout->addStretch();
+    auto *mapHint = new QLabel(tr("В верхней строке таблицы выберите, что означает каждая колонка. Строка с названиями выделена."), previewBox);
+    mapHint->setStyleSheet("color: gray;");
+    mapHint->setWordWrap(true);
+    headerRowLayout->addSpacing(12);
+    headerRowLayout->addWidget(mapHint, 1);
     previewLayout->addLayout(headerRowLayout);
 
     m_rawPreview = new QTableWidget(previewBox);
     m_rawPreview->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    previewLayout->addWidget(m_rawPreview);
+    m_rawPreview->setSelectionMode(QAbstractItemView::NoSelection);
+    m_rawPreview->setAlternatingRowColors(true);
+    m_rawPreview->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_rawPreview->horizontalHeader()->setStretchLastSection(true);
+    m_rawPreview->verticalHeader()->setDefaultSectionSize(30);
+    previewLayout->addWidget(m_rawPreview, 1);
     splitter->addWidget(previewBox);
 
-    // --- Правая часть: сопоставление колонок + параметры импорта ---
     auto *rightBox = new QWidget(this);
+    rightBox->setMinimumWidth(340);
+    rightBox->setMaximumWidth(460);
     auto *rightLayout = new QVBoxLayout(rightBox);
-
-    auto *mappingGroup = new QGroupBox(tr("Что означает каждая колонка"), rightBox);
-    auto *mappingGroupLayout = new QVBoxLayout(mappingGroup);
-    m_mappingBox = new QWidget(mappingGroup);
-    m_mappingLayout = new QVBoxLayout(m_mappingBox);
-    mappingGroupLayout->addWidget(m_mappingBox);
-    rightLayout->addWidget(mappingGroup);
+    rightLayout->setContentsMargins(0, 0, 0, 0);
 
     auto *paramsGroup = new QGroupBox(tr("Параметры импорта"), rightBox);
     auto *paramsLayout = new QVBoxLayout(paramsGroup);
 
-    auto *whRow = new QHBoxLayout();
-    whRow->addWidget(new QLabel(tr("Склад (если в файле нет колонки «Склад»):"), paramsGroup));
+    paramsLayout->addWidget(new QLabel(tr("Склад (если в файле нет колонки «Склад»):"), paramsGroup));
     m_warehouseCombo = new QComboBox(paramsGroup);
-    whRow->addWidget(m_warehouseCombo);
-    paramsLayout->addLayout(whRow);
+    paramsLayout->addWidget(m_warehouseCombo);
 
     m_modeInventory = new QRadioButton(tr("Задать как фактический остаток (рекомендуется)"), paramsGroup);
     m_modeReceipt = new QRadioButton(tr("Добавить к остатку (приход)"), paramsGroup);
@@ -162,7 +170,8 @@ ImportTab::ImportTab(QWidget *parent)
     rightLayout->addWidget(logGroup, 1);
 
     splitter->addWidget(rightBox);
-
+    splitter->setStretchFactor(0, 1);
+    splitter->setStretchFactor(1, 0);
 
     connect(pickBtn, &QPushButton::clicked, this, &ImportTab::pickFile);
     connect(exportBtn, &QPushButton::clicked, this, &ImportTab::exportStock);
@@ -206,9 +215,12 @@ void ImportTab::pickFile()
 {
     const QString path = QFileDialog::getOpenFileName(this, tr("Выберите файл с остатками"), QString(),
                                                         tr("Excel и CSV (*.xlsx *.csv);;Все файлы (*)"));
-    if (path.isEmpty())
-        return;
+    if (!path.isEmpty())
+        loadFile(path);
+}
 
+void ImportTab::loadFile(const QString &path)
+{
     const QString suffix = QFileInfo(path).suffix().toLower();
     if (suffix == QLatin1String("xls")) {
         QMessageBox::warning(this, tr("Старый формат Excel"),
@@ -252,12 +264,14 @@ void ImportTab::showRawPreview()
     for (const QStringList &row : m_rows)
         maxCols = qMax(maxCols, row.size());
 
-    const int rowCount = qMin(m_rows.size(), 30);
+    // Первая строка таблицы - выбор роли колонки; дальше строки файла.
+    const int rowCount = qMin(m_rows.size(), kPreviewRows);
+    m_roleCombos.clear(); // clear() ниже уничтожит выпадающие списки в ячейках
     m_rawPreview->clear();
-    m_rawPreview->setRowCount(rowCount);
+    m_rawPreview->setRowCount(rowCount + 1);
     m_rawPreview->setColumnCount(maxCols);
 
-    QStringList vHeaders;
+    QStringList vHeaders{tr("Что это")};
     QStringList hHeaders;
     for (int c = 0; c < maxCols; ++c)
         hHeaders << tr("Колонка %1").arg(c + 1);
@@ -267,9 +281,12 @@ void ImportTab::showRawPreview()
         vHeaders << QString::number(r + 1);
         const QStringList &row = m_rows[r];
         for (int c = 0; c < maxCols; ++c)
-            m_rawPreview->setItem(r, c, new QTableWidgetItem(row.value(c)));
+            m_rawPreview->setItem(r + 1, c, new QTableWidgetItem(row.value(c)));
     }
     m_rawPreview->setVerticalHeaderLabels(vHeaders);
+    m_rawPreview->resizeColumnsToContents();
+    for (int c = 0; c < maxCols; ++c)
+        m_rawPreview->setColumnWidth(c, qBound(kMinPreviewColumn, m_rawPreview->columnWidth(c), kMaxPreviewColumn));
 }
 
 void ImportTab::guessHeaderRow()
@@ -301,11 +318,8 @@ void ImportTab::onHeaderRowChanged(int)
 
 void ImportTab::rebuildColumnMapping()
 {
-    QLayoutItem *item;
-    while ((item = m_mappingLayout->takeAt(0)) != nullptr) {
-        delete item->widget();
-        delete item;
-    }
+    for (QComboBox *combo : std::as_const(m_roleCombos))
+        m_rawPreview->removeCellWidget(0, m_roleCombos.indexOf(combo));
     m_roleCombos.clear();
 
     const int headerIdx = m_headerRow->value() - 1;
@@ -313,12 +327,10 @@ void ImportTab::rebuildColumnMapping()
         return;
 
     const QStringList &headerRow = m_rows[headerIdx];
-    for (int c = 0; c < headerRow.size(); ++c) {
+    const int cols = m_rawPreview->columnCount();
+    for (int c = 0; c < cols; ++c) {
         const QString headerText = headerRow.value(c).trimmed();
-        auto *rowLayout = new QHBoxLayout();
-        auto *label = new QLabel(headerText.isEmpty() ? tr("Колонка %1").arg(c + 1) : headerText, m_mappingBox);
-        label->setMinimumWidth(160);
-        auto *combo = new QComboBox(m_mappingBox);
+        auto *combo = new QComboBox(m_rawPreview);
         combo->addItem(kRoleLabels[RoleIgnore], RoleIgnore);
         combo->addItem(kRoleLabels[RoleKey], RoleKey);
         combo->addItem(kRoleLabels[RoleName], RoleName);
@@ -326,10 +338,42 @@ void ImportTab::rebuildColumnMapping()
         combo->addItem(kRoleLabels[RoleWarehouse], RoleWarehouse);
         combo->addItem(kRoleLabels[RoleBarcode], RoleBarcode);
         combo->setCurrentIndex(guessRoleForHeader(headerText));
-        rowLayout->addWidget(label);
-        rowLayout->addWidget(combo, 1);
-        m_mappingLayout->addLayout(rowLayout);
+        connect(combo, &QComboBox::currentIndexChanged, this, [this, combo]() { markRole(combo); });
+        m_rawPreview->setCellWidget(0, c, combo);
         m_roleCombos << combo;
+        markRole(combo);
+    }
+    m_rawPreview->setRowHeight(0, 36);
+    highlightHeaderRow();
+}
+
+// Колонка с назначенной ролью заметна на глаз: рамка выпадающего списка меняет цвет.
+void ImportTab::markRole(QComboBox *combo)
+{
+    combo->setStyleSheet(combo->currentData().toInt() == RoleIgnore ? QString() : QStringLiteral("QComboBox { border: 2px solid #4f6ef7; }"));
+}
+
+// Строка с названиями колонок выделена, всё выше неё (шапка отчёта) - серым.
+void ImportTab::highlightHeaderRow()
+{
+    const int headerIdx = m_headerRow->value() - 1;
+    // Сплошной цвет (с прозрачностью делегат таблицы фон не рисует): немного акцентного поверх обычного фона.
+    const QPalette pal = m_rawPreview->palette();
+    QColor mark = pal.color(QPalette::Base);
+    const QColor accent = pal.color(QPalette::Highlight);
+    mark.setRgb((mark.red() * 78 + accent.red() * 22) / 100, (mark.green() * 78 + accent.green() * 22) / 100,
+                (mark.blue() * 78 + accent.blue() * 22) / 100);
+    for (int r = 1; r < m_rawPreview->rowCount(); ++r) {
+        for (int c = 0; c < m_rawPreview->columnCount(); ++c) {
+            QTableWidgetItem *item = m_rawPreview->item(r, c);
+            if (!item)
+                continue;
+            QFont f = item->font();
+            f.setBold(r - 1 == headerIdx);
+            item->setFont(f);
+            item->setForeground(r - 1 < headerIdx ? QBrush(Qt::gray) : QBrush());
+            item->setBackground(r - 1 == headerIdx ? QBrush(mark) : QBrush());
+        }
     }
 }
 

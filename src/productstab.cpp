@@ -20,6 +20,7 @@
 #include <QBuffer>
 #include <QScrollBar>
 #include <QHBoxLayout>
+#include "flowlayout.h"
 #include <QHeaderView>
 #include <QMessageBox>
 #include <QPushButton>
@@ -82,9 +83,19 @@ ProductsTab::ProductsTab(QWidget *parent)
 {
     auto *layout = new QVBoxLayout(this);
 
+    // Поиск на всю ширину сверху, кнопки под ним переносятся на вторую строку, если окно узкое: так страница
+    // помещается и на ноутбуке, и на большом мониторе (раньше десять кнопок в ряд задавали ширину окна ~2000 px).
     auto *toolbar = new QWidget(this);
-    auto *toolbarLayout = new QHBoxLayout(toolbar);
-    toolbarLayout->setContentsMargins(0, 0, 0, 0);
+    auto *toolbarOuter = new QVBoxLayout(toolbar);
+    toolbarOuter->setContentsMargins(0, 0, 0, 0);
+    toolbarOuter->setSpacing(6);
+    m_search = new QLineEdit(toolbar);
+    m_search->setPlaceholderText(tr("Поиск: артикул, название или штрихкод (можно сканером)"));
+    m_search->setClearButtonEnabled(true);
+    m_search->setMinimumWidth(240);
+    toolbarOuter->addWidget(m_search);
+    auto *toolbarLayout = new FlowLayout(nullptr, 6);
+    toolbarOuter->addLayout(toolbarLayout);
     auto *addBtn = new QPushButton(tr("Добавить"), toolbar);
     auto *editBtn = new QPushButton(tr("Изменить"), toolbar);
     auto *deleteBtn = new QPushButton(tr("Удалить"), toolbar);
@@ -120,12 +131,6 @@ ProductsTab::ProductsTab(QWidget *parent)
     toolbarLayout->addWidget(exportBtn); // не в m_editWidgets: выгружать может и роль «только просмотр»
     m_editWidgets << addBtn << deleteBtn << bulkEditBtn << bulkPhotoBtn << findPhotoBtn;
     editBtn->setToolTip(tr("Открыть карточку товара"));
-    toolbarLayout->addSpacing(20);
-    m_search = new QLineEdit(toolbar);
-    m_search->setPlaceholderText(tr("Поиск: артикул, название или штрихкод (можно сканером)"));
-    m_search->setClearButtonEnabled(true);
-    m_search->setMinimumWidth(320);
-    toolbarLayout->addWidget(m_search, 1);
     layout->addWidget(toolbar);
     m_searchStatus = new QLabel(this);
     m_searchStatus->setStyleSheet("color: gray;");
@@ -178,9 +183,18 @@ void ProductsTab::refresh()
     m_table->setColumnHidden(ColDescription, true);
     m_table->setColumnHidden(ColPhotoPath, true);
     m_table->setColumnHidden(ColCreatedAt, true);
-    m_table->setColumnWidth(ColSku, 210);
-    m_table->setColumnWidth(ColName, 330);
-    m_table->setColumnWidth(ColPrice, 90);
+    // Технические колонки Яндекс Маркета (размеры, вес, ТН ВЭД и т.д.) в списке только мешали: они правятся в карточке товара.
+    for (int c = ColMarketSku + 1; c < m_model->columnCount(); ++c)
+        m_table->setColumnHidden(c, true);
+    // Название занимает всё свободное место (на большом экране видно его целиком), остальные колонки - по содержимому.
+    QHeaderView *header = m_table->horizontalHeader();
+    header->setStretchLastSection(false);
+    header->setSectionResizeMode(ColName, QHeaderView::Stretch);
+    header->setMinimumSectionSize(70);
+    m_table->setColumnWidth(ColSku, 230);
+    m_table->setColumnWidth(ColPrice, 100);
+    m_table->setColumnWidth(ColCustomCode, 150);
+    m_table->setColumnWidth(ColMarketSku, 200);
     prefetchVisible();
 }
 

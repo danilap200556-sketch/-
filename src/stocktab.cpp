@@ -15,6 +15,7 @@
 #include <QLineEdit>
 #include <QTimer>
 #include <QHBoxLayout>
+#include "flowlayout.h"
 #include <QHeaderView>
 #include <QMessageBox>
 #include <QPushButton>
@@ -66,7 +67,13 @@ StockTab::StockTab(QWidget *parent)
 {
     auto *layout = new QVBoxLayout(this);
 
-    auto *toolbar = new QHBoxLayout();
+    // Кнопки переносятся, если окно узкое; поиск - на своей строке на всю ширину (см. ProductsTab).
+    m_search = new QLineEdit(this);
+    m_search->setPlaceholderText(tr("Поиск: артикул, название или штрихкод (можно сканером)"));
+    m_search->setClearButtonEnabled(true);
+    m_search->setMinimumWidth(240);
+    layout->addWidget(m_search);
+    auto *toolbar = new FlowLayout(nullptr, 6);
     auto *receiptBtn = new QPushButton(tr("Приход"), this);
     auto *writeOffBtn = new QPushButton(tr("Списание"), this);
     auto *transferBtn = new QPushButton(tr("Перемещение"), this);
@@ -80,16 +87,9 @@ StockTab::StockTab(QWidget *parent)
                             "из Excel, всё проводится одним документом"));
     toolbar->addWidget(batchBtn);
     m_editWidgets << receiptBtn << writeOffBtn << transferBtn << inventoryBtn << batchBtn;
-    toolbar->addSpacing(16);
     auto *cardBtn = new QPushButton(tr("Карточка / быстрая правка"), this);
     cardBtn->setToolTip(tr("Открыть карточку выбранного товара: название, цену, штрихкоды и остатки можно поправить сразу"));
     toolbar->addWidget(cardBtn);
-    toolbar->addSpacing(16);
-    m_search = new QLineEdit(this);
-    m_search->setPlaceholderText(tr("Поиск: артикул, название или штрихкод (можно сканером)"));
-    m_search->setClearButtonEnabled(true);
-    m_search->setMinimumWidth(300);
-    toolbar->addWidget(m_search, 1);
     layout->addLayout(toolbar);
     m_searchStatus = new QLabel(this);
     m_searchStatus->setStyleSheet("color: gray;");
@@ -121,6 +121,7 @@ StockTab::StockTab(QWidget *parent)
     cancelBtn->setToolTip(tr("Отменить выбранную запись журнала (или несколько): остаток вернётся как был, в журнале появится запись «Отмена»"));
     auto *cancelHint = new QLabel(tr("Ошиблись? Выберите запись в журнале (правая кнопка мыши - то же самое). "
                                      "Приход, списание, инвентаризацию и перемещение можно отменить."), movementBox);
+    cancelHint->setWordWrap(true);
     cancelHint->setStyleSheet("color: gray;");
     cancelRow->addWidget(cancelBtn);
     cancelRow->addWidget(cancelHint, 1);
@@ -136,6 +137,8 @@ StockTab::StockTab(QWidget *parent)
     m_movementTable->horizontalHeader()->setStretchLastSection(true);
     movementLayout->addWidget(m_movementTable);
     splitter->addWidget(movementBox);
+    splitter->setStretchFactor(0, 3); // остатки важнее журнала: им больше места
+    splitter->setStretchFactor(1, 2);
 
 
     connect(receiptBtn, &QPushButton::clicked, this, &StockTab::doReceipt);
@@ -255,6 +258,15 @@ void StockTab::refreshStock()
     if (m_stockModel->lastError().isValid())
         qWarning("Остатки: %s", qPrintable(m_stockModel->lastError().text()));
     m_stockTable->setColumnHidden(m_stockModel->columnCount() - 1, true);
+    // Название растягивается на всё свободное место, остальные колонки - фиксированной ширины (при сбросе модели
+    // заголовок забывает размеры, поэтому задаём каждый раз).
+    QHeaderView *sh = m_stockTable->horizontalHeader();
+    sh->setStretchLastSection(false);
+    sh->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_stockTable->setColumnWidth(0, 230);
+    m_stockTable->setColumnWidth(2, 190);
+    m_stockTable->setColumnWidth(3, 160);
+    m_stockTable->setColumnWidth(4, 110);
     m_searchStatus->setText(term.isEmpty() ? QString() : tr("Найдено строк остатков: %1").arg(m_stockModel->rowCount()));
     prefetchVisible();
 }
@@ -282,8 +294,16 @@ void StockTab::refreshMovements()
             q.addBindValue(likeOf(term));
     q.exec();
     m_movementModel->setQuery(std::move(q));
-    m_movementTable->setColumnWidth(0, 60);
-    m_movementTable->setColumnWidth(1, 150);
+    QHeaderView *mh = m_movementTable->horizontalHeader();
+    mh->setStretchLastSection(false);
+    mh->setSectionResizeMode(6, QHeaderView::Stretch); // комментарий
+    m_movementTable->setColumnWidth(0, 70);
+    m_movementTable->setColumnWidth(1, 170);
+    m_movementTable->setColumnWidth(2, 200);
+    m_movementTable->setColumnWidth(3, 180);
+    m_movementTable->setColumnWidth(4, 200);
+    m_movementTable->setColumnWidth(5, 100);
+    m_movementTable->setColumnWidth(7, 220);
 }
 
 void StockTab::doReceipt()

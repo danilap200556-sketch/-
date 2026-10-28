@@ -28,6 +28,7 @@ public:
     explicit ImportTab(QWidget *parent = nullptr);
 
     void refresh(); // перечитать список складов
+    void loadFile(const QString &path); // прочитать файл остатков (то же, что «Выбрать файл...» после выбора)
     // Роль "только просмотр": загрузка файлов отключена, остаётся выгрузка остатков в Excel.
     void setReadOnly(bool readOnly);
 
@@ -44,6 +45,8 @@ private:
     void showRawPreview();
     void rebuildColumnMapping();
     void guessHeaderRow();
+    void markRole(QComboBox *combo);
+    void highlightHeaderRow();
 
     QVector<QStringList> m_rows;
     QString m_fileName;
@@ -52,8 +55,6 @@ private:
     QSpinBox *m_headerRow;
     QTableWidget *m_rawPreview;
 
-    QWidget *m_mappingBox;
-    QVBoxLayout *m_mappingLayout;
     QVector<QComboBox *> m_roleCombos;
 
     QComboBox *m_warehouseCombo;

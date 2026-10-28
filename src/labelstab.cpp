@@ -93,7 +93,10 @@ LabelsTab::LabelsTab(QWidget *parent)
     m_addBtn = addBtn;
     formLayout->addWidget(addBtn);
     formLayout->addStretch();
-    mainLayout->addWidget(formBox, 1);
+    // Форма и очередь - узкие колонки; всё остальное место отдано предпросмотру листа.
+    formBox->setMinimumWidth(300);
+    formBox->setMaximumWidth(440);
+    mainLayout->addWidget(formBox, 0);
 
     // --- Средняя колонка: очередь печати ---
     auto *queueBox = new QGroupBox(tr("Очередь печати"), this);
@@ -112,7 +115,9 @@ LabelsTab::LabelsTab(QWidget *parent)
     auto *pdfBtn = new QPushButton(tr("Экспорт в PDF"), queueBox);
     queueLayout->addWidget(pngBtn);
     queueLayout->addWidget(pdfBtn);
-    mainLayout->addWidget(queueBox, 1);
+    queueBox->setMinimumWidth(240);
+    queueBox->setMaximumWidth(360);
+    mainLayout->addWidget(queueBox, 0);
 
     // --- Правая колонка: предпросмотр ---
     auto *previewBox = new QGroupBox(tr("Предпросмотр листа"), this);
@@ -123,7 +128,7 @@ LabelsTab::LabelsTab(QWidget *parent)
     m_previewArea->setWidget(m_previewLabel);
     m_previewArea->setWidgetResizable(true);
     previewLayout->addWidget(m_previewArea);
-    mainLayout->addWidget(previewBox, 2);
+    mainLayout->addWidget(previewBox, 1);
 
     onTypeChanged();
 
