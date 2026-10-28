@@ -140,6 +140,12 @@ const QStringList &schemaDdl()
             warehouse_id INTEGER NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,
             PRIMARY KEY (account_id, warehouse_id)
         ))",
+        // Общие настройки программы (ключ Google для поиска фото, параметры Честного знака): одни на все компьютеры.
+        // Сайту эта таблица не нужна и в grants.sql не входит.
+        R"(CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT ''
+        ))",
         // --- Роль "только просмотр": пользователь видит данные, но ничего не меняет.
         // Администратор всегда может редактировать (read_only для него не действует).
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS read_only BOOLEAN NOT NULL DEFAULT FALSE",

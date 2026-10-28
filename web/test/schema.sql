@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS market_account_warehouses (
             warehouse_id INTEGER NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,
             PRIMARY KEY (account_id, warehouse_id)
         );
+CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT ''
+        );
 ALTER TABLE users ADD COLUMN IF NOT EXISTS read_only BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS product_photos (
             id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
