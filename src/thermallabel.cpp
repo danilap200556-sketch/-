@@ -1,6 +1,8 @@
 #include "thermallabel.h"
 
 #include "barcode.h"
+#include "datamatrix.h"
+#include "markingcode.h"
 
 #include <QFont>
 #include <QFontMetrics>
@@ -163,6 +165,93 @@ QImage renderEan13(const Ean13Label &label, const Settings &s, int dpi, bool mon
         const int blockTop = descTop + ((descBottom - descTop) - int(lines.size()) * lineH) / 2; // по центру свободного места
         for (int i = 0; i < lines.size(); ++i)
             p.drawText(QRect(margin, blockTop + i * lineH, inner, lineH), Qt::AlignHCenter | Qt::AlignVCenter, lines[i]);
+    }
+    p.end();
+    return monochrome ? img.convertToFormat(QImage::Format_Mono, Qt::ThresholdDither | Qt::MonoOnly) : img;
+}
+
+QImage renderMarking(const MarkingLabel &label, const Settings &s, int dpi, bool monochrome)
+{
+    const int W = px(s.widthMm, dpi), H = px(s.heightMm, dpi);
+    QImage img(W, H, QImage::Format_RGB32);
+    img.fill(Qt::white);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::TextAntialiasing, !monochrome);
+    p.setPen(Qt::black);
+    const int margin = px(1.6, dpi);
+
+    // --- Читаемый текст внизу: (01) GTIN (21) серийный номер - одной строкой, при нехватке места мельче или в две строки.
+    const MarkingCode::Parsed parsed = MarkingCode::parse(label.code);
+    const QString human = parsed.ok ? QStringLiteral("(01)%1 (21)%2").arg(parsed.gtin, parsed.serial) : label.code.left(40);
+    int humanPx = px(2.6, dpi);
+    QFont hf = labelFont(humanPx, false);
+    while (humanPx > px(1.9, dpi) && QFontMetrics(hf).horizontalAdvance(human) > W - 2 * margin) {
+        humanPx -= qMax(1, px(0.1, dpi));
+        hf = labelFont(humanPx, false);
+    }
+    QStringList humanLines{human};
+    if (QFontMetrics(hf).horizontalAdvance(human) > W - 2 * margin && parsed.ok)
+        humanLines = QStringList{QStringLiteral("(01)%1").arg(parsed.gtin), QStringLiteral("(21)%1").arg(parsed.serial)};
+    const QFontMetrics hfm(hf);
+    const int humanH = int(humanLines.size()) * hfm.lineSpacing();
+    p.setFont(hf);
+    for (int i = 0; i < humanLines.size(); ++i)
+        p.drawText(QRect(margin, H - margin - humanH + i * hfm.lineSpacing(), W - 2 * margin, hfm.lineSpacing()), Qt::AlignHCenter | Qt::AlignVCenter, humanLines[i]);
+
+    // --- Data Matrix слева сверху: не больше 30 мм и не больше 62% ширины.
+    QString dmError;
+    const DataMatrix::Symbol sym = parsed.ok ? DataMatrix::encode(parsed.code.toLatin1(), true, &dmError) : DataMatrix::Symbol();
+    const int gap = px(1.2, dpi);
+    const int availH = H - 2 * margin - humanH - gap;
+    int maxSide = qMin(qMin(availH, px(30, dpi)), int(W * 0.62));
+    int dmSide = 0;
+    if (!sym.isNull()) {
+        const int module = qMax(1, maxSide / sym.size);
+        dmSide = module * sym.size;
+        const int x0 = margin, y0 = margin + qMax(0, (availH - dmSide) / 2);
+        for (int r = 0; r < sym.size; ++r)
+            for (int c = 0; c < sym.size; ++c)
+                if (sym.dark(r, c))
+                    p.fillRect(x0 + c * module, y0 + r * module, module, module, Qt::black);
+    } else {
+        p.setFont(labelFont(px(2.8, dpi), false));
+        p.drawText(QRect(margin, margin, maxSide, availH), Qt::AlignCenter | Qt::TextWordWrap, QObject::tr("Код не помещается в Data Matrix"));
+        dmSide = maxSide;
+    }
+
+    // --- Справа: артикул (жирно, до двух строк) и описание мелко.
+    const int colX = margin + dmSide + px(2.0, dpi);
+    const int colW = W - margin - colX;
+    if (colW >= px(10, dpi)) {
+        int articlePx = px(4.2, dpi);
+        QFont af = labelFont(articlePx, true);
+        const QString article = label.article.simplified();
+        QStringList articleLines = wrapText(article, QFontMetrics(af), colW, 2);
+        while (articlePx > px(2.6, dpi) && articleLines.size() > 0 && (articleLines.size() > 1 && articleLines.last().endsWith(QStringLiteral("…")))) {
+            articlePx -= qMax(1, px(0.2, dpi));
+            af = labelFont(articlePx, true);
+            articleLines = wrapText(article, QFontMetrics(af), colW, 2);
+        }
+        const QFontMetrics afm(af);
+        p.setFont(af);
+        int y = margin;
+        for (const QString &line : std::as_const(articleLines)) {
+            p.drawText(QRect(colX, y, colW, afm.lineSpacing()), Qt::AlignLeft | Qt::AlignVCenter, afm.elidedText(line, Qt::ElideRight, colW));
+            y += afm.lineSpacing();
+        }
+        y += px(1.0, dpi);
+        const int bottom = H - margin - humanH - gap;
+        if (bottom > y && !label.description.trimmed().isEmpty()) {
+            QFont df = labelFont(px(2.5, dpi), false);
+            const QFontMetrics dfm(df);
+            const int maxLines = qBound(1, (bottom - y) / qMax(1, dfm.lineSpacing()), 6);
+            p.setFont(df);
+            const QStringList lines = wrapText(label.description, dfm, colW, maxLines);
+            for (const QString &line : lines) {
+                p.drawText(QRect(colX, y, colW, dfm.lineSpacing()), Qt::AlignLeft | Qt::AlignVCenter, line);
+                y += dfm.lineSpacing();
+            }
+        }
     }
     p.end();
     return monochrome ? img.convertToFormat(QImage::Format_Mono, Qt::ThresholdDither | Qt::MonoOnly) : img;

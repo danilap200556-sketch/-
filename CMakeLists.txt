@@ -152,6 +152,11 @@ add_executable(inventory_manager
     src/imagesearch.cpp
     src/stocktake.cpp
     src/appsettings.cpp
+    src/chestnyznak.cpp
+    src/datamatrix.cpp
+    src/markingcode.cpp
+    src/markingprintdialog.cpp
+    src/markingtab.cpp
     src/flowlayout.cpp
     src/photoreviewdialog.cpp
     src/thermallabel.cpp

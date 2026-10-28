@@ -146,6 +146,24 @@ const QStringList &schemaDdl()
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL DEFAULT ''
         ))",
+        // Коды маркировки «Честного знака» (КМ): полный код с символами GS, GTIN и серийный номер из него, товар (по GTIN =
+        // штрихкоду товара), статус печати. Только для программы; сайту таблица не нужна.
+        R"(CREATE TABLE IF NOT EXISTS marking_codes (
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            code TEXT NOT NULL UNIQUE,
+            gtin TEXT NOT NULL,
+            serial TEXT NOT NULL DEFAULT '',
+            product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+            status TEXT NOT NULL DEFAULT 'new',
+            print_count INTEGER NOT NULL DEFAULT 0,
+            printed_at TIMESTAMPTZ,
+            source TEXT NOT NULL DEFAULT 'import',
+            order_id TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        ))",
+        "CREATE INDEX IF NOT EXISTS marking_codes_product_idx ON marking_codes (product_id)",
+        "CREATE INDEX IF NOT EXISTS marking_codes_gtin_idx ON marking_codes (gtin)",
+        "CREATE INDEX IF NOT EXISTS marking_codes_status_idx ON marking_codes (status)",
         // --- Роль "только просмотр": пользователь видит данные, но ничего не меняет.
         // Администратор всегда может редактировать (read_only для него не действует).
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS read_only BOOLEAN NOT NULL DEFAULT FALSE",

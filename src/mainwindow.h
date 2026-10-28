@@ -11,6 +11,7 @@ class ProductsTab;
 class WarehousesTab;
 class StockTab;
 class StocktakeTab;
+class MarkingTab;
 class LabelsTab;
 class ImportTab;
 class MarketTab;
@@ -86,6 +87,7 @@ private:
     WarehousesTab *m_warehousesTab;
     StockTab *m_stockTab;
     StocktakeTab *m_stocktakeTab;
+    MarkingTab *m_markingTab = nullptr;
     LabelsTab *m_labelsTab;
     ImportTab *m_importTab;
     MarketTab *m_marketTab;

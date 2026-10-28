@@ -2,6 +2,7 @@
 #include "productstab.h"
 #include "warehousestab.h"
 #include "stocktab.h"
+#include "markingtab.h"
 #include "stocktaketab.h"
 #include "labelstab.h"
 #include "importtab.h"
@@ -229,6 +230,9 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         addPage(tr("Яндекс Маркет"), Theme::Icon::Market, m_marketTab);
         addPage(tr("Карточки Маркета"), Theme::Icon::Cards, m_cardsTab);
         addPage(tr("Заказы Маркета"), Theme::Icon::Orders, m_ordersTab);
+        // Коды маркировки «Честного знака»: только в программе, на сайте этой страницы нет.
+        m_markingTab = new MarkingTab(this);
+        addPage(tr("Честный знак"), Theme::Icon::Marking, m_markingTab);
         // Автообновление остатков по расписанию и значок в трее, пока оно включено.
         m_autoSync = new MarketAutoSync(this);
         m_marketTab->setAutoSync(m_autoSync);
@@ -372,6 +376,8 @@ void MainWindow::refreshPage(QWidget *w)
         m_cardsTab->refresh();
     else if (w == m_ordersTab)
         m_ordersTab->refresh();
+    else if (w == m_markingTab && m_markingTab)
+        m_markingTab->refresh();
     else if (w == m_usersTab)
         m_usersTab->refresh();
     m_dirty.remove(w);

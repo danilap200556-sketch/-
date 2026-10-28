@@ -321,6 +321,15 @@ QIcon icon(Icon which, const QColor &color, int size)
         p.drawLine(P(8.5, 13), P(10.8, 15.4)); p.drawLine(P(10.8, 15.4), P(15.5, 10.6));
         break;
     }
+    case Icon::Marking: {
+        // квадрат Data Matrix: сплошные левая и нижняя стороны, пунктир сверху и справа, несколько модулей внутри
+        p.drawRect(QRectF(4 * u, 4 * u, 16 * u, 16 * u));
+        p.drawLine(P(4, 4), P(4, 20)); p.drawLine(P(4, 20), P(20, 20));
+        p.setBrush(color);
+        for (const QPointF &c : {P(8, 8), P(12, 8), P(16, 8), P(8, 12), P(14, 12), P(10, 16), P(16, 16)})
+            p.drawRect(QRectF(c.x() - 1.2 * u, c.y() - 1.2 * u, 2.4 * u, 2.4 * u));
+        break;
+    }
     case Icon::Update: {
         // круговая стрелка «обновить»
         p.drawArc(QRectF(5 * u, 5 * u, 14 * u, 14 * u), 40 * 16, 270 * 16);

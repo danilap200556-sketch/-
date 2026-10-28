@@ -74,6 +74,22 @@ CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL DEFAULT ''
         );
+CREATE TABLE IF NOT EXISTS marking_codes (
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            code TEXT NOT NULL UNIQUE,
+            gtin TEXT NOT NULL,
+            serial TEXT NOT NULL DEFAULT '',
+            product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+            status TEXT NOT NULL DEFAULT 'new',
+            print_count INTEGER NOT NULL DEFAULT 0,
+            printed_at TIMESTAMPTZ,
+            source TEXT NOT NULL DEFAULT 'import',
+            order_id TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+CREATE INDEX IF NOT EXISTS marking_codes_product_idx ON marking_codes (product_id);
+CREATE INDEX IF NOT EXISTS marking_codes_gtin_idx ON marking_codes (gtin);
+CREATE INDEX IF NOT EXISTS marking_codes_status_idx ON marking_codes (status);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS read_only BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS product_photos (
             id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
