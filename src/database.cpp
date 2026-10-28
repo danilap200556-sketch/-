@@ -318,6 +318,16 @@ const char *schemaCheckSql()
            "ELSE COALESCE((SELECT NULLIF(value, '')::integer FROM app_settings WHERE key = 'schema_rev'), 0) END";
 }
 
+// Единственный оператор схемы, который переносит ДАННЫЕ: документы для записей журнала, сделанных старыми версиями программы
+// (они ещё пишут пакеты с doc_id, но без документа). Выполняется на каждом запуске, как и раньше, - но он один, а не 90.
+QString legacyDocumentsSql()
+{
+    for (const QString &st : schemaDdl())
+        if (st.startsWith(QLatin1String("INSERT INTO stock_documents (doc_key")))
+            return st;
+    return {};
+}
+
 bool schemaForced()
 {
     return qEnvironmentVariableIntValue("INVENTORY_FORCE_SCHEMA") == 1;
@@ -410,7 +420,10 @@ bool tryConnectEmbedded(const ServerConfig &config, QString *error)
     // Схема уже актуальна (ревизия в базе не меньше нашей) - выполнять 90 операторов не нужно.
     bool upToDate = false;
     if (!schemaForced()) {
-        PGresult *check = PQexec(conn, schemaCheckSql());
+        // Перенос старых записей и проверка ревизии - одним запросом (результат берётся от последнего оператора). Если таблиц ещё
+        // нет, перенос завершится ошибкой - значит, схему надо создавать.
+        const QByteArray checkSql = (legacyDocumentsSql() + QLatin1String(";\n") + QString::fromLatin1(schemaCheckSql())).toUtf8();
+        PGresult *check = PQexec(conn, checkSql.constData());
         if (PQresultStatus(check) == PGRES_TUPLES_OK && PQntuples(check) == 1)
             upToDate = QByteArray(PQgetvalue(check, 0, 0)).toInt() >= schemaRevision();
         PQclear(check);
@@ -474,7 +487,8 @@ bool tryConnectViaQtDriver(const ServerConfig &config, QString *error)
     // Вся схема одним запросом (PQexec выполняет несколько команд через «;»): одно обращение к серверу вместо
     // десятков; а если схема уже актуальна (ревизия в базе не меньше нашей) - не выполняется совсем.
     QSqlQuery q(db);
-    if (!schemaForced() && q.exec(QString::fromLatin1(schemaCheckSql())) && q.next() && q.value(0).toInt() >= schemaRevision())
+    if (!schemaForced() && q.exec(legacyDocumentsSql() + QLatin1String(";\n") + QString::fromLatin1(schemaCheckSql())) && q.next()
+        && q.value(0).toInt() >= schemaRevision())
         return true;
     return execOrFail(q, schemaBatchSql(), error);
 }
