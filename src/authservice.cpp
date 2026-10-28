@@ -3,7 +3,20 @@
 #include <QCryptographicHash>
 #include <QRandomGenerator>
 #include <QSqlError>
+#include <QElapsedTimer>
 #include <QSqlQuery>
+
+namespace {
+// Права, которые уже прочитаны при проверке пароля: сразу после входа окну программы они нужны снова, и второй запрос
+// к удалённой базе - это лишнее ожидание на каждом запуске. Живут недолго и расходуются один раз.
+struct LoginRights {
+    QString username;
+    bool isAdmin = false;
+    bool canEdit = false;
+    QElapsedTimer age;
+    bool valid = false;
+} g_loginRights;
+} // namespace
 
 namespace {
 
@@ -182,6 +195,12 @@ AuthService::Role AuthService::roleOf(const User &user)
 
 void AuthService::permissions(const QString &username, bool *isAdmin, bool *canEdit)
 {
+    if (g_loginRights.valid && g_loginRights.username == username.trimmed() && g_loginRights.age.elapsed() < 60000) {
+        g_loginRights.valid = false; // один раз: дальше права читаются заново
+        *isAdmin = g_loginRights.isAdmin;
+        *canEdit = g_loginRights.canEdit;
+        return;
+    }
     QSqlQuery q;
     q.prepare("SELECT is_admin, NOT (read_only AND NOT is_admin) FROM users WHERE username = ?");
     q.addBindValue(username.trimmed());
@@ -209,8 +228,9 @@ bool AuthService::deleteUser(int userId, QString *error)
 
 bool AuthService::verifyLogin(const QString &username, const QString &password, QString *error)
 {
+    g_loginRights.valid = false;
     QSqlQuery q;
-    q.prepare("SELECT password_hash, salt FROM users WHERE username = ?");
+    q.prepare("SELECT password_hash, salt, is_admin, NOT (read_only AND NOT is_admin) FROM users WHERE username = ?");
     q.addBindValue(username.trimmed());
     if (!q.exec() || !q.next()) {
         if (error)
@@ -225,5 +245,10 @@ bool AuthService::verifyLogin(const QString &username, const QString &password, 
             *error = QStringLiteral("Неверный логин или пароль");
         return false;
     }
+    g_loginRights.username = username.trimmed();
+    g_loginRights.isAdmin = q.value(2).toBool();
+    g_loginRights.canEdit = q.value(3).toBool();
+    g_loginRights.age.start();
+    g_loginRights.valid = true;
     return true;
 }

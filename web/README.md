@@ -230,7 +230,7 @@ sudo docker compose restart web                                           # пе
 ```bash
 cd web && npm ci
 # нужен PostgreSQL; параметры по умолчанию - см. test/helpers.js (TEST_DB_HOST, TEST_DB_PASSWORD, ...)
-npm test                         # 157 тестов на реальной БД
+npm test                         # 163 теста на реальной БД
 WEB_TEST_RESTRICTED=1 npm test   # то же под пользователем с правами из grants.sql
 ```
 

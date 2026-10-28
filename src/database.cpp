@@ -303,6 +303,35 @@ const QStringList &schemaDdl()
     return ddl;
 }
 
+// Ревизия схемы = число операторов в списке: операторы только добавляются, поэтому номер растёт с каждой новой версией
+// программы. Ревизия хранится в app_settings. Если в базе она не меньше, чем у этой версии, схему не трогаем: проверка стоит
+// один лёгкий запрос, а 90 операторов «IF NOT EXISTS» - сотни миллисекунд работы сервера и блокировки таблиц на каждом запуске
+// каждого компьютера. Принудительно выполнить схему: переменная окружения INVENTORY_FORCE_SCHEMA=1.
+int schemaRevision()
+{
+    return static_cast<int>(schemaDdl().size());
+}
+
+const char *schemaCheckSql()
+{
+    return "SELECT CASE WHEN to_regclass('app_settings') IS NULL THEN 0 "
+           "ELSE COALESCE((SELECT NULLIF(value, '')::integer FROM app_settings WHERE key = 'schema_rev'), 0) END";
+}
+
+bool schemaForced()
+{
+    return qEnvironmentVariableIntValue("INVENTORY_FORCE_SCHEMA") == 1;
+}
+
+// Вся схема одним текстом (PQexec выполняет несколько команд через «;» в одной транзакции) и запись ревизии в конце.
+QString schemaBatchSql()
+{
+    const int rev = schemaRevision();
+    return schemaDdl().join(QLatin1String(";\n")) + QLatin1String(";\n")
+           + QStringLiteral("INSERT INTO app_settings (key, value) VALUES ('schema_rev', '%1') ON CONFLICT (key) DO UPDATE SET value = '%1' "
+                            "WHERE COALESCE(NULLIF(app_settings.value, ''), '0')::integer < %1;").arg(rev);
+}
+
 #ifdef QPSQL_EMBEDDED_AVAILABLE
 
 QString pqQuote(const QString &s)
@@ -378,23 +407,32 @@ bool tryConnectEmbedded(const ServerConfig &config, QString *error)
     if (!conn)
         return false;
 
-    const QString batch = schemaDdl().join(QLatin1String(";\n")) + QLatin1Char(';');
-    const QByteArray batchUtf8 = batch.toUtf8();
-    // Иначе libpq на каждом запуске печатает в stderr
-    // "NOTICE: relation ... already exists, skipping" по разу на таблицу.
-    const PQnoticeProcessor prevNotice =
-        PQsetNoticeProcessor(conn, [](void *, const char *) {}, nullptr);
-    PGresult *res = PQexec(conn, batchUtf8.constData());
-    PQsetNoticeProcessor(conn, prevNotice, nullptr);
-    const ExecStatusType status = PQresultStatus(res);
-    if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
-        if (error)
-            *error = QString::fromUtf8(PQresultErrorMessage(res)).trimmed();
-        PQclear(res);
-        PQfinish(conn);
-        return false;
+    // Схема уже актуальна (ревизия в базе не меньше нашей) - выполнять 90 операторов не нужно.
+    bool upToDate = false;
+    if (!schemaForced()) {
+        PGresult *check = PQexec(conn, schemaCheckSql());
+        if (PQresultStatus(check) == PGRES_TUPLES_OK && PQntuples(check) == 1)
+            upToDate = QByteArray(PQgetvalue(check, 0, 0)).toInt() >= schemaRevision();
+        PQclear(check);
     }
-    PQclear(res);
+    if (!upToDate) {
+        const QByteArray batchUtf8 = schemaBatchSql().toUtf8();
+        // Иначе libpq на каждом запуске печатает в stderr
+        // "NOTICE: relation ... already exists, skipping" по разу на таблицу.
+        const PQnoticeProcessor prevNotice =
+            PQsetNoticeProcessor(conn, [](void *, const char *) {}, nullptr);
+        PGresult *res = PQexec(conn, batchUtf8.constData());
+        PQsetNoticeProcessor(conn, prevNotice, nullptr);
+        const ExecStatusType status = PQresultStatus(res);
+        if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
+            if (error)
+                *error = QString::fromUtf8(PQresultErrorMessage(res)).trimmed();
+            PQclear(res);
+            PQfinish(conn);
+            return false;
+        }
+        PQclear(res);
+    }
 
     if (QSqlDatabase::contains(QSqlDatabase::defaultConnection))
         QSqlDatabase::removeDatabase(QSqlDatabase::defaultConnection);
@@ -434,9 +472,11 @@ bool tryConnectViaQtDriver(const ServerConfig &config, QString *error)
     }
 
     // Вся схема одним запросом (PQexec выполняет несколько команд через «;»): одно обращение к серверу вместо
-    // десятков.
+    // десятков; а если схема уже актуальна (ревизия в базе не меньше нашей) - не выполняется совсем.
     QSqlQuery q(db);
-    return execOrFail(q, schemaDdl().join(QLatin1String(";\n")), error);
+    if (!schemaForced() && q.exec(QString::fromLatin1(schemaCheckSql())) && q.next() && q.value(0).toInt() >= schemaRevision())
+        return true;
+    return execOrFail(q, schemaBatchSql(), error);
 }
 
 #endif
