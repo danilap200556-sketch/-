@@ -8,6 +8,7 @@ class QComboBox;
 class QSpinBox;
 class QListWidget;
 class QLabel;
+class QPushButton;
 class QScrollArea;
 
 // Вкладка "Этикетки": генерация QR-этикеток для товаров и/или мест
@@ -40,6 +41,7 @@ private:
         bool ean13 = false;
     };
 
+    void openThermal(); // печать штрихкода выбранного товара на термоэтикетке 58x40
     void fillProductCombo();
     void fillWarehouseCombo();
     void fillLocationCombo();
@@ -53,6 +55,7 @@ private:
     QComboBox *m_warehouse;
     QComboBox *m_location;
     QSpinBox *m_copies;
+    QPushButton *m_addBtn;
     QListWidget *m_queueList;
     QLabel *m_previewLabel;
     QScrollArea *m_previewArea;

@@ -6,6 +6,7 @@
 #include "bulkeditdialog.h"
 #include "bulkphotosdialog.h"
 #include "photofetchdialog.h"
+#include "thermalprintdialog.h"
 #include "photostore.h"
 #include "photoviewer.h"
 #include "productexport.h"
@@ -90,6 +91,11 @@ ProductsTab::ProductsTab(QWidget *parent)
     auto *photoBtn = new QPushButton(tr("Фото..."), toolbar);
     auto *bulkEditBtn = new QPushButton(tr("Массовое редактирование..."), toolbar);
     auto *bulkPhotoBtn = new QPushButton(tr("Фото пачкой..."), toolbar);
+    auto *printBtn = new QPushButton(tr("Печать штрихкодов..."), toolbar);
+    printBtn->setToolTip(tr("Напечатать на термоэтикетках 58×40 штрихкоды EAN-13 выделенных товаров: артикул сверху, описание посередине, "
+                            "штрихкод снизу."));
+    auto *ownCodesBtn = new QPushButton(tr("Штрихкоды всем..."), toolbar);
+    ownCodesBtn->setToolTip(tr("Присвоить свой штрихкод EAN-13 всем товарам, у которых штрихкода ещё нет (новые товары получают его сами)."));
     auto *findPhotoBtn = new QPushButton(tr("Найти фото..."), toolbar);
     findPhotoBtn->setToolTip(tr("Подобрать фото товарам без фото и сохранить в карточки: с Яндекс Маркета (по артикулу) "
                                 "или из интернета (поиск по названию). Выделенным товарам или всем."));
@@ -100,6 +106,9 @@ ProductsTab::ProductsTab(QWidget *parent)
     toolbarLayout->addWidget(bulkEditBtn);
     toolbarLayout->addWidget(bulkPhotoBtn);
     toolbarLayout->addWidget(findPhotoBtn);
+    toolbarLayout->addWidget(printBtn); // печатать может и роль «только просмотр»
+    toolbarLayout->addWidget(ownCodesBtn);
+    m_editWidgets << ownCodesBtn;
     auto *updateBtn = new QPushButton(tr("Обновить из Excel..."), toolbar);
     updateBtn->setToolTip(tr("Загрузить изменения карточек из Excel: название, описание, цена, штрихкоды и т.д. - сразу для многих товаров. "
                              "Остатки не меняются."));
@@ -145,6 +154,8 @@ ProductsTab::ProductsTab(QWidget *parent)
     connect(bulkEditBtn, &QPushButton::clicked, this, &ProductsTab::bulkEdit);
     connect(bulkPhotoBtn, &QPushButton::clicked, this, &ProductsTab::bulkPhotos);
     connect(findPhotoBtn, &QPushButton::clicked, this, &ProductsTab::findPhotos);
+    connect(printBtn, &QPushButton::clicked, this, &ProductsTab::printBarcodes);
+    connect(ownCodesBtn, &QPushButton::clicked, this, &ProductsTab::assignOwnBarcodes);
     connect(exportBtn, &QPushButton::clicked, this, &ProductsTab::exportExcel);
     connect(updateBtn, &QPushButton::clicked, this, &ProductsTab::updateFromExcel);
     connect(m_table->verticalScrollBar(), &QScrollBar::valueChanged, this, &ProductsTab::prefetchVisible);
@@ -227,6 +238,44 @@ void ProductsTab::bulkPhotos()
         PhotoCache::clear();
         refresh();
     }
+}
+
+void ProductsTab::printBarcodes()
+{
+    const QList<int> ids = selectedProductIds();
+    if (ids.isEmpty()) {
+        QMessageBox::information(this, tr("Выделите товары"),
+                                 tr("Выделите в списке товары, штрихкоды которых нужно напечатать (Ctrl или Shift + клик, Ctrl+A - все), "
+                                    "и нажмите кнопку ещё раз."));
+        return;
+    }
+    QList<ThermalPrintDialog::Item> items;
+    for (int id : ids)
+        items.append({id, 1});
+    ThermalPrintDialog dlg(items, this);
+    dlg.exec();
+    refresh(); // могли присвоить свои штрихкоды
+}
+
+void ProductsTab::assignOwnBarcodes()
+{
+    const int n = Barcode::countWithoutBarcode();
+    if (n == 0) {
+        QMessageBox::information(this, tr("Штрихкоды"), tr("У всех товаров уже есть штрихкод."));
+        return;
+    }
+    if (QMessageBox::question(this, tr("Штрихкоды"),
+                              tr("Товаров без штрихкода: %1. Присвоить каждому свой штрихкод EAN-13 (из диапазона 200..299, он не "
+                                 "пересекается с кодами производителей)?").arg(n)) != QMessageBox::Yes)
+        return;
+    QString err;
+    const int created = Barcode::ensureOwnForAll(&err);
+    if (created < 0) {
+        QMessageBox::warning(this, tr("Штрихкоды"), err);
+        return;
+    }
+    QMessageBox::information(this, tr("Штрихкоды"), tr("Присвоено штрихкодов: %1.").arg(created));
+    refresh();
 }
 
 void ProductsTab::findPhotos()

@@ -3,6 +3,7 @@
 #include <QSignalBlocker>
 #include "barcode.h"
 #include "qrlabel.h"
+#include "thermalprintdialog.h"
 
 #include "scanfield.h"
 
@@ -25,6 +26,7 @@ namespace {
 constexpr int TypeProduct = 0;
 constexpr int TypeLocation = 1;
 constexpr int TypeBarcode = 2;
+constexpr int TypeThermal = 3; // печать на термопринтер
 }
 
 LabelsTab::LabelsTab(QWidget *parent)
@@ -40,6 +42,7 @@ LabelsTab::LabelsTab(QWidget *parent)
     m_type->addItem(tr("Этикетка товара"), TypeProduct);
     m_type->addItem(tr("Этикетка места хранения (полки)"), TypeLocation);
     m_type->addItem(tr("Штрихкод EAN-13 товара (на коробку)"), TypeBarcode);
+    m_type->addItem(tr("Термоэтикетка 58×40: EAN-13 товара (печать)"), TypeThermal);
     formLayout->addWidget(new QLabel(tr("Тип этикетки:"), formBox));
     formLayout->addWidget(m_type);
 
@@ -87,6 +90,7 @@ LabelsTab::LabelsTab(QWidget *parent)
     formLayout->addWidget(m_copies);
 
     auto *addBtn = new QPushButton(tr("Добавить в очередь печати"), formBox);
+    m_addBtn = addBtn;
     formLayout->addWidget(addBtn);
     formLayout->addStretch();
     mainLayout->addWidget(formBox, 1);
@@ -212,13 +216,30 @@ void LabelsTab::onWarehouseChanged()
 void LabelsTab::onTypeChanged()
 {
     const int type = m_type->currentData().toInt();
-    m_productRow->setVisible(type == TypeProduct || type == TypeBarcode);
+    m_productRow->setVisible(type == TypeProduct || type == TypeBarcode || type == TypeThermal);
     m_barcodeRow->setVisible(type == TypeBarcode);
+    // Термоэтикетка печатается сразу из окна печати (там же размер, принтер и число копий), а не через очередь листа.
+    m_addBtn->setText(type == TypeThermal ? tr("Печать на термопринтер...") : tr("Добавить в очередь печати"));
+}
+
+void LabelsTab::openThermal()
+{
+    const QStringList meta = m_product->currentData().toStringList();
+    if (meta.isEmpty()) {
+        QMessageBox::information(this, tr("Нет товаров"), tr("Сначала добавьте товары на вкладке «Товары»."));
+        return;
+    }
+    ThermalPrintDialog dlg({{meta.value(0).toInt(), m_copies->value()}}, this);
+    dlg.exec();
 }
 
 void LabelsTab::addToQueue()
 {
     const int type = m_type->currentData().toInt();
+    if (type == TypeThermal) {
+        openThermal();
+        return;
+    }
     const QString warehouseName = m_warehouse->currentData().toInt() > 0 ? m_warehouse->currentText() : QString();
     const QString locationCode = m_location->currentData().toInt() > 0 ? m_location->currentText() : QString();
 

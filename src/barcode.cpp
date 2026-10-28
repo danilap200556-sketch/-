@@ -128,13 +128,12 @@ int countWithoutBarcode()
     return q.next() ? q.value(0).toInt() : 0;
 }
 
-QImage renderEan13(const QString &input, int m)
+QString ean13Modules(const QString &input)
 {
     if (!canRenderEan13(input))
-        return QImage();
+        return {};
     const QString code = input.size() == 12 ? QStringLiteral("0") + input : input;
     auto digit = [&](int i) { return code[i].unicode() - '0'; };
-
     QString bits = QStringLiteral("101");
     const char *parity = kParity[digit(0)];
     for (int i = 1; i <= 6; ++i)
@@ -143,6 +142,15 @@ QImage renderEan13(const QString &input, int m)
     for (int i = 7; i <= 12; ++i)
         bits += QLatin1String(kR[digit(i)]);
     bits += QStringLiteral("101");
+    return bits;
+}
+
+QImage renderEan13(const QString &input, int m)
+{
+    if (!canRenderEan13(input))
+        return QImage();
+    const QString code = input.size() == 12 ? QStringLiteral("0") + input : input;
+    const QString bits = ean13Modules(code);
 
     constexpr int quietLeft = 11, quietRight = 7, barHeight = 60, guardExtra = 5, textHeight = 11;
     const int width = (quietLeft + bits.size() + quietRight) * m;

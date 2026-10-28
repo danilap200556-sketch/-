@@ -151,6 +151,8 @@ add_executable(inventory_manager
     src/bulkphotosdialog.cpp
     src/imagesearch.cpp
     src/stocktake.cpp
+    src/thermallabel.cpp
+    src/thermalprintdialog.cpp
     src/stocktaketab.cpp
     src/photofetch.cpp
     src/photofetchdialog.cpp
