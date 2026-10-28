@@ -831,6 +831,67 @@ bool Database::adjustStockBatch(const QList<BatchItem> &items, int warehouseId, 
     return false;
 }
 
+bool Database::transferStockBatch(const QList<BatchItem> &items, int fromWarehouseId, int toWarehouseId,
+                                  const QString &comment, QStringList *problems, QString *error)
+{
+    if (problems)
+        problems->clear();
+    if (fromWarehouseId == toWarehouseId) {
+        if (error)
+            *error = QStringLiteral("Исходный и целевой склад совпадают");
+        return false;
+    }
+    QMap<int, qint64> total;
+    for (const BatchItem &it : items) {
+        if (it.qty <= 0 || it.productId <= 0) {
+            if (error)
+                *error = QStringLiteral("Количество должно быть больше нуля");
+            return false;
+        }
+        total[it.productId] += it.qty;
+    }
+    if (total.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Список пуст");
+        return false;
+    }
+    auto refuse = [&](const QStringList &bad) {
+        if (problems)
+            *problems = bad;
+        if (error)
+            *error = QStringLiteral("Ничего не выполнено: %1").arg(bad.join(QStringLiteral("; ")));
+        return false;
+    };
+    QStringList tooBig;
+    for (auto it = total.cbegin(); it != total.cend(); ++it)
+        if (it.value() > 100'000'000)
+            tooBig << QStringLiteral("товар №%1: слишком большое количество (%2)").arg(it.key()).arg(it.value());
+    if (!tooBig.isEmpty())
+        return refuse(tooBig);
+
+    // Расход и приход каждой позиции - в одном документе (отменяется только целиком) и одним запросом на весь список.
+    QList<Movement> mvs;
+    for (auto it = total.cbegin(); it != total.cend(); ++it) {
+        mvs.append({it.key(), fromWarehouseId, int(-it.value()), movementTypeLabel(MovementType::TransferOut), toWarehouseId, comment});
+        mvs.append({it.key(), toWarehouseId, int(it.value()), movementTypeLabel(MovementType::TransferIn), fromWarehouseId, comment});
+    }
+    Document doc(QStringLiteral("transfer"), comment);
+    QList<Shortage> shortages;
+    QString err;
+    const MovementResult r = applyMovements(mvs, &shortages, &err);
+    if (r == MovementResult::Ok)
+        return true;
+    if (r == MovementResult::Insufficient) {
+        QStringList bad;
+        for (const Shortage &sh : shortages)
+            bad << QStringLiteral("%1: на складе %2 шт, а переместить нужно %3 шт").arg(sh.sku).arg(sh.have).arg(-sh.delta);
+        return refuse(bad);
+    }
+    if (error)
+        *error = err;
+    return false;
+}
+
 bool Database::transferStock(int productId, int srcWarehouseId, int dstWarehouseId,
                               int quantity, const QString &comment, QString *error)
 {

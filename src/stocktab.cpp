@@ -76,8 +76,8 @@ StockTab::StockTab(QWidget *parent)
     toolbar->addWidget(transferBtn);
     toolbar->addWidget(inventoryBtn);
     auto *batchBtn = new QPushButton(tr("Много позиций сразу"), this);
-    batchBtn->setToolTip(tr("Приход или списание списком: сканируйте штрихкоды или вставьте список из Excel, "
-                            "всё проводится одним документом"));
+    batchBtn->setToolTip(tr("Приход, списание или перемещение со склада на склад списком: сканируйте штрихкоды или вставьте список "
+                            "из Excel, всё проводится одним документом"));
     toolbar->addWidget(batchBtn);
     m_editWidgets << receiptBtn << writeOffBtn << transferBtn << inventoryBtn << batchBtn;
     toolbar->addSpacing(16);

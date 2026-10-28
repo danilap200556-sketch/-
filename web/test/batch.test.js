@@ -10,6 +10,7 @@ const q = async (sql, p) => (await site.db.query(sql, p)).rows;
 const stockOf = async (sku, wh) => (await q('SELECT COALESCE((SELECT s.quantity FROM stock s JOIN products p ON p.id = s.product_id JOIN warehouses w ON w.id = s.warehouse_id WHERE p.sku = $1 AND w.name = $2), 0)::int AS n', [sku, wh]))[0].n;
 const tokenOf = (html) => /name="token" value="([0-9a-f]+)"/.exec(html)[1];
 const post = async (client, url, form) => client.post(url, form, { from: '/batch' });
+const unesc = (t) => t.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&#39;/g, "'");
 
 test('разбор строк: сканы, количество, Excel, ошибки', () => {
   const r = batch.parseLines('4006381333931\n NK-AF1-42  5 \nSKU;3;лишнее\nA B C\t7\n4006 3813 33931\nX 0\nY 2,5\nZ 1.0\n\n;5\n12345 7\nFF abc');
@@ -165,4 +166,47 @@ test('параллельные списания: сумма не уходит н
   assert.equal(okCount, 3, 'из шести списаний по 3 при остатке 10 проходят ровно три');
   assert.equal(await stockOf('NK-AF1-42', 'Склад А'), 1);
   assert.equal((await q('SELECT COUNT(*)::int AS n FROM stock WHERE quantity < 0'))[0].n, 0);
+});
+
+// ------------------------------------------------------------------ перемещение списком
+test('перемещение списком: проверка показывает оба склада, проведение - одним документом, нехватка и один склад отклоняются', async () => {
+  await site.db.query('DELETE FROM stock_movements'); await site.db.query('DELETE FROM stock_documents'); await site.db.query('DELETE FROM stock');
+  await site.db.query('INSERT INTO stock (product_id, warehouse_id, quantity) VALUES ($1,$2,10),($3,$2,4),($4,$2,1),($3,$5,5)', [ids['NK-AF1-42'], ids['Склад А'], ids['NB-373-43'], ids['AD-S-40'], ids['Склад Б']]);
+  const f = (extra) => ({ kind: 'transfer', warehouse: String(ids['Склад А']), warehouse_to: String(ids['Склад Б']), comment: 'на витрину', lines: '', ...extra });
+  const page = (await staff.get('/batch')).text;
+  assert.match(page, /value="transfer"/); assert.match(page, /name="warehouse_to"/);
+  const token = tokenOf(page);
+
+  const prev = await post(staff, '/batch/preview', { ...f({ lines: '4006381333931\n4006381333931\nNK-AF1-42 1\nmkt-nb 4\n' }), token });
+  assert.equal(prev.status, 200);
+  assert.match(prev.text, /Перемещение: 2 поз\., 7 шт, со склада «Склад А» на склад «Склад Б»/);
+  assert.match(prev.text, /<th class="num">У получателя<\/th>/);
+  assert.match(prev.text, /<td class="num">4<\/td><td class="num neg"><b>−4<\/b><\/td>\s*<td class="num ">0<\/td><td class="num">5 → 9<\/td>/, 'NB: у нас 4 -> 0, у получателя 5 -> 9');
+  assert.equal(await stockOf('NK-AF1-42', 'Склад А'), 10, 'проверка ничего не пишет');
+
+  const done = await post(staff, '/batch/apply', { ...f({ lines: '4006381333931\n4006381333931\nNK-AF1-42 1\nmkt-nb 4\n' }), token });
+  assert.equal(done.status, 302); assert.match(done.location, /^\/documents\/\d+$/);
+  assert.equal(await stockOf('NK-AF1-42', 'Склад А'), 7); assert.equal(await stockOf('NK-AF1-42', 'Склад Б'), 3);
+  assert.equal(await stockOf('NB-373-43', 'Склад А'), 0); assert.equal(await stockOf('NB-373-43', 'Склад Б'), 9);
+  const docs = await q('SELECT kind, comment FROM stock_documents');
+  assert.deepEqual(docs.map((d) => [d.kind, d.comment]), [['transfer', 'на витрину']], 'один документ «Перемещение»');
+  assert.equal((await q("SELECT COUNT(*)::int AS n FROM stock_movements WHERE type = 'transfer_out'"))[0].n, 2);
+  assert.equal((await q("SELECT COUNT(*)::int AS n FROM stock_movements WHERE type = 'transfer_in' AND related_warehouse_id = $1", [ids['Склад А']]))[0].n, 2, 'в записи прихода назван склад-источник');
+  assert.match(unesc((await staff.get(done.location)).text), /Перемещение: 2 поз\., 7 шт, со склада «Склад А» на склад «Склад Б»/);
+
+  // нехватка: ничего не двигается
+  const bad = await post(staff, '/batch/apply', { ...f({ lines: 'NK-AF1-42 1\nAD-S-40 5\n' }), token: tokenOf((await staff.get('/batch')).text) });
+  assert.equal(bad.status, 409); assert.match(unesc(bad.text), /AD-S-40: на складе 1 шт, а переместить нужно 5 шт/);
+  assert.equal(await stockOf('NK-AF1-42', 'Склад А'), 7, 'всё или ничего');
+  // тот же склад
+  const same = await post(staff, '/batch/apply', { ...f({ lines: 'NK-AF1-42 1', warehouse_to: String(ids['Склад А']) }), token: tokenOf((await staff.get('/batch')).text) });
+  assert.equal(same.status, 400); assert.match(same.text, /Выберите разные склады/);
+  const prevSame = await post(staff, '/batch/preview', { ...f({ lines: 'NK-AF1-42 1', warehouse_to: String(ids['Склад А']) }), token: tokenOf((await staff.get('/batch')).text) });
+  assert.match(prevSame.text, /перемещать на тот же склад нельзя/);
+  assert.equal(await stockOf('NK-AF1-42', 'Склад А'), 7);
+  // документ отменяется целиком
+  const ops = require('../src/stock');
+  const lines = (await q('SELECT id FROM stock_movements ORDER BY id')).map((r) => r.id);
+  await ops.cancel(site.db, lines, 'проверка', 'staff');
+  assert.equal(await stockOf('NK-AF1-42', 'Склад А'), 10); assert.equal(await stockOf('NB-373-43', 'Склад Б'), 5);
 });

@@ -88,7 +88,7 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
           <input name="quantity" id="quantity-input" value="${f.quantity ?? ''}" required inputmode="numeric" maxlength="10" autocomplete="off" ${f.product ? html`autofocus` : ''}></label>
         <label class="field"><span>Комментарий</span><input name="comment" value="${f.comment ?? ''}" maxlength="300"></label>
         <button class="primary">Выполнить</button>
-        <p class="muted">Много позиций сразу (например, приёмка поставки или отгрузка): <a href="/batch">приход / списание списком</a>.</p>
+        <p class="muted">Много позиций сразу (например, приёмка поставки или отгрузка): <a href="/batch">приход, списание или перемещение списком</a>.</p>
         ${whs.length ? '' : html`<p class="flash err">Сначала <a href="/warehouses">создайте склад</a>.</p>`}
       </form>`,
     }, status);

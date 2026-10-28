@@ -24,16 +24,23 @@
 
 namespace {
 
-enum Column { ColSku, ColName, ColCurrent, ColQty, ColAfter, ColCount };
+enum Column { ColSku, ColName, ColCurrent, ColQty, ColAfter, ColDest, ColCount };
 
-QString kindText(bool writeOff) { return writeOff ? QObject::tr("Списание") : QObject::tr("Приход"); }
+QString kindText(BatchDialog::Kind kind)
+{
+    switch (kind) {
+    case BatchDialog::Kind::WriteOff: return QObject::tr("Списание");
+    case BatchDialog::Kind::Transfer: return QObject::tr("Перемещение");
+    default: return QObject::tr("Приход");
+    }
+}
 
 } // namespace
 
 BatchDialog::BatchDialog(Kind kind, QWidget *parent)
     : QDialog(parent)
 {
-    setWindowTitle(tr("Приход / списание списком"));
+    setWindowTitle(tr("Приход / списание / перемещение списком"));
     resize(860, 600);
 
     auto *layout = new QVBoxLayout(this);
@@ -41,15 +48,22 @@ BatchDialog::BatchDialog(Kind kind, QWidget *parent)
     layout->addLayout(form);
 
     m_kind = new QComboBox(this);
-    m_kind->addItem(tr("Приход (добавить на склад)"), false);
-    m_kind->addItem(tr("Списание (убрать со склада)"), true);
+    m_kind->addItem(tr("Приход (добавить на склад)"), int(Kind::Receipt));
+    m_kind->addItem(tr("Списание (убрать со склада)"), int(Kind::WriteOff));
+    m_kind->addItem(tr("Перемещение (со склада на склад)"), int(Kind::Transfer));
     form->addRow(tr("Операция"), m_kind);
 
     m_warehouse = new QComboBox(this);
+    m_warehouseTo = new QComboBox(this);
     QSqlQuery wq("SELECT id, name FROM warehouses ORDER BY name");
-    while (wq.next())
+    while (wq.next()) {
         m_warehouse->addItem(wq.value(1).toString(), wq.value(0).toInt());
-    form->addRow(tr("Склад"), m_warehouse);
+        m_warehouseTo->addItem(wq.value(1).toString(), wq.value(0).toInt());
+    }
+    m_warehouseLabel = new QLabel(tr("Склад"), this);
+    m_warehouseToLabel = new QLabel(tr("На склад"), this);
+    form->addRow(m_warehouseLabel, m_warehouse);
+    form->addRow(m_warehouseToLabel, m_warehouseTo);
 
     m_comment = new QLineEdit(this);
     m_comment->setPlaceholderText(tr("Например: поставка №12, возврат, брак"));
@@ -75,7 +89,7 @@ BatchDialog::BatchDialog(Kind kind, QWidget *parent)
     layout->addLayout(scanRow);
 
     m_table = new QTableWidget(0, ColCount, this);
-    m_table->setHorizontalHeaderLabels({tr("Артикул"), tr("Название"), tr("Сейчас"), tr("Кол-во"), tr("Станет")});
+    m_table->setHorizontalHeaderLabels({tr("Артикул"), tr("Название"), tr("Сейчас"), tr("Кол-во"), tr("Станет"), tr("У получателя")});
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setIconSize(QSize(PhotoCache::kIconSize, PhotoCache::kIconSize));
@@ -118,6 +132,7 @@ BatchDialog::BatchDialog(Kind kind, QWidget *parent)
     connect(closeBtn, &QPushButton::clicked, this, &BatchDialog::reject);
     connect(m_kind, &QComboBox::currentIndexChanged, this, &BatchDialog::recompute);
     connect(m_warehouse, &QComboBox::currentIndexChanged, this, &BatchDialog::recompute);
+    connect(m_warehouseTo, &QComboBox::currentIndexChanged, this, &BatchDialog::recompute);
     auto *del = new QShortcut(QKeySequence::Delete, m_table);
     del->setContext(Qt::WidgetShortcut);
     connect(del, &QShortcut::activated, this, &BatchDialog::removeSelectedRows);
@@ -130,13 +145,21 @@ BatchDialog::BatchDialog(Kind kind, QWidget *parent)
     m_scan->setFocus();
 }
 
-bool BatchDialog::writeOff() const { return m_kind->currentData().toBool(); }
+BatchDialog::Kind BatchDialog::kind() const { return static_cast<Kind>(m_kind->currentData().toInt()); }
 int BatchDialog::warehouseId() const { return m_warehouse->currentData().toInt(); }
+int BatchDialog::warehouseToId() const { return m_warehouseTo->currentData().toInt(); }
 
 void BatchDialog::setKind(Kind kind)
 {
-    m_kind->setCurrentIndex(kind == Kind::WriteOff ? 1 : 0);
+    m_kind->setCurrentIndex(m_kind->findData(int(kind)));
     recompute();
+}
+
+void BatchDialog::setWarehouseTo(int warehouseId)
+{
+    const int idx = m_warehouseTo->findData(warehouseId);
+    if (idx >= 0)
+        m_warehouseTo->setCurrentIndex(idx);
 }
 
 void BatchDialog::setWarehouse(int warehouseId)
@@ -188,7 +211,7 @@ void BatchDialog::addQuantity(int productId, qint64 qty)
         sku->setIcon(PhotoCache::thumb(productId));
         m_table->setItem(row, ColSku, sku);
         m_table->setItem(row, ColName, new QTableWidgetItem(info.second));
-        for (int c : {ColCurrent, ColAfter}) {
+        for (int c : {ColCurrent, ColAfter, ColDest}) {
             auto *it = new QTableWidgetItem();
             it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
             m_table->setItem(row, c, it);
@@ -363,22 +386,33 @@ void BatchDialog::recompute()
 {
     if (m_updating)
         return;
-    const bool out = writeOff();
+    const Kind k = kind();
+    const bool out = takesOut();
+    const bool transfer = k == Kind::Transfer;
     const int wh = warehouseId();
+    const int whTo = warehouseToId();
 
-    // Остатки всех строк одним запросом
-    QHash<int, qint64> have;
+    // Для перемещения видны оба склада и столбец «У получателя»; склад-получатель не должен совпадать с источником.
+    m_warehouseLabel->setText(transfer ? tr("Со склада") : tr("Склад"));
+    m_warehouseToLabel->setVisible(transfer);
+    m_warehouseTo->setVisible(transfer);
+    m_table->setColumnHidden(ColDest, !transfer);
+    const bool sameWarehouse = transfer && wh == whTo;
+
+    // Остатки всех строк одним запросом (на обоих складах для перемещения)
+    QHash<int, qint64> have, haveTo;
     QStringList idList;
     for (int r = 0; r < m_table->rowCount(); ++r)
         idList << QString::number(m_table->item(r, ColSku)->data(Qt::UserRole).toInt());
     if (!idList.isEmpty()) {
         QSqlQuery q;
-        q.prepare(QStringLiteral("SELECT product_id, quantity FROM stock WHERE warehouse_id = ? AND product_id IN (%1)")
+        q.prepare(QStringLiteral("SELECT product_id, quantity, warehouse_id FROM stock WHERE warehouse_id IN (?, ?) AND product_id IN (%1)")
                       .arg(idList.join(QLatin1Char(','))));
         q.addBindValue(wh);
+        q.addBindValue(transfer ? whTo : wh);
         if (q.exec())
             while (q.next())
-                have[q.value(0).toInt()] = q.value(1).toLongLong();
+                (q.value(2).toInt() == wh ? have : haveTo)[q.value(0).toInt()] = q.value(1).toLongLong();
     }
 
     int short_ = 0;
@@ -391,6 +425,10 @@ void BatchDialog::recompute()
         total += qty;
         m_table->item(r, ColCurrent)->setText(QString::number(now));
         m_table->item(r, ColAfter)->setText(QString::number(after));
+        if (auto *dest = m_table->item(r, ColDest)) {
+            const qint64 dnow = haveTo.value(id, 0);
+            dest->setText(transfer ? QStringLiteral("%1 → %2").arg(dnow).arg(dnow + qty) : QString());
+        }
         const bool bad = after < 0;
         if (bad)
             ++short_;
@@ -403,10 +441,12 @@ void BatchDialog::recompute()
     QString s = tr("Позиций: %1, всего %2 шт").arg(m_table->rowCount()).arg(total);
     if (short_)
         s += tr(" - не хватает остатка у позиций: %1 (красные строки)").arg(short_);
+    if (sameWarehouse)
+        s += tr(" - выберите разные склады: перемещать на тот же склад нельзя");
     m_summary->setText(s);
-    m_summary->setStyleSheet(short_ ? "color: #d64545;" : QString());
-    m_commitButton->setText(out ? tr("Провести списание") : tr("Провести приход"));
-    m_commitButton->setEnabled(m_table->rowCount() > 0);
+    m_summary->setStyleSheet(short_ || sameWarehouse ? "color: #d64545;" : QString());
+    m_commitButton->setText(k == Kind::Transfer ? tr("Провести перемещение") : out ? tr("Провести списание") : tr("Провести приход"));
+    m_commitButton->setEnabled(m_table->rowCount() > 0 && !sameWarehouse);
     showProblems();
 }
 
@@ -439,7 +479,10 @@ bool BatchDialog::apply()
     }
     QStringList problems;
     QString err;
-    if (!Database::adjustStockBatch(itemsFromTable(), warehouseId(), writeOff(), m_comment->text().trimmed(), &problems, &err)) {
+    const bool ok = kind() == Kind::Transfer
+                        ? Database::transferStockBatch(itemsFromTable(), warehouseId(), warehouseToId(), m_comment->text().trimmed(), &problems, &err)
+                        : Database::adjustStockBatch(itemsFromTable(), warehouseId(), writeOff(), m_comment->text().trimmed(), &problems, &err);
+    if (!ok) {
         m_lastError = err;
         m_problems = problems.isEmpty() ? QStringList{err} : problems;
         recompute();
@@ -452,24 +495,28 @@ bool BatchDialog::apply()
 void BatchDialog::commit()
 {
     // Красные строки (не хватает остатка) видно сразу - не отправляем заведомо неудачный документ.
-    if (writeOff()) {
+    if (takesOut()) {
         QStringList lacking;
         for (int r = 0; r < m_table->rowCount(); ++r)
             if (m_table->item(r, ColAfter)->text().toLongLong() < 0)
-                lacking << tr("%1: на складе %2 шт, а списать нужно %3 шт").arg(
+                lacking << tr("%1: на складе %2 шт, а %4 нужно %3 шт").arg(
                     m_table->item(r, ColSku)->text(), m_table->item(r, ColCurrent)->text(),
-                    QString::number(qobject_cast<QSpinBox *>(m_table->cellWidget(r, ColQty))->value()));
+                    QString::number(qobject_cast<QSpinBox *>(m_table->cellWidget(r, ColQty))->value()),
+                    kind() == Kind::Transfer ? tr("переместить") : tr("списать"));
         if (!lacking.isEmpty()) {
             m_problems = lacking;
             recompute();
             QMessageBox::warning(this, tr("Не хватает остатка"),
-                                 tr("Ничего не списано. Исправьте количество в красных строках или уберите их:\n\n%1")
-                                     .arg(lacking.mid(0, 10).join(QLatin1Char('\n'))));
+                                 tr("%1 Исправьте количество в красных строках или уберите их:\n\n%2")
+                                     .arg(kind() == Kind::Transfer ? tr("Ничего не перемещено.") : tr("Ничего не списано."),
+                                          lacking.mid(0, 10).join(QLatin1Char('\n'))));
             return;
         }
     }
-    const QString question = tr("%1: позиций %2, всего %3 шт, склад «%4». Провести одним документом?")
-                                 .arg(kindText(writeOff())).arg(m_table->rowCount()).arg(totalQty()).arg(m_warehouse->currentText());
+    const QString where = kind() == Kind::Transfer ? tr("со склада «%1» на склад «%2»").arg(m_warehouse->currentText(), m_warehouseTo->currentText())
+                                                   : tr("склад «%1»").arg(m_warehouse->currentText());
+    const QString question = tr("%1: позиций %2, всего %3 шт, %4. Провести одним документом?")
+                                 .arg(kindText(kind())).arg(m_table->rowCount()).arg(totalQty()).arg(where);
     if (QMessageBox::question(this, windowTitle(), question) != QMessageBox::Yes)
         return;
     if (!apply()) {
@@ -479,7 +526,7 @@ void BatchDialog::commit()
     }
     const int docId = Database::lastDocumentId();
     QMessageBox::information(this, windowTitle(), tr("Готово: %1, позиций %2, всего %3 шт.%4")
-                                                    .arg(kindText(writeOff())).arg(m_table->rowCount()).arg(totalQty())
+                                                    .arg(kindText(kind())).arg(m_table->rowCount()).arg(totalQty())
                                                     .arg(docId > 0 ? tr("\n\nСоздан документ №%1: открыть и отменить целиком его можно в разделе «Документы».").arg(docId) : QString()));
     accept();
 }

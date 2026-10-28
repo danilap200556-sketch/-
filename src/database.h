@@ -116,6 +116,12 @@ public:
     static bool adjustStockBatch(const QList<BatchItem> &items, int warehouseId, bool writeOff,
                                  const QString &comment, QStringList *problems, QString *error = nullptr);
 
+    // Перемещение сразу многих позиций со склада на склад одним документом и одним запросом: либо проходят все,
+    // либо ни одной. Повторы одного товара складываются. При нехватке остатка на складе-источнике в *problems -
+    // по строке на каждую позицию.
+    static bool transferStockBatch(const QList<BatchItem> &items, int fromWarehouseId, int toWarehouseId,
+                                   const QString &comment, QStringList *problems, QString *error = nullptr);
+
     // Перемещение между двумя складами внутри одной транзакции.
     static bool transferStock(int productId, int srcWarehouseId, int dstWarehouseId,
                                int quantity, const QString &comment,

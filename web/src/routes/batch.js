@@ -8,10 +8,10 @@ const ops = require('../stock');
 const { parseId, str } = require('../util');
 const { thumbImg } = require('../views');
 
-const KINDS = { receipt: 'Приход', writeoff: 'Списание' };
+const KINDS = { receipt: 'Приход', writeoff: 'Списание', transfer: 'Перемещение' };
 const TOKEN_TTL = 60 * 60_000;
 
-// Приход / списание списком: много позиций одним документом. Шаги: ввод -> проверка (что и как изменится) -> выполнить.
+// Приход / списание / перемещение списком: много позиций одним документом. Шаги: ввод -> проверка (что и как изменится) -> выполнить.
 module.exports = (app, { db, send, requireLogin, requireEditor }) => {
   // Одноразовые метки форм: двойной щелчок по «Выполнить» или повторная отправка не выполнит партию дважды.
   const tokens = new Map();
@@ -31,10 +31,13 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
     const whs = await warehouses();
     const kind = KINDS[form.kind] ? form.kind : 'receipt';
     const wid = parseId(form.warehouse) || whs[0]?.id || 0;
+    const widTo = parseId(form.warehouse_to) || (whs.find((w) => w.id !== wid)?.id ?? 0);
     const whName = whs.find((w) => w.id === wid)?.name ?? '';
+    const whToName = whs.find((w) => w.id === widTo)?.name ?? '';
+    const where = kind === 'transfer' ? `со склада «${whName}» на склад «${whToName}»` : `склад «${whName}»`;
     const ok = prep && !prep.problems.length && prep.items.length > 0;
     send(req, res, {
-      title: 'Приход / списание списком', active: 'stock',
+      title: 'Приход / списание / перемещение списком', active: 'stock',
       body: html`
       ${error ? html`<div class="flash err">${error}</div>` : ''}
       <form method="post" action="/batch/preview" class="card batch">
@@ -42,8 +45,10 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
         <div class="row">
           <label class="field"><span>Что сделать</span><select name="kind">
             ${Object.entries(KINDS).map(([k, t]) => html`<option value="${k}" ${k === kind ? html`selected` : ''}>${t}</option>`)}</select></label>
-          <label class="field"><span>Склад</span><select name="warehouse">
+          <label class="field"><span>${kind === 'transfer' ? 'Со склада' : 'Склад'}</span><select name="warehouse">
             ${whs.map((w) => html`<option value="${w.id}" ${w.id === wid ? html`selected` : ''}>${w.name}</option>`)}</select></label>
+          <label class="field"><span>На склад (только для перемещения)</span><select name="warehouse_to">
+            ${whs.map((w) => html`<option value="${w.id}" ${w.id === widTo ? html`selected` : ''}>${w.name}</option>`)}</select></label>
           <label class="field"><span>Комментарий (в журнал)</span><input name="comment" value="${form.comment ?? ''}" maxlength="300" placeholder="например: приёмка от поставщика №15"></label>
         </div>
         <label class="field"><span>Найти товар и добавить в список (артикул, часть названия или штрихкод)</span>
@@ -56,25 +61,25 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
           Одинаковые позиции складываются. Всё выполняется одним действием: если хоть одна строка не проходит, не меняется ничего.</p>
         <div class="toolbar">
           <button class="primary">Проверить</button>
-          ${ok ? html`<button formaction="/batch/apply" class="danger-ok" data-confirm="${KINDS[kind]}: ${prep.items.length} поз., ${prep.totalQty} шт, склад «${whName}». Выполнить?">Выполнить: ${KINDS[kind].toLowerCase()} ${prep.items.length} поз., ${prep.totalQty} шт</button>` : ''}
+          ${ok ? html`<button formaction="/batch/apply" class="danger-ok" data-confirm="${KINDS[kind]}: ${prep.items.length} поз., ${prep.totalQty} шт, ${where}. Выполнить?">Выполнить: ${KINDS[kind].toLowerCase()} ${prep.items.length} поз., ${prep.totalQty} шт</button>` : ''}
         </div>
       </form>
       ${prep ? html`
         ${prep.problems.length ? html`<div class="card"><h2>Нужно исправить (${prep.problems.length})</h2>
           <ul class="problems">${prep.problems.map((p) => html`<li class="neg">${p.n ? html`<b>строка ${p.n}:</b> ` : ''}${p.text}</li>`)}</ul>
           <p class="muted">Поправьте список выше и нажмите «Проверить». Пока есть ошибки, выполнить нельзя.</p></div>` : ''}
-        ${prep.items.length ? html`<h2>${KINDS[kind]}: ${prep.items.length} поз., ${prep.totalQty} шт, склад «${whName}»</h2>
+        ${prep.items.length ? html`<h2>${KINDS[kind]}: ${prep.items.length} поз., ${prep.totalQty} шт, ${where}</h2>
           <div class="table-wrap"><table>
-            <thead><tr><th></th><th>Артикул</th><th>Название</th><th class="num">Сейчас</th><th class="num">${kind === 'writeoff' ? 'Списать' : 'Добавить'}</th><th class="num">Станет</th><th>Строки</th></tr></thead>
-            <tbody>${prep.items.map((i) => html`<tr class="${kind === 'writeoff' && i.after < 0 ? 'bad' : ''}">
+            <thead><tr><th></th><th>Артикул</th><th>Название</th><th class="num">Сейчас</th><th class="num">${kind === 'writeoff' ? 'Списать' : kind === 'transfer' ? 'Переместить' : 'Добавить'}</th><th class="num">Станет</th>${kind === 'transfer' ? html`<th class="num">У получателя</th>` : ''}<th>Строки</th></tr></thead>
+            <tbody>${prep.items.map((i) => html`<tr class="${kind !== 'receipt' && i.after < 0 ? 'bad' : ''}">
               <td>${thumbImg(i.id, i.cover_id)}</td><td><a href="/products/${i.id}">${i.sku}</a></td><td>${i.name}</td>
-              <td class="num">${i.current}</td><td class="num ${kind === 'writeoff' ? 'neg' : 'pos'}"><b>${kind === 'writeoff' ? '−' : '+'}${i.qty}</b></td>
-              <td class="num ${i.after < 0 ? 'neg' : ''}">${i.after}</td><td class="muted">${i.lines.join(', ')}</td></tr>`)}</tbody>
+              <td class="num">${i.current}</td><td class="num ${kind === 'receipt' ? 'pos' : 'neg'}"><b>${kind === 'receipt' ? '+' : '−'}${i.qty}</b></td>
+              <td class="num ${i.after < 0 ? 'neg' : ''}">${i.after}</td>${kind === 'transfer' ? html`<td class="num">${i.toCurrent} → ${i.toCurrent + i.qty}</td>` : ''}<td class="muted">${i.lines.join(', ')}</td></tr>`)}</tbody>
           </table></div>` : ''}` : ''}`,
     }, status);
   }
 
-  const readForm = (b) => ({ kind: str(b.kind, 20), warehouse: str(b.warehouse, 10), comment: str(b.comment, 300), lines: String(b.lines ?? '').slice(0, batch.MAX_TEXT) });
+  const readForm = (b) => ({ kind: str(b.kind, 20), warehouse: str(b.warehouse, 10), warehouse_to: str(b.warehouse_to, 10), comment: str(b.comment, 300), lines: String(b.lines ?? '').slice(0, batch.MAX_TEXT) });
 
   app.get('/batch', requireLogin, requireEditor, (req, res) => view(req, res, { form: { kind: str(req.query.kind, 20) } }));
 
@@ -83,7 +88,7 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
     const kind = KINDS[form.kind] ? form.kind : 'receipt';
     const wid = parseId(form.warehouse);
     if (!wid) return view(req, res, { form, error: 'Выберите склад', status: 400, token: live(req.body.token, req.ctx.user.id) });
-    const prep = await batch.prepare(db, form.lines, kind, wid);
+    const prep = await batch.prepare(db, form.lines, kind, wid, parseId(form.warehouse_to) || 0);
     return view(req, res, { form, prep, token: live(req.body.token, req.ctx.user.id) });
   });
 
@@ -91,9 +96,14 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
     const form = readForm(req.body);
     const kind = KINDS[form.kind] ? form.kind : null;
     const wid = parseId(form.warehouse);
+    const widTo = parseId(form.warehouse_to) || 0;
     if (!kind || !wid) return view(req, res, { form, error: 'Выберите действие и склад', status: 400, token: live(req.body.token, req.ctx.user.id) });
-    const warehouse = (await warehouses()).find((w) => w.id === wid);
-    if (!warehouse) return view(req, res, { form, error: 'Склад не найден', status: 400, token: live(req.body.token, req.ctx.user.id) });
+    const whList = await warehouses();
+    const warehouse = whList.find((w) => w.id === wid);
+    const warehouseTo = whList.find((w) => w.id === widTo);
+    if (!warehouse || (kind === 'transfer' && !warehouseTo)) return view(req, res, { form, error: 'Склад не найден', status: 400, token: live(req.body.token, req.ctx.user.id) });
+    if (kind === 'transfer' && wid === widTo) return view(req, res, { form, error: 'Выберите разные склады: перемещать на тот же склад нельзя', status: 400, token: live(req.body.token, req.ctx.user.id) });
+    const where = kind === 'transfer' ? `со склада «${warehouse.name}» на склад «${warehouseTo.name}»` : `склад «${warehouse.name}»`;
 
     // метка форм одноразовая: берём её до выполнения (JS однопоточный, второй такой же запрос уже не пройдёт)
     const token = String(req.body.token ?? '');
@@ -106,7 +116,7 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
 
     let result;
     try {
-      result = await batch.apply(db, form.lines, kind, wid, form.comment, req.ctx.user.username);
+      result = await batch.apply(db, form.lines, kind, wid, form.comment, req.ctx.user.username, widTo);
     } catch (e) {
       tokens.set(token, t); // ничего не выполнено - можно повторить
       if (e.code === '22003') return view(req, res, { form, error: 'Слишком большое число в остатке', status: 400, token });
@@ -114,16 +124,16 @@ module.exports = (app, { db, send, requireLogin, requireEditor }) => {
     }
     if (!result.ok) {
       tokens.set(token, t);
-      const prep = await batch.prepare(db, form.lines, kind, wid);
+      const prep = await batch.prepare(db, form.lines, kind, wid, widTo);
       prep.problems = result.problems.length ? result.problems : prep.problems;
       return view(req, res, { form, prep, error: 'Ничего не выполнено: в списке есть ошибки.', status: 409, token });
     }
     const docNo = (await ops.docsSupported(db)) ? await docs.idByKey(db, result.doc) : 0;
     if (docNo) {
-      res.flash('ok', `${KINDS[kind]}: ${result.items.length} поз., ${result.totalQty} шт, склад «${warehouse.name}». Создан документ №${docNo}: открыть и при ошибке отменить целиком его можно в разделе «Документы».`);
+      res.flash('ok', `${KINDS[kind]}: ${result.items.length} поз., ${result.totalQty} шт, ${where}. Создан документ №${docNo}: открыть и при ошибке отменить целиком его можно в разделе «Документы».`);
       return res.redirect(`/documents/${docNo}`);
     }
-    res.flash('ok', `${KINDS[kind]}: ${result.items.length} поз., ${result.totalQty} шт, склад «${warehouse.name}». Подробности - в журнале.`);
+    res.flash('ok', `${KINDS[kind]}: ${result.items.length} поз., ${result.totalQty} шт, ${where}. Подробности - в журнале.`);
     res.redirect('/movements');
   });
 };

@@ -3,7 +3,7 @@ const bc = require('./barcode');
 const ops = require('./stock');
 const { findExact } = require('./finder');
 
-// Приход / списание списком: много позиций одним документом, всё сразу или ничего.
+// Приход / списание / перемещение списком: много позиций одним документом, всё сразу или ничего.
 // Тот же формат строк, что у диалога «Приход / списание списком» в приложении (src/batchparser.cpp).
 
 const MAX_LINES = 2000;
@@ -45,11 +45,14 @@ function parseLines(text) {
   return out;
 }
 
-// Находит товары, складывает повторы одного товара. kind: 'receipt' | 'writeoff'.
-// -> { items: [{ id, sku, name, cover_id, qty, lines: [n], current, after }], problems: [{ n, text }], totalQty }
-async function prepare(db, text, kind, warehouseId) {
+// Находит товары, складывает повторы одного товара. kind: 'receipt' | 'writeoff' | 'transfer' (со склада warehouseId на toWarehouseId).
+// -> { items: [{ id, sku, name, cover_id, qty, lines: [n], current, after, toCurrent }], problems: [{ n, text }], totalQty }
+async function prepare(db, text, kind, warehouseId, toWarehouseId = 0) {
   const lines = parseLines(text);
   const problems = [];
+  if (kind === 'transfer' && (!toWarehouseId || toWarehouseId === warehouseId)) {
+    return { items: [], problems: [{ n: 0, text: toWarehouseId ? 'Выберите разные склады: перемещать на тот же склад нельзя' : 'Выберите склад, на который перемещать' }], totalQty: 0 };
+  }
   if (!lines.length) return { items: [], problems: [{ n: 0, text: 'Список пуст: впишите или отсканируйте хотя бы одну позицию' }], totalQty: 0 };
   if (lines.length > MAX_LINES) return { items: [], problems: [{ n: 0, text: `Слишком много строк (больше ${MAX_LINES}) - разбейте список на части` }], totalQty: 0 };
 
@@ -72,12 +75,18 @@ async function prepare(db, text, kind, warehouseId) {
          FROM products p LEFT JOIN stock s ON s.product_id = p.id AND s.warehouse_id = $2 WHERE p.id = ANY($1::int[])`,
       [items.map((i) => i.id), warehouseId])).rows;
     const m = new Map(info.map((r) => [r.id, r]));
+    const dest = new Map();
+    if (kind === 'transfer') {
+      for (const r of (await db.query('SELECT product_id, quantity FROM stock WHERE warehouse_id = $2 AND product_id = ANY($1::int[])', [items.map((i) => i.id), toWarehouseId])).rows) dest.set(r.product_id, r.quantity);
+    }
     for (const it of items) {
       Object.assign(it, m.get(it.id));
-      it.after = kind === 'writeoff' ? it.current - it.qty : it.current + it.qty;
+      const takes = kind === 'writeoff' || kind === 'transfer';
+      it.after = takes ? it.current - it.qty : it.current + it.qty;
+      it.toCurrent = dest.get(it.id) ?? 0;
       if (it.qty > ops.MAX_QTY) problems.push({ n: it.lines[0], text: `${it.sku}: слишком большое количество (${it.qty})` });
-      else if (kind === 'writeoff' && it.after < 0) problems.push({ n: it.lines[0], text: `${it.sku}: на складе ${it.current} шт, а списать нужно ${it.qty} шт` });
-      else if (it.after > 2_000_000_000) problems.push({ n: it.lines[0], text: `${it.sku}: остаток получится слишком большим` });
+      else if (takes && it.after < 0) problems.push({ n: it.lines[0], text: `${it.sku}: на складе ${it.current} шт, а ${kind === 'transfer' ? 'переместить' : 'списать'} нужно ${it.qty} шт` });
+      else if (it.after > 2_000_000_000 || (kind === 'transfer' && it.toCurrent + it.qty > 2_000_000_000)) problems.push({ n: it.lines[0], text: `${it.sku}: остаток получится слишком большим` });
     }
   }
   problems.sort((a, b) => a.n - b.n);
@@ -86,18 +95,19 @@ async function prepare(db, text, kind, warehouseId) {
 
 // Применяет всё одной транзакцией. Если хоть одна позиция не проходит - не меняется ничего.
 // -> { ok: true, items } | { ok: false, problems }
-async function apply(db, text, kind, warehouseId, comment, user = '') {
+async function apply(db, text, kind, warehouseId, comment, user = '', toWarehouseId = 0) {
   let result;
   try {
     result = await db.tx(async (c) => {
-      const prep = await prepare({ query: (...a) => c.query(...a) }, text, kind, warehouseId);
+      const prep = await prepare({ query: (...a) => c.query(...a) }, text, kind, warehouseId, toWarehouseId);
       if (prep.problems.length) return { ok: false, problems: prep.problems };
       // блокируем строки остатков в одном порядке (по товару), чтобы две партии не зашли в тупик
       const problems = [];
-      const doc = ops.newDoc(kind === 'writeoff' ? 'writeoff' : 'receipt', comment, user); // все позиции - один документ: отменяется разом
+      const doc = ops.newDoc(kind === 'writeoff' ? 'writeoff' : kind === 'transfer' ? 'transfer' : 'receipt', comment, user); // все позиции - один документ: отменяется разом
       for (const it of prep.items) {
         try {
-          if (kind === 'writeoff') await ops.takeOut(c, it.id, warehouseId, it.qty, comment, 'writeoff', null, doc);
+          if (kind === 'transfer') await ops.transfer(c, it.id, warehouseId, toWarehouseId, it.qty, comment, doc);
+          else if (kind === 'writeoff') await ops.takeOut(c, it.id, warehouseId, it.qty, comment, 'writeoff', null, doc);
           else await ops.receive(c, it.id, warehouseId, it.qty, comment, 'receipt', null, doc);
         } catch (e) {
           if (!(e instanceof ops.UserError)) throw e;
