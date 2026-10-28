@@ -36,4 +36,30 @@ function generateInternal() {
   return body + checkDigit(body);
 }
 
-module.exports = { normalize, validate, generateInternal, checkDigit };
+// Своя последовательность EAN-13 в базе (функцию next_internal_ean13 создаёт настольное приложение при подключении).
+// Пока её нет, новые товары остаются без штрихкода, как раньше. Проверка - раз в 15 секунд, после успеха не повторяется.
+let ownReady = false;
+let ownCheckedAt = 0;
+async function ownSupported(q) {
+  if (ownReady) return true;
+  const now = Date.now();
+  if (now - ownCheckedAt < 15_000) return false;
+  ownCheckedAt = now;
+  const r = await q.query("SELECT to_regprocedure('next_internal_ean13()') IS NOT NULL AS ok");
+  ownReady = r.rows[0].ok;
+  return ownReady;
+}
+const resetOwnCache = () => { ownReady = false; ownCheckedAt = 0; };
+
+// Присваивает свой EAN-13 товарам из ids, у которых нет ни одного штрихкода. -> сколько присвоено (0 - функции в базе ещё нет)
+async function ensureOwn(q, ids) {
+  const list = [...new Set((ids || []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+  if (!list.length || !(await ownSupported(q))) return 0;
+  const r = await q.query(
+    `INSERT INTO product_barcodes (barcode, product_id)
+     SELECT next_internal_ean13(), p.id FROM products p WHERE p.id = ANY($1::int[])
+        AND NOT EXISTS (SELECT 1 FROM product_barcodes b WHERE b.product_id = p.id) ORDER BY p.id`, [list]);
+  return r.rowCount;
+}
+
+module.exports = { normalize, validate, generateInternal, checkDigit, ownSupported, resetOwnCache, ensureOwn };

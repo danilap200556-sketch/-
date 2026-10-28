@@ -296,16 +296,18 @@ async function apply(db, opts) {
     };
     await linkCodes(withCodes.flatMap((i) => i.newCodes.map((code) => [code, i.id])), 0);
     let created = 0;
+    const createdIds = [];
     for (const it of p.items.filter((i) => i.status === 'create')) {
       const cr = it.create;
       const r = await c.query(
         `INSERT INTO products (sku, name, description, photo_path, price, custom_code, market_sku) VALUES ($1, $2, $3, '', $4, $5, $6)
          ON CONFLICT (sku) DO NOTHING RETURNING id`, [cr.sku, cr.name, cr.description, cr.price, cr.custom_code, cr.market_sku]);
       if (!r.rowCount) { problems.push({ n: it.n, text: `товар «${cr.sku}» за это время уже создали - пропущен` }); continue; }
-      created++;
+      created++; createdIds.push(r.rows[0].id);
       if (cr.ym && Object.keys(cr.ym).length) await writeYm([[r.rows[0].id, cr.ym]]);
       await linkCodes(it.newCodes.map((code) => [code, r.rows[0].id]), it.n);
     }
+    await bc.ensureOwn(c, createdIds); // новым товарам без штрихкода - свой EAN-13
     return { stats: { ...p.stats, create: created }, problems, backup, updated: new Set([...upd, ...ymUpd, ...withCodes].map((i) => i.id)).size, created };
   });
 }

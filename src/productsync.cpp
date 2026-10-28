@@ -903,6 +903,10 @@ bool apply(const QVector<QStringList> &rows, int headerIdx, const QList<int> &ro
             return refuse(ymError);
         if (!codePairs.isEmpty() && !linkCodes(codePairs, 0))
             return refuse(QStringLiteral("Не удалось привязать штрихкоды"));
+        // Новым товарам без штрихкода - свой EAN-13 (чтобы их можно было сразу печатать на этикетках).
+        QString ownError;
+        if (Barcode::ensureOwn(newIds.values(), &ownError) < 0)
+            return refuse(ownError);
     }
     if (!db.commit())
         return refuse(db.lastError().text());

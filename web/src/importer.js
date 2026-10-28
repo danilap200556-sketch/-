@@ -164,7 +164,8 @@ async function run(db, opts) {
   const comment = `импорт из ${fileName}`;
   const doc = ops.newDoc(asInventory ? 'inventory' : asWriteOff ? 'writeoff' : 'receipt', comment, opts.user); // весь импорт - один документ: отменяется разом
 
-  const stats = { processed: 0, created: 0, updated: 0, skipped: 0, errors: 0, linked: 0, zeroed: 0 };
+  const stats = { processed: 0, created: 0, updated: 0, skipped: 0, errors: 0, linked: 0, zeroed: 0, own: 0 };
+  const createdIds = []; // новым товарам без штрихкода присваивается свой EAN-13
   const log = [];
   let zeroDoc = null;
   const note = (s) => { if (log.length < MAX_LOG) log.push(s); else if (log.length === MAX_LOG) log.push('… (остальные сообщения не показаны)'); };
@@ -242,7 +243,7 @@ async function run(db, opts) {
                 if (productId === null) {
                   const name = (nameCol >= 0 ? String(row[nameCol] ?? '').trim() : '') || key;
                   productId = (await c.query('INSERT INTO products (sku, name) VALUES ($1, $2) RETURNING id', [key, name])).rows[0].id;
-                  local.created++; local.newSku = [key, productId];
+                  local.created++; local.newSku = [key, productId]; createdIds.push(productId);
                   local.notes.push(`Строка ${rowNo}: создан новый товар «${key}»`);
                 }
                 await linkBarcodes(productId);
@@ -270,6 +271,9 @@ async function run(db, opts) {
         }
       }
     }
+
+    stats.own = await bc.ensureOwn(c, createdIds);
+    if (stats.own) note(`Новым товарам без штрихкода присвоен свой EAN-13: ${stats.own}`);
 
     // Обнуление - отдельный документ: если окажется ошибкой, его можно отменить, не трогая саму загрузку.
     if (zero.items.length) {

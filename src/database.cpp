@@ -191,6 +191,27 @@ const QStringList &schemaDdl()
             ORDER BY g.first_at
            ON CONFLICT (doc_key) DO NOTHING)",
         "CREATE INDEX IF NOT EXISTS stock_documents_created_idx ON stock_documents (created_at DESC)",
+        // --- Свои штрихкоды EAN-13 (диапазон 200..299 - для внутреннего использования, не пересекается с кодами
+        // производителей). Номера берутся из последовательности (до 99 999 999 999 кодов), поэтому коды не повторяются
+        // и не кончаются; занятый вручную код пропускается. Функцию вызывают приложение и сайт.
+        "CREATE SEQUENCE IF NOT EXISTS internal_barcode_seq MINVALUE 1 MAXVALUE 99999999999 START 1",
+        R"(CREATE OR REPLACE FUNCTION next_internal_ean13() RETURNS text
+        LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+        DECLARE n bigint; body text; s int; i int; code text;
+        BEGIN
+          LOOP
+            n := nextval('internal_barcode_seq');
+            body := '2' || lpad(n::text, 11, '0');
+            s := 0;
+            FOR i IN 1..12 LOOP
+              s := s + (substr(body, i, 1))::int * (CASE WHEN i % 2 = 1 THEN 1 ELSE 3 END);
+            END LOOP;
+            code := body || ((10 - s % 10) % 10)::text;
+            EXIT WHEN NOT EXISTS (SELECT 1 FROM product_barcodes WHERE barcode = code);
+          END LOOP;
+          RETURN code;
+        END
+        $$)",
         // --- Инвентаризация по штрихкодам: подсчёт склада (stocktakes) и посчитанное по товарам (stocktake_items).
         // Подсчёт общий: на складе открыт не больше одного, в него считают с разных компьютеров и с сайта.
         // status: open | done | discarded; document_id - номер документа «Инвентаризация», когда подсчёт проведён.

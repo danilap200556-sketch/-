@@ -72,6 +72,10 @@ bool canRenderEan13(const QString &code)
 
 QString generateInternalEan13()
 {
+    // Последовательность в базе: уникально и без перебора. Если базу ещё не обновили - случайный код с проверкой, как раньше.
+    QSqlQuery q("SELECT next_internal_ean13()");
+    if (q.next() && !q.value(0).toString().isEmpty())
+        return q.value(0).toString();
     for (int attempt = 0; attempt < 100; ++attempt) {
         QString body = QStringLiteral("2");
         for (int i = 0; i < 11; ++i)
@@ -81,6 +85,47 @@ QString generateInternalEan13()
             return code;
     }
     return QString();
+}
+
+int ensureOwn(const QList<int> &productIds, QString *error)
+{
+    int created = 0;
+    constexpr int kChunk = 500;
+    for (int start = 0; start < productIds.size(); start += kChunk) {
+        const QList<int> part = productIds.mid(start, kChunk);
+        QSqlQuery q;
+        q.prepare(QStringLiteral("INSERT INTO product_barcodes (barcode, product_id) "
+                                 "SELECT next_internal_ean13(), p.id FROM products p WHERE p.id IN (%1) "
+                                 "AND NOT EXISTS (SELECT 1 FROM product_barcodes b WHERE b.product_id = p.id) ORDER BY p.id")
+                      .arg(QStringList(part.size(), QStringLiteral("?")).join(QLatin1Char(','))));
+        for (int id : part)
+            q.addBindValue(id);
+        if (!q.exec()) {
+            if (error)
+                *error = q.lastError().text();
+            return -1;
+        }
+        created += q.numRowsAffected();
+    }
+    return created;
+}
+
+int ensureOwnForAll(QString *error)
+{
+    QSqlQuery q;
+    if (!q.exec("INSERT INTO product_barcodes (barcode, product_id) SELECT next_internal_ean13(), p.id FROM products p "
+                "WHERE NOT EXISTS (SELECT 1 FROM product_barcodes b WHERE b.product_id = p.id) ORDER BY p.id")) {
+        if (error)
+            *error = q.lastError().text();
+        return -1;
+    }
+    return q.numRowsAffected();
+}
+
+int countWithoutBarcode()
+{
+    QSqlQuery q("SELECT COUNT(*) FROM products p WHERE NOT EXISTS (SELECT 1 FROM product_barcodes b WHERE b.product_id = p.id)");
+    return q.next() ? q.value(0).toInt() : 0;
 }
 
 QImage renderEan13(const QString &input, int m)

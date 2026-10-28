@@ -126,7 +126,8 @@ test('импорт: файл Excel с шапкой отчёта, режим «ф
   assert.equal(await stockOf('NK-AF1-42', 'Склад Б'), 2, 'другой склад не тронут');
   assert.equal((await q("SELECT COUNT(*)::int AS n FROM products WHERE sku = '4600702084030'"))[0].n, 0);
   assert.equal(await stockOf('DEC', 'Склад Б'), 3, '2.5 округлено как в приложении');
-  assert.deepEqual((await q("SELECT barcode FROM product_barcodes ORDER BY barcode")).map((x) => x.barcode), ['4006381333931', '4600702084030']);
+  assert.deepEqual((await q("SELECT barcode FROM product_barcodes WHERE barcode NOT LIKE '2%' ORDER BY barcode")).map((x) => x.barcode), ['4006381333931', '4600702084030']);
+  assert.equal((await q("SELECT COUNT(*)::int AS n FROM product_barcodes b JOIN products p ON p.id = b.product_id WHERE p.sku = 'DEC' AND b.barcode LIKE '2%'"))[0].n, 1, 'новый товар без штрихкода в файле получил свой EAN-13');
   assert.match(log, /создан новый товар «DEC»/);
   const moves = await q("SELECT type, delta, comment FROM stock_movements WHERE comment LIKE 'импорт из %' ORDER BY id");
   assert.equal(moves.length, 3); assert.ok(moves.every((m) => m.comment.startsWith('импорт из report.xlsx (инвентаризация: было')));

@@ -109,6 +109,24 @@ INSERT INTO stock_documents (doc_key, kind, comment, created_at)
             ORDER BY g.first_at
            ON CONFLICT (doc_key) DO NOTHING;
 CREATE INDEX IF NOT EXISTS stock_documents_created_idx ON stock_documents (created_at DESC);
+CREATE SEQUENCE IF NOT EXISTS internal_barcode_seq MINVALUE 1 MAXVALUE 99999999999 START 1;
+CREATE OR REPLACE FUNCTION next_internal_ean13() RETURNS text
+        LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+        DECLARE n bigint; body text; s int; i int; code text;
+        BEGIN
+          LOOP
+            n := nextval('internal_barcode_seq');
+            body := '2' || lpad(n::text, 11, '0');
+            s := 0;
+            FOR i IN 1..12 LOOP
+              s := s + (substr(body, i, 1))::int * (CASE WHEN i % 2 = 1 THEN 1 ELSE 3 END);
+            END LOOP;
+            code := body || ((10 - s % 10) % 10)::text;
+            EXIT WHEN NOT EXISTS (SELECT 1 FROM product_barcodes WHERE barcode = code);
+          END LOOP;
+          RETURN code;
+        END
+        $$;
 CREATE TABLE IF NOT EXISTS stocktakes (
             id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             warehouse_id INTEGER NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,

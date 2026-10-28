@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QImage>
+#include <QList>
 #include <QPixmap>
 #include <QString>
 #include <QStringList>
@@ -20,8 +21,15 @@ QString normalize(const QString &input);
 bool canRenderEan13(const QString &code);
 
 // Новый EAN-13 из диапазона 20..29 (для внутреннего использования - не
-// пересекается с кодами производителей), ещё не привязанный ни к одному товару.
+// пересекается с кодами производителей), ещё не привязанный ни к одному товару. Номера берутся из последовательности
+// в базе (next_internal_ean13): коды не повторяются и не кончаются.
 QString generateInternalEan13();
+// Присваивает свой EAN-13 товарам из списка, у которых нет ни одного штрихкода. Возвращает, скольким присвоено
+// (-1 - ошибка, текст в *error). Новые товары получают штрихкод автоматически - так их сразу можно печатать на этикетках.
+int ensureOwn(const QList<int> &productIds, QString *error = nullptr);
+// То же для всех товаров без штрихкода.
+int ensureOwnForAll(QString *error = nullptr);
+int countWithoutBarcode();
 
 QImage renderEan13(const QString &code, int moduleWidth = 3);
 QPixmap renderLabel(const QString &code, const QStringList &captionLines);

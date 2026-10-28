@@ -311,6 +311,8 @@ void ProductsTab::addProduct()
     if (!codes.isEmpty())
         sql += QStringLiteral(", b AS (INSERT INTO product_barcodes (barcode, product_id) SELECT c.code, p.id FROM p, "
                               "(VALUES %1) c(code))").arg(QStringList(codes.size(), QStringLiteral("(?)")).join(QLatin1Char(',')));
+    else // своего штрихкода нет - сразу присваиваем свой EAN-13, чтобы товар можно было печатать на этикетках
+        sql += QStringLiteral(", b AS (INSERT INTO product_barcodes (barcode, product_id) SELECT next_internal_ean13(), p.id FROM p)");
     sql += QStringLiteral(" SELECT id FROM p");
     QSqlQuery ins;
     ins.prepare(sql);

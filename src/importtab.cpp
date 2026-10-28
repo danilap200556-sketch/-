@@ -524,6 +524,7 @@ void ImportTab::runImport()
     auto doc = std::make_unique<Database::Document>(asInventory ? QStringLiteral("inventory") : asWriteOff ? QStringLiteral("writeoff") : QStringLiteral("receipt"), comment);
 
     int processed = 0, created = 0, updated = 0, skipped = 0, errors = 0, linked = 0, zeroed = 0;
+    QList<int> createdIds; // новые товары: тем, у кого нет штрихкода, ниже присваивается свой EAN-13
     QStringList logLines;
 
     for (int r = headerIdx + 1; r < m_rows.size(); ++r) {
@@ -618,6 +619,7 @@ void ImportTab::runImport()
             productBySku[key] = productId;
             skuById[productId] = key;
             ++created;
+            createdIds << productId;
             logLines << tr("Строка %1: создан новый товар «%2»").arg(r + 1).arg(key);
         }
         linkBarcodes(productId);
@@ -640,6 +642,14 @@ void ImportTab::runImport()
     }
 
     doc.reset(); // документ загрузки закрыт: обнуление будет отдельным
+
+    int ownCodes = 0;
+    if (!createdIds.isEmpty()) {
+        QString err;
+        ownCodes = qMax(0, Barcode::ensureOwn(createdIds, &err));
+        if (ownCodes > 0)
+            logLines << tr("Новым товарам без штрихкода присвоен свой EAN-13: %1").arg(ownCodes);
+    }
 
     if (!zeroPlan.isEmpty()) {
         const QString zeroComment = tr("импорт из %1: нет в файле").arg(m_fileName);
@@ -668,7 +678,7 @@ void ImportTab::runImport()
                      .arg(linked).arg(skipped).arg(errors);
     m_log->setPlainText(logLines.join('\n'));
 
-    if (updated > 0 || created > 0 || linked > 0 || zeroed > 0)
+    if (updated > 0 || created > 0 || linked > 0 || zeroed > 0 || ownCodes > 0)
         emit dataImported();
 }
 

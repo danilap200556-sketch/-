@@ -174,7 +174,8 @@ module.exports = (app, { db, send, requireLogin, requireAdmin, requireEditor }) 
         `INSERT INTO products (sku, name, description, photo_path, price, custom_code, market_sku${ym.map(([c]) => `, ${c}`).join('')})
          VALUES ($1, $2, $3, '', $4, $5, $6${ym.map((_, i) => `, $${7 + i}`).join('')}) RETURNING id`,
         [d.sku, d.name, d.description, d.price, d.custom_code, d.market_sku, ...ym.map(([, v]) => v)]);
-      res.flash('ok', 'Товар создан. Теперь можно добавить фото и штрихкоды');
+      const own = await bc.ensureOwn(db, [rows[0].id]); // нет своего штрихкода - сразу присваиваем свой EAN-13
+      res.flash('ok', own ? 'Товар создан, ему присвоен свой штрихкод EAN-13. Теперь можно добавить фото' : 'Товар создан. Теперь можно добавить фото и штрихкоды');
       res.redirect(`/products/${rows[0].id}`);
     } catch (e) {
       if (e.code === '23505') return fail('Товар с таким артикулом уже есть', 409);

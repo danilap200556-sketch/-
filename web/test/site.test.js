@@ -118,6 +118,7 @@ test('XSS: название товара с HTML выводится экрани
 });
 
 test('штрихкоды: добавление, неверная цифра, конфликт, генерация, удаление', async () => {
+  await site.db.query('DELETE FROM product_barcodes'); // новые товары получают свой EAN-13 сами - здесь начинаем с чистого листа
   let r = await admin.post(`/products/${ids.nk}/barcodes`, { barcode: '4006-381 333931' });
   assert.equal(r.status, 302);
   assert.deepEqual((await q('SELECT barcode FROM product_barcodes WHERE product_id = $1', [ids.nk])).map((x) => x.barcode), ['4006381333931']);
