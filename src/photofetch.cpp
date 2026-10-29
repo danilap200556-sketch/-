@@ -297,7 +297,7 @@ WebFound pickFromWeb(const QStringList &articles, const Options &options, int wa
     auto stopped = [&]() { return cancelled && cancelled(); };
 
     QList<ImageSearch::Hit> allHits;
-    for (const ImageSearch::Source src : {ImageSearch::Poizon, ImageSearch::Google, ImageSearch::Wildberries}) {
+    for (const ImageSearch::Source src : {ImageSearch::Pinterest, ImageSearch::Google}) {
         if (!(options.webSources & src))
             continue;
         QList<ImageSearch::Hit> hits;

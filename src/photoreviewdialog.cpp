@@ -28,7 +28,8 @@ PhotoReviewDialog::PhotoReviewDialog(const QList<PhotoFetch::Proposal> &proposal
     auto *layout = new QVBoxLayout(this);
 
     auto *intro = new QLabel(tr("Отметьте галочкой фото, которые нужно сохранить в карточках. «Проверено» значит, что артикул товара нашёлся в названии, "
-                                "подписи или адресе страницы; остальное - только похожие снимки, смотрите внимательно. Двойной щелчок по фото - "
+                                "описании или адресе страницы; у остальных его нигде нет - это то, что поиск по артикулу выдал первым, смотрите "
+                                "внимательно. Заранее отмечены первые проверенные снимки, а если проверенных нет - первые найденные. Двойной щелчок по фото - "
                                 "крупный просмотр."),
                              this);
     intro->setWordWrap(true);
@@ -74,7 +75,12 @@ PhotoReviewDialog::PhotoReviewDialog(const QList<PhotoFetch::Proposal> &proposal
         list->setSpacing(6);
         list->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
         list->setSelectionMode(QAbstractItemView::NoSelection);
-        int verifiedTaken = 0;
+        // Заранее отмечаем лучшее: первые проверенные снимки, а если проверенных у товара нет - первые найденные
+        // (их выдал поиск по артикулу; в окне видно, что они «не проверены», и лишнее можно снять).
+        bool anyVerified = false;
+        for (const PhotoFetch::Candidate &c : p.candidates)
+            anyVerified = anyVerified || c.verified;
+        int taken = 0;
         for (int i = 0; i < p.candidates.size(); ++i) {
             const PhotoFetch::Candidate &c = p.candidates[i];
             QPixmap pix;
@@ -91,9 +97,9 @@ PhotoReviewDialog::PhotoReviewDialog(const QList<PhotoFetch::Proposal> &proposal
             item->setToolTip(tr("%1\n%2\n%3").arg(c.source, c.origin, c.title));
             item->setSizeHint(QSize(kIconSide + kCheckPad + 12, kIconSide + 44));
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-            const bool take = c.verified && verifiedTaken < m_perProduct;
+            const bool take = (!anyVerified || c.verified) && taken < m_perProduct;
             if (take)
-                ++verifiedTaken;
+                ++taken;
             item->setCheckState(take ? Qt::Checked : Qt::Unchecked);
         }
         connect(list, &QListWidget::itemChanged, this, [this]() { updateSummary(); });

@@ -1,5 +1,6 @@
 #include "imagesearch.h"
 
+#include <QDateTime>
 #include <QEventLoop>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -161,91 +162,93 @@ bool isGstatic(const QString &link)
     return link.contains(QLatin1String("gstatic.com")) || link.contains(QLatin1String("googleusercontent.com"));
 }
 
-// --- Poizon: ищем в разобранном JSON страницы объекты «товар», у которых есть и артикул, и картинки.
-const QStringList kPoizonArticleKeys = {QStringLiteral("articlenumber"), QStringLiteral("article_number"), QStringLiteral("spuarticlenumber"),
-                                        QStringLiteral("article"), QStringLiteral("itemno"), QStringLiteral("styleid"), QStringLiteral("skucode")};
-const QStringList kPoizonImageKeys = {QStringLiteral("logourl"), QStringLiteral("imageurl"), QStringLiteral("image"), QStringLiteral("img"),
-                                      QStringLiteral("picurl"), QStringLiteral("mainpic"), QStringLiteral("coverurl"), QStringLiteral("cover"),
-                                      QStringLiteral("pic"), QStringLiteral("thumb"), QStringLiteral("url")};
-const QStringList kPoizonListKeys = {QStringLiteral("images"), QStringLiteral("imagelist"), QStringLiteral("gallery"), QStringLiteral("pics"),
-                                     QStringLiteral("piclist"), QStringLiteral("detailimages"), QStringLiteral("spuimages")};
-
-void collectImages(const QJsonValue &v, QStringList *out, int depth = 0)
+// --- Pinterest: пин - объект с картой images (orig, 736x, 564x, 474x, 236x ...) и подписями.
+QString jsonString(const QJsonObject &o, const char *key)
 {
-    if (depth > 4)
-        return;
-    if (v.isString()) {
-        const QString s = absoluteUrl(v.toString());
-        if (looksLikeImage(s))
-            *out << s;
-    } else if (v.isArray()) {
-        for (const QJsonValue &x : v.toArray())
-            collectImages(x, out, depth + 1);
-    } else if (v.isObject()) {
-        const QJsonObject o = v.toObject();
-        for (auto it = o.begin(); it != o.end(); ++it) {
-            const QString k = it.key().toLower();
-            if (kPoizonImageKeys.contains(k) || kPoizonListKeys.contains(k))
-                collectImages(it.value(), out, depth + 1);
-        }
-    }
+    const QJsonValue v = o.value(QLatin1String(key));
+    return v.isString() ? v.toString() : QString();
 }
 
-void walkPoizon(const QJsonValue &v, const QString &article, QList<Hit> *hits, QSet<QString> *seen, int depth = 0)
+QString imageUrlOf(const QJsonObject &images, const char *key)
 {
-    if (depth > 24)
+    return images.value(QLatin1String(key)).toObject().value(QStringLiteral("url")).toString();
+}
+
+void collectPins(const QJsonValue &v, const QString &article, QList<Hit> *hits, QSet<QString> *seen, int depth = 0)
+{
+    if (depth > 40 || hits->size() >= 60)
         return;
     if (v.isArray()) {
         for (const QJsonValue &x : v.toArray())
-            walkPoizon(x, article, hits, seen, depth + 1);
+            collectPins(x, article, hits, seen, depth + 1);
         return;
     }
     if (!v.isObject())
         return;
     const QJsonObject o = v.toObject();
-    QString articleValue, title;
-    for (auto it = o.begin(); it != o.end(); ++it) {
-        const QString k = it.key().toLower();
-        if (it.value().isString() && kPoizonArticleKeys.contains(k))
-            articleValue = it.value().toString();
-        else if (it.value().isString() && (k == QLatin1String("title") || k == QLatin1String("name") || k == QLatin1String("productname")))
-            title = it.value().toString();
-    }
-    if (!articleValue.isEmpty()) {
-        QStringList images;
-        collectImages(o, &images);
-        const bool match = normalize(articleValue) == normalize(article) || mentions(articleValue, article) || mentions(article, articleValue);
-        for (const QString &img : std::as_const(images)) {
+    const QJsonObject images = o.value(QStringLiteral("images")).toObject();
+    if (!images.isEmpty()) {
+        // Оригинал; нет его - самый крупный из доступных размеров по ширине в названии ключа («736x»).
+        QString url = imageUrlOf(images, "orig");
+        if (url.isEmpty()) {
+            int best = 0;
+            for (auto it = images.begin(); it != images.end(); ++it) {
+                const QString u = it.value().toObject().value(QStringLiteral("url")).toString();
+                const int w = it.key().section(QLatin1Char('x'), 0, 0).toInt();
+                if (!u.isEmpty() && w >= best) {
+                    best = w;
+                    url = u;
+                }
+            }
+        }
+        QString thumb;
+        for (const char *key : {"474x", "564x", "236x", "736x"}) {
+            thumb = imageUrlOf(images, key);
+            if (!thumb.isEmpty())
+                break;
+        }
+        if (!url.isEmpty()) {
             Hit h;
-            h.url = img;
-            h.title = title.isEmpty() ? articleValue : title;
-            h.source = sourceName(Poizon);
-            h.verified = match && normalize(articleValue).size() >= 5;
+            h.url = url;
+            h.thumbUrl = thumb;
+            h.title = jsonString(o, "grid_title");
+            if (h.title.isEmpty())
+                h.title = jsonString(o, "title");
+            const QString desc = jsonString(o, "description");
+            h.pageUrl = jsonString(o, "link");
+            const QString id = o.value(QStringLiteral("id")).toVariant().toString();
+            if (h.pageUrl.isEmpty() && !id.isEmpty())
+                h.pageUrl = QStringLiteral("https://www.pinterest.com/pin/%1/").arg(id);
+            h.source = sourceName(Pinterest);
+            const QString text = h.title + QLatin1Char(' ') + desc + QLatin1Char(' ') + jsonString(o, "seo_title") + QLatin1Char(' ')
+                                 + jsonString(o, "domain") + QLatin1Char(' ') + h.pageUrl + QLatin1Char(' ') + h.url;
+            h.verified = mentions(text, article);
+            if (h.title.isEmpty())
+                h.title = desc.left(120);
             addHit(hits, seen, h);
         }
+        return; // внутри пина больше нет пинов
     }
     for (auto it = o.begin(); it != o.end(); ++it)
         if (it.value().isObject() || it.value().isArray())
-            walkPoizon(it.value(), article, hits, seen, depth + 1);
+            collectPins(it.value(), article, hits, seen, depth + 1);
 }
 
-QString jsonBlob(const QString &html, const QRegularExpression &re)
+QString pinterestBase()
 {
-    const auto m = re.match(html);
-    return m.hasMatch() ? m.captured(1) : QString();
+    QString base = envOr("INVENTORY_PINTEREST_URL", QStringLiteral("https://www.pinterest.com"));
+    while (base.endsWith(QLatin1Char('/')))
+        base.chop(1);
+    return base;
 }
-
-// --- Wildberries
-const int kBasketRanges[] = {143, 287, 431, 719, 1007, 1061, 1115, 1169, 1313, 1601, 1655, 1919, 2045, 2189, 2405, 2621, 2837, 3053, 3269, 3485, 3701, 3917, 4133, 4349, 4565};
 
 } // namespace
 
 QString sourceName(Source source)
 {
     switch (source) {
-    case Poizon: return QStringLiteral("Poizon");
+    case Pinterest: return QStringLiteral("Pinterest");
     case Google: return QStringLiteral("Google");
-    case Wildberries: return QStringLiteral("Wildberries");
     default: return QString();
     }
 }
@@ -286,109 +289,135 @@ QStringList articleVariants(const QString &article)
     return out;
 }
 
-// ---------------------------------------------------------------- Poizon
+// ---------------------------------------------------------------- Pinterest
 
-QList<Hit> parsePoizon(const QByteArray &body, const QString &article)
+QList<Hit> parsePinterestJson(const QByteArray &json, const QString &article, QString *error)
 {
-    const QString text = QString::fromUtf8(body);
     QList<Hit> hits;
     QSet<QString> seen;
-
-    // 1) JSON внутри страницы (Next.js __NEXT_DATA__, window.__INITIAL_STATE__, любой <script type="application/json">)
-    QStringList blobs;
-    static const QRegularExpression nextData(QStringLiteral("<script[^>]*id=[\"']__NEXT_DATA__[\"'][^>]*>(.*?)</script>"), QRegularExpression::DotMatchesEverythingOption);
-    static const QRegularExpression jsonScript(QStringLiteral("<script[^>]*type=[\"']application/(?:ld\\+)?json[\"'][^>]*>(.*?)</script>"), QRegularExpression::DotMatchesEverythingOption);
-    static const QRegularExpression state(QStringLiteral("window\\.__[A-Z_]+__\\s*=\\s*(\\{.*?\\})\\s*;?\\s*</script>"), QRegularExpression::DotMatchesEverythingOption);
-    if (const QString b = jsonBlob(text, nextData); !b.isEmpty())
-        blobs << b;
-    for (auto it = jsonScript.globalMatch(text); it.hasNext();)
-        blobs << it.next().captured(1);
-    if (const QString b = jsonBlob(text, state); !b.isEmpty())
-        blobs << b;
-    if (blobs.isEmpty() && text.trimmed().startsWith(QLatin1Char('{'))) // ответ - сам JSON (API)
-        blobs << text;
-    for (const QString &b : std::as_const(blobs)) {
-        const QJsonDocument doc = QJsonDocument::fromJson(b.toUtf8());
-        if (doc.isObject())
-            walkPoizon(doc.object(), article, &hits, &seen);
-        else if (doc.isArray())
-            walkPoizon(doc.array(), article, &hits, &seen);
+    const QJsonDocument doc = QJsonDocument::fromJson(json);
+    if (doc.isObject()) {
+        const QJsonObject resp = doc.object().value(QStringLiteral("resource_response")).toObject();
+        const QJsonObject err = resp.value(QStringLiteral("error")).toObject();
+        if (!err.isEmpty() && error)
+            *error = err.value(QStringLiteral("message")).toString(QStringLiteral("Pinterest вернул ошибку"));
+        collectPins(doc.object(), article, &hits, &seen);
+    } else if (doc.isArray()) {
+        collectPins(doc.array(), article, &hits, &seen);
     }
-
-    // 2) og:image страницы товара - главная фотография. Проверено, если артикул есть в тексте страницы.
-    static const QRegularExpression og(QStringLiteral("<meta[^>]+property=[\"']og:image[\"'][^>]+content=[\"']([^\"']+)[\"']"), QRegularExpression::CaseInsensitiveOption);
-    static const QRegularExpression ogRev(QStringLiteral("<meta[^>]+content=[\"']([^\"']+)[\"'][^>]+property=[\"']og:image[\"']"), QRegularExpression::CaseInsensitiveOption);
-    static const QRegularExpression ogTitle(QStringLiteral("<meta[^>]+property=[\"']og:title[\"'][^>]+content=[\"']([^\"']*)[\"']"), QRegularExpression::CaseInsensitiveOption);
-    QString pageTitle = ogTitle.match(text).captured(1);
-    for (const QRegularExpression *re : {&og, &ogRev})
-        for (auto it = re->globalMatch(text); it.hasNext();) {
-            Hit h;
-            h.url = unescapeHtml(it.next().captured(1));
-            h.title = unescapeHtml(pageTitle);
-            h.source = sourceName(Poizon);
-            h.verified = mentions(pageTitle, article) || mentions(h.url, article);
-            if (looksLikeImage(absoluteUrl(h.url)))
-                addHit(&hits, &seen, h);
-        }
-
-    // 3) Картинки с адресов Poizon (Dewu) где угодно в тексте: артикул неизвестен, поэтому не проверено.
-    static const QRegularExpression cdn(QStringLiteral("(?:https?:)?//[\\w.-]*(?:poizon|dewu|hupucdn)[\\w.-]*/[^\\s\"'<>\\\\)]+?\\.(?:jpe?g|png|webp)(?:\\?[^\\s\"'<>\\\\)]*)?"), QRegularExpression::CaseInsensitiveOption);
-    for (auto it = cdn.globalMatch(unescapeJs(text)); it.hasNext() && hits.size() < kMaxHits * 2;) {
-        Hit h;
-        h.url = it.next().captured(0);
-        h.source = sourceName(Poizon);
-        h.verified = mentions(h.url, article);
-        addHit(&hits, &seen, h);
-    }
-    // Сначала проверенные
     std::stable_sort(hits.begin(), hits.end(), [](const Hit &a, const Hit &b) { return a.verified && !b.verified; });
     while (hits.size() > kMaxHits)
         hits.removeLast();
     return hits;
 }
 
-Reply searchPoizon(const QString &article, const Settings &settings, const Cancel &cancelled)
+QList<Hit> parsePinterestHtml(const QByteArray &html, const QString &article)
+{
+    const QString text = QString::fromUtf8(html);
+    QList<Hit> hits;
+    QSet<QString> seen;
+    // 1) JSON внутри страницы: __PWS_INITIAL_PROPS__ / __PWS_DATA__ / любой <script type="application/json">
+    static const QRegularExpression scripts(QStringLiteral("<script[^>]*type=[\"']application/(?:ld\\+)?json[\"'][^>]*>(.*?)</script>"), QRegularExpression::DotMatchesEverythingOption);
+    for (auto it = scripts.globalMatch(text); it.hasNext();) {
+        const QJsonDocument doc = QJsonDocument::fromJson(it.next().captured(1).toUtf8());
+        if (doc.isObject())
+            collectPins(doc.object(), article, &hits, &seen);
+        else if (doc.isArray())
+            collectPins(doc.array(), article, &hits, &seen);
+    }
+    // 2) Адреса картинок i.pinimg.com где угодно в тексте: приводим к оригиналам (тот же хэш, другой размер в пути).
+    if (hits.isEmpty()) {
+        static const QRegularExpression pin(QStringLiteral("https://i\\.pinimg\\.com/(?:originals|\\d+x(?:\\d+)?)/([0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]+\\.(?:jpg|jpeg|png|webp))"));
+        for (auto it = pin.globalMatch(unescapeJs(text)); it.hasNext() && hits.size() < kMaxHits * 2;) {
+            const QString tail = it.next().captured(1);
+            Hit h;
+            h.url = QStringLiteral("https://i.pinimg.com/originals/") + tail;
+            h.thumbUrl = QStringLiteral("https://i.pinimg.com/474x/") + tail;
+            h.source = sourceName(Pinterest);
+            h.verified = false; // подписи вместе с картинкой не разобрать
+            addHit(&hits, &seen, h);
+        }
+    }
+    std::stable_sort(hits.begin(), hits.end(), [](const Hit &a, const Hit &b) { return a.verified && !b.verified; });
+    while (hits.size() > kMaxHits)
+        hits.removeLast();
+    return hits;
+}
+
+Reply searchPinterest(const QString &article, const Cancel &cancelled)
 {
     Reply r;
     QStringList problems;
-    // Страница поиска самого Poizon.
+    const QString base = pinterestBase();
+    const QString sourceUrl = QStringLiteral("/search/pins/?q=%1&rs=typed").arg(QString::fromLatin1(QUrl::toPercentEncoding(article)));
+    const QList<QPair<QByteArray, QByteArray>> browserHeaders = {{"Accept-Language", "ru-RU,ru;q=0.9,en;q=0.5"}};
+
+    // 1) JSON-запрос поиска - тот, что делает сам сайт при выдаче результатов.
     {
-        QUrl url(envOr("INVENTORY_POIZON_URL", QStringLiteral("https://www.poizon.com")) + QStringLiteral("/search"));
+        QJsonObject options{{QStringLiteral("query"), article}, {QStringLiteral("scope"), QStringLiteral("pins")}, {QStringLiteral("rs"), QStringLiteral("typed")},
+                            {QStringLiteral("page_size"), 25}, {QStringLiteral("auto_correction_disabled"), false}, {QStringLiteral("redux_normalize_feed"), true},
+                            {QStringLiteral("source_url"), sourceUrl}};
+        const QByteArray data = QJsonDocument(QJsonObject{{QStringLiteral("options"), options}, {QStringLiteral("context"), QJsonObject()}}).toJson(QJsonDocument::Compact);
+        QUrl url(base + QStringLiteral("/resource/BaseSearchResource/get/"));
         QUrlQuery q;
-        q.addQueryItem(QStringLiteral("keyword"), article);
+        q.addQueryItem(QStringLiteral("source_url"), sourceUrl);
+        q.addQueryItem(QStringLiteral("data"), QString::fromUtf8(data));
+        q.addQueryItem(QStringLiteral("_"), QString::number(QDateTime::currentMSecsSinceEpoch()));
         url.setQuery(q);
-        const Page p = fetch(&r, QStringLiteral("Poizon"), url, {{"Accept", "text/html,application/json;q=0.9,*/*;q=0.5"}}, cancelled);
+        QList<QPair<QByteArray, QByteArray>> headers = browserHeaders;
+        headers.append(qMakePair(QByteArray("Accept"), QByteArray("application/json, text/javascript, */*; q=0.01")));
+        headers.append(qMakePair(QByteArray("X-Requested-With"), QByteArray("XMLHttpRequest")));
+        headers.append(qMakePair(QByteArray("X-Pinterest-AppState"), QByteArray("active")));
+        headers.append(qMakePair(QByteArray("X-Pinterest-Source-Url"), sourceUrl.toUtf8()));
+        const Page p = fetch(&r, QStringLiteral("Pinterest"), url, headers, cancelled);
         if (r.stopped) {
             r.error = QString::fromUtf8(kStopped);
             return r;
         }
         if (!p.error.isEmpty()) {
-            problems << QStringLiteral("страница поиска: %1").arg(p.error);
+            problems << QStringLiteral("запрос поиска: %1").arg(p.error);
         } else {
-            r.hits = parsePoizon(p.body, article);
-            r.trace << QStringLiteral("Poizon: найдено картинок %1 (проверенных %2)").arg(r.hits.size()).arg(std::count_if(r.hits.cbegin(), r.hits.cend(), [](const Hit &h) { return h.verified; }));
-            if (std::any_of(r.hits.cbegin(), r.hits.cend(), [](const Hit &h) { return h.verified; }))
+            QString apiError;
+            r.hits = parsePinterestJson(p.body, article, &apiError);
+            if (!apiError.isEmpty())
+                problems << QStringLiteral("запрос поиска: %1").arg(apiError);
+            r.trace << QStringLiteral("Pinterest (запрос поиска): найдено картинок %1 (проверенных %2)").arg(r.hits.size()).arg(std::count_if(r.hits.cbegin(), r.hits.cend(), [](const Hit &h) { return h.verified; }));
+            if (!r.hits.isEmpty())
                 return r;
         }
     }
-    // Страницы Poizon часто собираются скриптом и без него пусты - тогда просим картинки с сайта poizon.com у Google.
-    Reply viaGoogle = searchGoogle(article + QStringLiteral(" site:poizon.com"), settings, cancelled);
-    r.trace << viaGoogle.trace;
-    if (viaGoogle.stopped) {
-        r.stopped = true;
-        r.error = QString::fromUtf8(kStopped);
-        return r;
+    // 2) Страница поиска.
+    {
+        QUrl url(base + QStringLiteral("/search/pins/"));
+        QUrlQuery q;
+        q.addQueryItem(QStringLiteral("q"), article);
+        q.addQueryItem(QStringLiteral("rs"), QStringLiteral("typed"));
+        url.setQuery(q);
+        QList<QPair<QByteArray, QByteArray>> headers = browserHeaders;
+        headers.append(qMakePair(QByteArray("Accept"), QByteArray("text/html,application/xhtml+xml;q=0.9,*/*;q=0.5")));
+        const Page p = fetch(&r, QStringLiteral("Pinterest страница"), url, headers, cancelled);
+        if (r.stopped) {
+            r.error = QString::fromUtf8(kStopped);
+            return r;
+        }
+        if (!p.error.isEmpty()) {
+            QString msg = p.error;
+            if (p.status == 429 || p.status == 403)
+                msg += QStringLiteral(" (Pinterest ограничил запросы - повторите позже)");
+            problems << QStringLiteral("страница поиска: %1").arg(msg);
+        } else {
+            r.hits = parsePinterestHtml(p.body, article);
+            r.trace << QStringLiteral("Pinterest (страница): найдено картинок %1 (проверенных %2)").arg(r.hits.size()).arg(std::count_if(r.hits.cbegin(), r.hits.cend(), [](const Hit &h) { return h.verified; }));
+            if (r.hits.isEmpty() && (p.body.contains("login") || p.body.contains("Log in")) && !p.body.contains("pinimg"))
+                problems << QStringLiteral("страница поиска: без входа Pinterest не показал результаты");
+        }
     }
-    for (Hit &h : viaGoogle.hits) {
-        h.source = sourceName(Poizon);
-        r.hits << h;
-    }
-    if (!viaGoogle.error.isEmpty())
-        problems << QStringLiteral("через Google: %1").arg(viaGoogle.error);
-    while (r.hits.size() > kMaxHits)
-        r.hits.removeLast();
-    if (r.hits.isEmpty() && !problems.isEmpty())
+    // Ответил хоть один запрос, пусть и пустым списком - это «ничего не нашли», а не отказ.
+    const bool answered = r.trace.size() > 0 && r.trace.join(QLatin1Char('\n')).contains(QStringLiteral("найдено картинок"));
+    if (r.hits.isEmpty() && !answered && !problems.isEmpty())
         r.error = problems.join(QStringLiteral("; "));
+    else if (r.hits.isEmpty() && !problems.isEmpty())
+        r.trace << QStringLiteral("Pinterest: ") + problems.join(QStringLiteral("; "));
     return r;
 }
 
@@ -468,14 +497,7 @@ QList<Hit> parseGooglePage(const QByteArray &html, const QString &article)
 Reply searchGoogle(const QString &article, const Settings &settings, const Cancel &cancelled)
 {
     Reply r;
-    // Из «DD1391-100 site:poizon.com» проверять артикул нужно по первой части
-    QString plain = article;
-    QString site;
-    static const QRegularExpression siteRe(QStringLiteral("^(.*?)\\s+site:(\\S+)$"));
-    if (const auto m = siteRe.match(article); m.hasMatch()) {
-        plain = m.captured(1);
-        site = m.captured(2);
-    }
+    const QString plain = article;
     if (settings.hasGoogleApi()) {
         QUrl url(envOr("INVENTORY_GOOGLE_CSE_URL", QStringLiteral("https://www.googleapis.com/customsearch/v1")));
         QUrlQuery q;
@@ -486,10 +508,6 @@ Reply searchGoogle(const QString &article, const Settings &settings, const Cance
         q.addQueryItem(QStringLiteral("num"), QStringLiteral("10"));
         q.addQueryItem(QStringLiteral("safe"), QStringLiteral("off"));
         q.addQueryItem(QStringLiteral("hl"), QStringLiteral("ru"));
-        if (!site.isEmpty()) {
-            q.addQueryItem(QStringLiteral("siteSearch"), site);
-            q.addQueryItem(QStringLiteral("siteSearchFilter"), QStringLiteral("i"));
-        }
         url.setQuery(q);
         const Page p = fetch(&r, QStringLiteral("Google API"), url, {{"Accept", "application/json"}}, cancelled);
         if (r.stopped) {
@@ -509,7 +527,7 @@ Reply searchGoogle(const QString &article, const Settings &settings, const Cance
     }
     QUrl url(envOr("INVENTORY_GOOGLE_URL", QStringLiteral("https://www.google.com/search")));
     QUrlQuery q;
-    q.addQueryItem(QStringLiteral("q"), QLatin1Char('"') + plain + QLatin1Char('"') + (site.isEmpty() ? QString() : QStringLiteral(" site:") + site));
+    q.addQueryItem(QStringLiteral("q"), QLatin1Char('"') + plain + QLatin1Char('"'));
     q.addQueryItem(QStringLiteral("tbm"), QStringLiteral("isch"));
     q.addQueryItem(QStringLiteral("hl"), QStringLiteral("ru"));
     q.addQueryItem(QStringLiteral("gl"), QStringLiteral("ru"));
@@ -536,135 +554,11 @@ Reply searchGoogle(const QString &article, const Settings &settings, const Cance
     return r;
 }
 
-// ---------------------------------------------------------------- Wildberries
-
-QList<WbProduct> parseWbSearch(const QByteArray &json)
-{
-    QList<WbProduct> out;
-    const QJsonObject root = QJsonDocument::fromJson(json).object();
-    QJsonArray products = root.value(QStringLiteral("data")).toObject().value(QStringLiteral("products")).toArray();
-    if (products.isEmpty())
-        products = root.value(QStringLiteral("products")).toArray();
-    for (const QJsonValue &v : products) {
-        const QJsonObject o = v.toObject();
-        WbProduct p;
-        p.id = o.value(QStringLiteral("id")).toVariant().toLongLong();
-        p.name = o.value(QStringLiteral("name")).toString();
-        p.brand = o.value(QStringLiteral("brand")).toString();
-        if (p.id > 0)
-            out << p;
-    }
-    return out;
-}
-
-int wbBasketNumber(qint64 id)
-{
-    const qint64 vol = id / 100000;
-    int n = 1;
-    for (int limit : kBasketRanges) {
-        if (vol <= limit)
-            return n;
-        ++n;
-    }
-    // дальше каждая корзина - ещё 216 томов
-    return n + int((vol - kBasketRanges[sizeof(kBasketRanges) / sizeof(kBasketRanges[0]) - 1] - 1) / 216);
-}
-
-QString wbBasketBase(qint64 id)
-{
-    const QString nn = QStringLiteral("%1").arg(wbBasketNumber(id), 2, 10, QLatin1Char('0'));
-    QString tpl = envOr("INVENTORY_WB_BASKET_URL", QStringLiteral("https://basket-{nn}.wbbasket.ru"));
-    return tpl.replace(QLatin1String("{nn}"), nn);
-}
-
-QString wbImageUrl(qint64 id, int number)
-{
-    return QStringLiteral("%1/vol%2/part%3/%4/images/big/%5.webp").arg(wbBasketBase(id)).arg(id / 100000).arg(id / 1000).arg(id).arg(number);
-}
-
-Reply searchWildberries(const QString &article, const Cancel &cancelled)
-{
-    Reply r;
-    QUrl url(envOr("INVENTORY_WB_SEARCH_URL", QStringLiteral("https://search.wb.ru/exactmatch/ru/common/v9/search")));
-    QUrlQuery q;
-    q.addQueryItem(QStringLiteral("appType"), QStringLiteral("1"));
-    q.addQueryItem(QStringLiteral("curr"), QStringLiteral("rub"));
-    q.addQueryItem(QStringLiteral("dest"), QStringLiteral("-1257786"));
-    q.addQueryItem(QStringLiteral("lang"), QStringLiteral("ru"));
-    q.addQueryItem(QStringLiteral("page"), QStringLiteral("1"));
-    q.addQueryItem(QStringLiteral("query"), article);
-    q.addQueryItem(QStringLiteral("resultset"), QStringLiteral("catalog"));
-    q.addQueryItem(QStringLiteral("sort"), QStringLiteral("popular"));
-    q.addQueryItem(QStringLiteral("spp"), QStringLiteral("30"));
-    url.setQuery(q);
-    const Page p = fetch(&r, QStringLiteral("Wildberries"), url, {{"Accept", "application/json"}}, cancelled);
-    if (r.stopped) {
-        r.error = QString::fromUtf8(kStopped);
-        return r;
-    }
-    if (!p.error.isEmpty()) {
-        r.error = p.error;
-        return r;
-    }
-    const QList<WbProduct> products = parseWbSearch(p.body);
-    r.trace << QStringLiteral("Wildberries: товаров в выдаче %1").arg(products.size());
-    QSet<QString> seen;
-    bool anyVerified = false;
-    int looked = 0;
-    for (const WbProduct &prod : products) {
-        if (looked++ >= 5)
-            break;
-        // Карточка товара: артикул продавца и название - по ним проверяем, тот ли это товар.
-        const QString card = QStringLiteral("%1/vol%2/part%3/%4/info/ru/card.json").arg(wbBasketBase(prod.id)).arg(prod.id / 100000).arg(prod.id / 1000).arg(prod.id);
-        const Page cp = fetch(&r, QStringLiteral("Wildberries карточка %1").arg(prod.id), QUrl(card), {{"Accept", "application/json"}}, cancelled);
-        if (r.stopped) {
-            r.error = QString::fromUtf8(kStopped);
-            return r;
-        }
-        QString title = prod.brand + QLatin1Char(' ') + prod.name;
-        int photoCount = 3;
-        bool verified = mentions(title, article);
-        if (cp.error.isEmpty()) {
-            const QJsonObject c = QJsonDocument::fromJson(cp.body).object();
-            const QString vendor = c.value(QStringLiteral("vendor_code")).toString();
-            const QString imt = c.value(QStringLiteral("imt_name")).toString();
-            if (!imt.isEmpty())
-                title = prod.brand + QLatin1Char(' ') + imt;
-            verified = verified || mentions(vendor, article) || mentions(imt, article) || (!vendor.isEmpty() && normalize(vendor) == normalize(article));
-            const int count = c.value(QStringLiteral("media")).toObject().value(QStringLiteral("photo_count")).toInt();
-            if (count > 0)
-                photoCount = qMin(count, 4);
-        }
-        if (!verified && anyVerified)
-            continue;
-        if (!verified && !r.hits.isEmpty())
-            continue;
-        anyVerified = anyVerified || verified;
-        const int photos = verified ? photoCount : 1; // у непроверенного берём только главное фото
-        for (int n = 1; n <= photos; ++n) {
-            Hit h;
-            h.url = wbImageUrl(prod.id, n);
-            h.pageUrl = QStringLiteral("https://www.wildberries.ru/catalog/%1/detail.aspx").arg(prod.id);
-            h.title = title.trimmed();
-            h.source = sourceName(Wildberries);
-            h.verified = verified;
-            addHit(&r.hits, &seen, h);
-        }
-        if (verified && r.hits.size() >= 6)
-            break;
-    }
-    // Проверенные в начало
-    std::stable_sort(r.hits.begin(), r.hits.end(), [](const Hit &a, const Hit &b) { return a.verified && !b.verified; });
-    r.trace << QStringLiteral("Wildberries: найдено картинок %1 (проверенных %2)").arg(r.hits.size()).arg(std::count_if(r.hits.cbegin(), r.hits.cend(), [](const Hit &h) { return h.verified; }));
-    return r;
-}
-
 Reply search(Source source, const QString &article, const Settings &settings, const Cancel &cancelled)
 {
     switch (source) {
-    case Poizon: return searchPoizon(article, settings, cancelled);
+    case Pinterest: return searchPinterest(article, cancelled);
     case Google: return searchGoogle(article, settings, cancelled);
-    case Wildberries: return searchWildberries(article, cancelled);
     default: return {};
     }
 }
