@@ -46,8 +46,9 @@ PhotoFetchDialog::PhotoFetchDialog(const QList<int> &selectedProductIds, QWidget
 
     auto *intro = new QLabel(tr("Программа подберёт фото товарам и сохранит в карточки: их увидят все компьютеры и сайт. Сначала берётся то, что уже есть "
                                 "на Яндекс Маркете (по артикулу на Маркете или артикулу) и в карточках Маркета; для остальных товаров фото ищется в "
-                                "интернете ПО АРТИКУЛУ: Pinterest, затем Google. Снимок считается «проверенным», если артикул нашёлся в "
-                                "названии, описании или адресе страницы - остальное лучше смотреть глазами."),
+                                "интернете ПО АРТИКУЛУ: открытые магазины кроссовок и каталог New Balance (Google - если задан ключ API). Снимок считается "
+                                "«проверенным», если артикул нашёлся в данных товара (артикулы вариантов, название, теги, имя файла) - остальное "
+                                "лучше смотреть глазами."),
                              this);
     intro->setWordWrap(true);
     layout->addWidget(intro);
@@ -97,17 +98,20 @@ PhotoFetchDialog::PhotoFetchDialog(const QList<int> &selectedProductIds, QWidget
         m_fromMarket->setToolTip(tr("Кабинет Маркета не подключён: меню «Маркет» → «Кабинеты»."));
     m_fromCards = new QCheckBox(tr("Карточки Маркета в программе (вкладка «Карточки»): взять ссылки на фото"), sources);
     m_fromCards->setChecked(true);
-    m_fromPinterest = new QCheckBox(tr("Pinterest: поиск по артикулу (в первую очередь)"), sources);
-    m_fromPinterest->setChecked(true);
-    m_fromPinterest->setToolTip(tr("У Pinterest нет открытого API: берётся тот же запрос поиска, что делает сам сайт, а если он не ответил - страница поиска. "
-                                   "Если Pinterest перестанет отвечать, кнопка «Проверить источники…» покажет, что именно он вернул."));
-    m_fromGoogle = new QCheckBox(tr("Google: картинки по артикулу"), sources);
-    m_fromGoogle->setChecked(true);
-    m_fromGoogle->setToolTip(tr("С ключом Google API поиск идёт официально (100 запросов в день бесплатно); без ключа разбирается обычная страница Google, "
-                                "которая может потребовать подтверждение «я не робот»."));
+    m_fromShops = new QCheckBox(tr("Магазины: поиск по артикулу в открытых интернет-магазинах (в первую очередь)"), sources);
+    m_fromShops->setChecked(true);
+    m_fromShops->setToolTip(tr("Открытый поиск магазинов на Shopify (Extra Butter, The Closet Inc, Sneakersnstuff, DTLR, Kith и др.): снимки берутся, "
+                               "только если артикул есть в артикулах вариантов, названии, тегах или имени файла. Магазин, ответивший отказом (403/429), "
+                               "больше не спрашивается. Если ничего не находится, кнопка «Проверить источники…» покажет, что именно ответил каждый."));
+    m_fromNb = new QCheckBox(tr("New Balance: официальный каталог картинок (для артикулов New Balance)"), sources);
+    m_fromNb->setChecked(true);
+    m_fromNb->setToolTip(tr("Адрес картинки строится из артикула (U574WPG, MR530SG...). Для артикулов Nike, adidas и других запрос не делается."));
+    m_fromGoogle = new QCheckBox(tr("Google: картинки по артикулу (нужен ключ API)"), sources);
+    m_fromGoogle->setToolTip(tr("Официальный поиск Google (Custom Search API), 100 запросов в день бесплатно. Без ключа не используется."));
     sl->addWidget(m_fromMarket);
     sl->addWidget(m_fromCards);
-    sl->addWidget(m_fromPinterest);
+    sl->addWidget(m_fromShops);
+    sl->addWidget(m_fromNb);
     sl->addWidget(m_fromGoogle);
     auto *googleRow = new QHBoxLayout();
     m_googleState = new QLabel(sources);
@@ -184,16 +188,19 @@ void PhotoFetchDialog::reject()
 void PhotoFetchDialog::updateGoogleLabel()
 {
     const ImageSearch::Settings g = googleSettings();
-    m_googleState->setText(g.hasGoogleApi() ? tr("Google API: ключ задан (поиск через официальный API)")
-                                            : tr("Google API: ключ не задан (разбирается обычная страница Google - может не сработать)"));
+    m_hasGoogle = g.hasGoogleApi();
+    m_googleState->setText(m_hasGoogle ? tr("Google API: ключ задан (поиск через официальный API)") : tr("Google API: ключ не задан - Google не используется"));
+    if (!m_hasGoogle)
+        m_fromGoogle->setChecked(false);
+    m_fromGoogle->setEnabled(m_hasGoogle && !m_running);
 }
 
 void PhotoFetchDialog::setBusy(bool busy)
 {
     m_running = busy;
     for (QWidget *w : {static_cast<QWidget *>(m_toAll), static_cast<QWidget *>(m_onlyEmpty), static_cast<QWidget *>(m_perProduct),
-                       static_cast<QWidget *>(m_replace), static_cast<QWidget *>(m_fromCards), static_cast<QWidget *>(m_fromPinterest),
-                       static_cast<QWidget *>(m_fromGoogle), static_cast<QWidget *>(m_googleBtn),
+                       static_cast<QWidget *>(m_replace), static_cast<QWidget *>(m_fromCards), static_cast<QWidget *>(m_fromShops),
+                       static_cast<QWidget *>(m_fromNb), static_cast<QWidget *>(m_fromGoogle), static_cast<QWidget *>(m_googleBtn),
                        static_cast<QWidget *>(m_modePreview), static_cast<QWidget *>(m_modeDirect), static_cast<QWidget *>(m_startBtn),
                        static_cast<QWidget *>(m_diagBtn), static_cast<QWidget *>(m_closeBtn)})
         w->setEnabled(!busy);
@@ -201,6 +208,7 @@ void PhotoFetchDialog::setBusy(bool busy)
     m_acceptUnverified->setEnabled(!busy && m_modeDirect->isChecked());
     m_toSelected->setEnabled(!busy && !m_selected.isEmpty());
     m_fromMarket->setEnabled(!busy && MarketAccount::loadAll().size() > 0);
+    m_fromGoogle->setEnabled(!busy && m_hasGoogle);
     m_stopBtn->setEnabled(busy);
 }
 
@@ -249,7 +257,8 @@ PhotoFetch::Options PhotoFetchDialog::options() const
     opt.onlyWithoutPhotos = m_onlyEmpty->isChecked();
     opt.fromMarket = m_fromMarket->isChecked();
     opt.fromCards = m_fromCards->isChecked();
-    opt.webSources = (m_fromPinterest->isChecked() ? ImageSearch::Pinterest : 0) | (m_fromGoogle->isChecked() ? ImageSearch::Google : 0);
+    opt.webSources = (m_fromShops->isChecked() ? ImageSearch::Shops : 0) | (m_fromNb->isChecked() ? ImageSearch::NewBalance : 0)
+                     | (m_fromGoogle->isChecked() && m_hasGoogle ? ImageSearch::Google : 0);
     opt.fromWeb = opt.webSources != 0;
     opt.google = googleSettings();
     opt.perProduct = m_perProduct->value();
@@ -281,7 +290,8 @@ void PhotoFetchDialog::diagnose()
     m_stop = false;
     setBusy(true);
     log(tr("Артикул: %1; варианты поиска: %2").arg(article, ImageSearch::articleVariants(article).join(QStringLiteral(" | "))));
-    for (const ImageSearch::Source src : {ImageSearch::Pinterest, ImageSearch::Google}) {
+    ImageSearch::forgetRefusals(); // проверка спрашивает всех заново, даже магазины, которые раньше отказали
+    for (const ImageSearch::Source src : {ImageSearch::Shops, ImageSearch::NewBalance, ImageSearch::Google}) {
         if (!(opt.webSources & src) || m_stop)
             continue;
         m_status->setText(tr("Спрашиваю: %1…").arg(ImageSearch::sourceName(src)));
@@ -360,7 +370,7 @@ void PhotoFetchDialog::reportResult(const PhotoFetch::Result &r, const PhotoFetc
 
 void PhotoFetchDialog::start()
 {
-    if (!m_fromMarket->isChecked() && !m_fromCards->isChecked() && !m_fromPinterest->isChecked() && !m_fromGoogle->isChecked()) {
+    if (!m_fromMarket->isChecked() && !m_fromCards->isChecked() && !m_fromShops->isChecked() && !m_fromNb->isChecked() && !m_fromGoogle->isChecked()) {
         m_status->setText(tr("Отметьте, откуда брать фото."));
         return;
     }

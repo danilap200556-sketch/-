@@ -1,6 +1,7 @@
 #include "imagesearch.h"
 
-#include <QDateTime>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QEventLoop>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -23,7 +24,11 @@ namespace {
 
 constexpr int kTimeoutMs = 20000;
 constexpr int kMaxHits = 12;             // сколько результатов оставляем от одного источника
-const char kUserAgent[] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+constexpr int kMaxShopsAsked = 6;        // у скольких магазинов спрашиваем артикул, пока не нашлось
+constexpr int kShopProducts = 3;         // сколько товаров из подсказок магазина открываем
+constexpr int kShopPauseMs = 250;        // пауза между запросами к магазину
+constexpr int kMinImageBytes = 200;      // меньше - это точно не картинка
+const char kUserAgent[] = "Mozilla/5.0 (compatible; InventoryManager photo lookup)";
 const char kStopped[] = "остановлено";
 
 QString envOr(const char *name, const QString &fallback)
@@ -103,48 +108,12 @@ Page fetch(Reply *reply, const QString &label, const QUrl &url, const QList<QPai
     return p;
 }
 
-QString unescapeHtml(QString s)
-{
-    s.replace(QLatin1String("&quot;"), QLatin1String("\""));
-    s.replace(QLatin1String("&#39;"), QLatin1String("'"));
-    s.replace(QLatin1String("&lt;"), QLatin1String("<"));
-    s.replace(QLatin1String("&gt;"), QLatin1String(">"));
-    s.replace(QLatin1String("&amp;"), QLatin1String("&"));
-    return s;
-}
-
-// \u0026 и \/ из строк JavaScript -> обычные символы.
-QString unescapeJs(QString s)
-{
-    static const QRegularExpression u(QStringLiteral("\\\\u([0-9a-fA-F]{4})"));
-    QString out;
-    int last = 0;
-    for (auto it = u.globalMatch(s); it.hasNext();) {
-        const auto m = it.next();
-        out += s.mid(last, m.capturedStart() - last);
-        out += QChar(m.captured(1).toUShort(nullptr, 16));
-        last = m.capturedEnd();
-    }
-    out += s.mid(last);
-    out.replace(QLatin1String("\\/"), QLatin1String("/"));
-    return out;
-}
-
 QString absoluteUrl(QString link)
 {
     link = link.trimmed();
     if (link.startsWith(QLatin1String("//")))
         link.prepend(QStringLiteral("https:"));
     return link;
-}
-
-bool looksLikeImage(const QString &link)
-{
-    const QUrl u(link, QUrl::StrictMode);
-    if (!u.isValid() || u.host().isEmpty() || (u.scheme() != QLatin1String("http") && u.scheme() != QLatin1String("https")))
-        return false;
-    static const QRegularExpression ext(QStringLiteral("\\.(?:jpe?g|png|webp|gif|bmp)(?:$|[?#!/_])"), QRegularExpression::CaseInsensitiveOption);
-    return ext.match(u.path() + QLatin1Char('?') + u.query()).hasMatch() || ext.match(link).hasMatch();
 }
 
 void addHit(QList<Hit> *hits, QSet<QString> *seen, Hit h)
@@ -157,89 +126,111 @@ void addHit(QList<Hit> *hits, QSet<QString> *seen, Hit h)
     hits->append(h);
 }
 
-bool isGstatic(const QString &link)
+void pause(int ms, const Cancel &cancelled)
 {
-    return link.contains(QLatin1String("gstatic.com")) || link.contains(QLatin1String("googleusercontent.com"));
-}
-
-// --- Pinterest: пин - объект с картой images (orig, 736x, 564x, 474x, 236x ...) и подписями.
-QString jsonString(const QJsonObject &o, const char *key)
-{
-    const QJsonValue v = o.value(QLatin1String(key));
-    return v.isString() ? v.toString() : QString();
-}
-
-QString imageUrlOf(const QJsonObject &images, const char *key)
-{
-    return images.value(QLatin1String(key)).toObject().value(QStringLiteral("url")).toString();
-}
-
-void collectPins(const QJsonValue &v, const QString &article, QList<Hit> *hits, QSet<QString> *seen, int depth = 0)
-{
-    if (depth > 40 || hits->size() >= 60)
+    if (ms <= 0)
         return;
-    if (v.isArray()) {
-        for (const QJsonValue &x : v.toArray())
-            collectPins(x, article, hits, seen, depth + 1);
-        return;
+    QEventLoop loop;
+    QTimer done, watch;
+    done.setSingleShot(true);
+    QObject::connect(&done, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(&watch, &QTimer::timeout, &loop, [&]() {
+        if (cancelled && cancelled())
+            loop.quit();
+    });
+    done.start(ms);
+    watch.start(100);
+    loop.exec();
+}
+
+int shopPauseMs()
+{
+    bool ok = false;
+    const int v = qEnvironmentVariable("INVENTORY_WEB_PAUSE_MS").toInt(&ok);
+    return ok ? v : kShopPauseMs;
+}
+
+// Магазины, которые отказали (403/429): до перезапуска программы не спрашиваем.
+QMutex g_refusedLock;
+QSet<QString> g_refused;
+
+bool isRefused(const QString &base)
+{
+    QMutexLocker lock(&g_refusedLock);
+    return g_refused.contains(base);
+}
+
+void markRefused(const QString &base)
+{
+    QMutexLocker lock(&g_refusedLock);
+    g_refused.insert(base);
+}
+
+// Открытые магазины на Shopify, по убыванию того, как часто у них находился нужный артикул.
+const char *const kShopHosts[] = {
+    "extrabutterny.com",
+    "www.theclosetinc.com",
+    "www.sneakersnstuff.com",
+    "www.dtlr.com",
+    "kith.com",
+    "www.overkillshop.com",
+    "www.solefly.com",
+    "shoegallerymiami.com",
+};
+
+QStringList shopBases()
+{
+    QStringList out;
+    const QString env = qEnvironmentVariable("INVENTORY_SHOPS");
+    if (!env.isEmpty()) {
+        for (QString s : env.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+            s = s.trimmed();
+            while (s.endsWith(QLatin1Char('/')))
+                s.chop(1);
+            if (!s.isEmpty())
+                out << s;
+        }
+        return out;
     }
-    if (!v.isObject())
-        return;
-    const QJsonObject o = v.toObject();
-    const QJsonObject images = o.value(QStringLiteral("images")).toObject();
-    if (!images.isEmpty()) {
-        // Оригинал; нет его - самый крупный из доступных размеров по ширине в названии ключа («736x»).
-        QString url = imageUrlOf(images, "orig");
-        if (url.isEmpty()) {
-            int best = 0;
-            for (auto it = images.begin(); it != images.end(); ++it) {
-                const QString u = it.value().toObject().value(QStringLiteral("url")).toString();
-                const int w = it.key().section(QLatin1Char('x'), 0, 0).toInt();
-                if (!u.isEmpty() && w >= best) {
-                    best = w;
-                    url = u;
-                }
-            }
-        }
-        QString thumb;
-        for (const char *key : {"474x", "564x", "236x", "736x"}) {
-            thumb = imageUrlOf(images, key);
-            if (!thumb.isEmpty())
-                break;
-        }
-        if (!url.isEmpty()) {
-            Hit h;
-            h.url = url;
-            h.thumbUrl = thumb;
-            h.title = jsonString(o, "grid_title");
-            if (h.title.isEmpty())
-                h.title = jsonString(o, "title");
-            const QString desc = jsonString(o, "description");
-            h.pageUrl = jsonString(o, "link");
-            const QString id = o.value(QStringLiteral("id")).toVariant().toString();
-            if (h.pageUrl.isEmpty() && !id.isEmpty())
-                h.pageUrl = QStringLiteral("https://www.pinterest.com/pin/%1/").arg(id);
-            h.source = sourceName(Pinterest);
-            const QString text = h.title + QLatin1Char(' ') + desc + QLatin1Char(' ') + jsonString(o, "seo_title") + QLatin1Char(' ')
-                                 + jsonString(o, "domain") + QLatin1Char(' ') + h.pageUrl + QLatin1Char(' ') + h.url;
-            h.verified = mentions(text, article);
-            if (h.title.isEmpty())
-                h.title = desc.left(120);
-            addHit(hits, seen, h);
-        }
-        return; // внутри пина больше нет пинов
-    }
-    for (auto it = o.begin(); it != o.end(); ++it)
-        if (it.value().isObject() || it.value().isArray())
-            collectPins(it.value(), article, hits, seen, depth + 1);
+    for (const char *host : kShopHosts)
+        out << QStringLiteral("https://") + QLatin1String(host);
+    return out;
 }
 
-QString pinterestBase()
+// Как спросить магазин: артикул как есть и, для кодов Nike (DD1391100), с дефисом (DD1391-100) - так он записан в магазинах.
+QStringList shopQueries(const QString &article)
 {
-    QString base = envOr("INVENTORY_PINTEREST_URL", QStringLiteral("https://www.pinterest.com"));
-    while (base.endsWith(QLatin1Char('/')))
-        base.chop(1);
-    return base;
+    QStringList out{article.simplified()};
+    const QString n = normalize(article);
+    static const QRegularExpression nike(QStringLiteral("^[A-Z]{2}\\d{4}\\d{3}$"));
+    if (nike.match(n).hasMatch()) {
+        const QString dashed = n.left(6) + QLatin1Char('-') + n.mid(6);
+        if (!out.contains(dashed, Qt::CaseInsensitive))
+            out << dashed;
+    }
+    return out;
+}
+
+// Артикул как отдельное «слово» в тексте: «DD1391-100», «dd1391 100», но не «DD13911000» и не «XDD1391100».
+bool mentionsWord(const QString &text, const QString &article)
+{
+    const QString n = normalize(article);
+    if (n.size() < 5)
+        return false;
+    QString pattern = QStringLiteral("(?<![A-Za-z0-9])");
+    for (int i = 0; i < n.size(); ++i) {
+        if (i > 0)
+            pattern += QStringLiteral("[^A-Za-z0-9]{0,3}");
+        pattern += QRegularExpression::escape(n.mid(i, 1));
+    }
+    pattern += QStringLiteral("(?![A-Za-z0-9])");
+    return QRegularExpression(pattern, QRegularExpression::CaseInsensitiveOption).match(text).hasMatch();
+}
+
+QString fileNameOf(const QString &link)
+{
+    const QUrl u(absoluteUrl(link));
+    return u.isValid() ? u.fileName() : link;
 }
 
 } // namespace
@@ -247,7 +238,8 @@ QString pinterestBase()
 QString sourceName(Source source)
 {
     switch (source) {
-    case Pinterest: return QStringLiteral("Pinterest");
+    case Shops: return QStringLiteral("Магазины");
+    case NewBalance: return QStringLiteral("New Balance");
     case Google: return QStringLiteral("Google");
     default: return QString();
     }
@@ -289,135 +281,192 @@ QStringList articleVariants(const QString &article)
     return out;
 }
 
-// ---------------------------------------------------------------- Pinterest
+// ---------------------------------------------------------------- Магазины (Shopify)
 
-QList<Hit> parsePinterestJson(const QByteArray &json, const QString &article, QString *error)
+QStringList parseShopSuggest(const QByteArray &json)
+{
+    QStringList handles;
+    const QJsonArray products = QJsonDocument::fromJson(json).object().value(QStringLiteral("resources")).toObject().value(QStringLiteral("results")).toObject()
+                                    .value(QStringLiteral("products")).toArray();
+    for (const QJsonValue &v : products) {
+        const QString handle = v.toObject().value(QStringLiteral("handle")).toString();
+        if (!handle.isEmpty() && !handles.contains(handle))
+            handles << handle;
+    }
+    return handles;
+}
+
+QList<Hit> parseShopProduct(const QByteArray &json, const QString &shopLabel, const QString &shopBase, const QString &article)
 {
     QList<Hit> hits;
-    QSet<QString> seen;
-    const QJsonDocument doc = QJsonDocument::fromJson(json);
-    if (doc.isObject()) {
-        const QJsonObject resp = doc.object().value(QStringLiteral("resource_response")).toObject();
-        const QJsonObject err = resp.value(QStringLiteral("error")).toObject();
-        if (!err.isEmpty() && error)
-            *error = err.value(QStringLiteral("message")).toString(QStringLiteral("Pinterest вернул ошибку"));
-        collectPins(doc.object(), article, &hits, &seen);
-    } else if (doc.isArray()) {
-        collectPins(doc.array(), article, &hits, &seen);
+    const QJsonObject o = QJsonDocument::fromJson(json).object();
+    if (o.isEmpty())
+        return hits;
+    const QString handle = o.value(QStringLiteral("handle")).toString();
+    const QString title = o.value(QStringLiteral("title")).toString();
+    QStringList images;
+    for (const QJsonValue &v : o.value(QStringLiteral("images")).toArray())
+        if (v.isString() && !v.toString().isEmpty())
+            images << absoluteUrl(v.toString());
+    if (images.isEmpty())
+        return hits;
+
+    // Где нашёлся артикул: в артикулах вариантов (самое надёжное), в адресе товара, тегах, названии или имени файла картинки.
+    bool found = false;
+    for (const QJsonValue &v : o.value(QStringLiteral("variants")).toArray())
+        found = found || mentionsWord(v.toObject().value(QStringLiteral("sku")).toString(), article);
+    found = found || mentionsWord(handle, article) || mentionsWord(title, article);
+    const QJsonValue tags = o.value(QStringLiteral("tags"));
+    if (tags.isArray()) {
+        for (const QJsonValue &t : tags.toArray())
+            found = found || mentionsWord(t.toString(), article);
+    } else {
+        found = found || mentionsWord(tags.toString(), article);
     }
-    std::stable_sort(hits.begin(), hits.end(), [](const Hit &a, const Hit &b) { return a.verified && !b.verified; });
-    while (hits.size() > kMaxHits)
-        hits.removeLast();
+    for (int i = 0; i < images.size() && i < 4; ++i)
+        found = found || mentionsWord(fileNameOf(images[i]), article);
+    if (!found)
+        return hits;
+
+    QSet<QString> seen;
+    const QString page = shopBase + QStringLiteral("/products/") + handle;
+    for (const QString &img : images) {
+        Hit h;
+        h.url = img;
+        h.thumbUrl = img;
+        h.pageUrl = page;
+        h.title = title;
+        h.source = QStringLiteral("Магазин: ") + shopLabel;
+        h.verified = true;
+        addHit(&hits, &seen, h);
+        if (hits.size() >= kMaxHits)
+            break;
+    }
     return hits;
 }
 
-QList<Hit> parsePinterestHtml(const QByteArray &html, const QString &article)
-{
-    const QString text = QString::fromUtf8(html);
-    QList<Hit> hits;
-    QSet<QString> seen;
-    // 1) JSON внутри страницы: __PWS_INITIAL_PROPS__ / __PWS_DATA__ / любой <script type="application/json">
-    static const QRegularExpression scripts(QStringLiteral("<script[^>]*type=[\"']application/(?:ld\\+)?json[\"'][^>]*>(.*?)</script>"), QRegularExpression::DotMatchesEverythingOption);
-    for (auto it = scripts.globalMatch(text); it.hasNext();) {
-        const QJsonDocument doc = QJsonDocument::fromJson(it.next().captured(1).toUtf8());
-        if (doc.isObject())
-            collectPins(doc.object(), article, &hits, &seen);
-        else if (doc.isArray())
-            collectPins(doc.array(), article, &hits, &seen);
-    }
-    // 2) Адреса картинок i.pinimg.com где угодно в тексте: приводим к оригиналам (тот же хэш, другой размер в пути).
-    if (hits.isEmpty()) {
-        static const QRegularExpression pin(QStringLiteral("https://i\\.pinimg\\.com/(?:originals|\\d+x(?:\\d+)?)/([0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]+\\.(?:jpg|jpeg|png|webp))"));
-        for (auto it = pin.globalMatch(unescapeJs(text)); it.hasNext() && hits.size() < kMaxHits * 2;) {
-            const QString tail = it.next().captured(1);
-            Hit h;
-            h.url = QStringLiteral("https://i.pinimg.com/originals/") + tail;
-            h.thumbUrl = QStringLiteral("https://i.pinimg.com/474x/") + tail;
-            h.source = sourceName(Pinterest);
-            h.verified = false; // подписи вместе с картинкой не разобрать
-            addHit(&hits, &seen, h);
-        }
-    }
-    std::stable_sort(hits.begin(), hits.end(), [](const Hit &a, const Hit &b) { return a.verified && !b.verified; });
-    while (hits.size() > kMaxHits)
-        hits.removeLast();
-    return hits;
-}
-
-Reply searchPinterest(const QString &article, const Cancel &cancelled)
+Reply searchShops(const QString &article, const Cancel &cancelled)
 {
     Reply r;
-    QStringList problems;
-    const QString base = pinterestBase();
-    const QString sourceUrl = QStringLiteral("/search/pins/?q=%1&rs=typed").arg(QString::fromLatin1(QUrl::toPercentEncoding(article)));
-    const QList<QPair<QByteArray, QByteArray>> browserHeaders = {{"Accept-Language", "ru-RU,ru;q=0.9,en;q=0.5"}};
-
-    // 1) JSON-запрос поиска - тот, что делает сам сайт при выдаче результатов.
-    {
-        QJsonObject options{{QStringLiteral("query"), article}, {QStringLiteral("scope"), QStringLiteral("pins")}, {QStringLiteral("rs"), QStringLiteral("typed")},
-                            {QStringLiteral("page_size"), 25}, {QStringLiteral("auto_correction_disabled"), false}, {QStringLiteral("redux_normalize_feed"), true},
-                            {QStringLiteral("source_url"), sourceUrl}};
-        const QByteArray data = QJsonDocument(QJsonObject{{QStringLiteral("options"), options}, {QStringLiteral("context"), QJsonObject()}}).toJson(QJsonDocument::Compact);
-        QUrl url(base + QStringLiteral("/resource/BaseSearchResource/get/"));
-        QUrlQuery q;
-        q.addQueryItem(QStringLiteral("source_url"), sourceUrl);
-        q.addQueryItem(QStringLiteral("data"), QString::fromUtf8(data));
-        q.addQueryItem(QStringLiteral("_"), QString::number(QDateTime::currentMSecsSinceEpoch()));
-        url.setQuery(q);
-        QList<QPair<QByteArray, QByteArray>> headers = browserHeaders;
-        headers.append(qMakePair(QByteArray("Accept"), QByteArray("application/json, text/javascript, */*; q=0.01")));
-        headers.append(qMakePair(QByteArray("X-Requested-With"), QByteArray("XMLHttpRequest")));
-        headers.append(qMakePair(QByteArray("X-Pinterest-AppState"), QByteArray("active")));
-        headers.append(qMakePair(QByteArray("X-Pinterest-Source-Url"), sourceUrl.toUtf8()));
-        const Page p = fetch(&r, QStringLiteral("Pinterest"), url, headers, cancelled);
-        if (r.stopped) {
+    const QStringList queries = shopQueries(article);
+    int asked = 0, answered = 0;
+    QStringList refusals;
+    for (const QString &base : shopBases()) {
+        if (cancelled && cancelled()) {
+            r.stopped = true;
             r.error = QString::fromUtf8(kStopped);
             return r;
         }
-        if (!p.error.isEmpty()) {
-            problems << QStringLiteral("запрос поиска: %1").arg(p.error);
-        } else {
-            QString apiError;
-            r.hits = parsePinterestJson(p.body, article, &apiError);
-            if (!apiError.isEmpty())
-                problems << QStringLiteral("запрос поиска: %1").arg(apiError);
-            r.trace << QStringLiteral("Pinterest (запрос поиска): найдено картинок %1 (проверенных %2)").arg(r.hits.size()).arg(std::count_if(r.hits.cbegin(), r.hits.cend(), [](const Hit &h) { return h.verified; }));
-            if (!r.hits.isEmpty())
+        if (isRefused(base))
+            continue;
+        if (asked >= kMaxShopsAsked)
+            break;
+        ++asked;
+        const QUrl baseUrl(base);
+        const QString label = baseUrl.host() + (baseUrl.port() > 0 ? QStringLiteral(":%1").arg(baseUrl.port()) : QString()) + baseUrl.path();
+        QStringList handles;
+        bool failed = false;
+        for (const QString &q : queries) {
+            QUrl url(base + QStringLiteral("/search/suggest.json"));
+            QUrlQuery qq;
+            qq.addQueryItem(QStringLiteral("q"), q);
+            qq.addQueryItem(QStringLiteral("resources[type]"), QStringLiteral("product"));
+            qq.addQueryItem(QStringLiteral("resources[limit]"), QStringLiteral("4"));
+            url.setQuery(qq);
+            pause(shopPauseMs(), cancelled);
+            const Page p = fetch(&r, label, url, {{"Accept", "application/json"}}, cancelled);
+            if (r.stopped) {
+                r.error = QString::fromUtf8(kStopped);
                 return r;
+            }
+            if (!p.error.isEmpty()) {
+                if (p.status == 403 || p.status == 429 || p.status == 430)
+                    markRefused(base);
+                refusals << QStringLiteral("%1: %2").arg(label, p.error);
+                failed = true;
+                break;
+            }
+            for (const QString &h : parseShopSuggest(p.body))
+                if (!handles.contains(h))
+                    handles << h;
+            if (!handles.isEmpty())
+                break;
+        }
+        if (failed)
+            continue;
+        ++answered;
+        for (int i = 0; i < handles.size() && i < kShopProducts; ++i) {
+            pause(shopPauseMs(), cancelled);
+            const Page p = fetch(&r, label, QUrl(base + QStringLiteral("/products/") + handles[i] + QStringLiteral(".js")), {{"Accept", "application/json"}}, cancelled);
+            if (r.stopped) {
+                r.error = QString::fromUtf8(kStopped);
+                return r;
+            }
+            if (!p.error.isEmpty()) {
+                if (p.status == 403 || p.status == 429 || p.status == 430) {
+                    markRefused(base);
+                    refusals << QStringLiteral("%1: %2").arg(label, p.error);
+                    break;
+                }
+                continue;
+            }
+            const QList<Hit> hits = parseShopProduct(p.body, label, base, article);
+            if (!hits.isEmpty()) {
+                r.hits = hits;
+                r.trace << QStringLiteral("Магазины: артикул %1 найден в %2 (товар %3), снимков %4").arg(article, label, handles[i]).arg(hits.size());
+                return r;
+            }
         }
     }
-    // 2) Страница поиска.
-    {
-        QUrl url(base + QStringLiteral("/search/pins/"));
-        QUrlQuery q;
-        q.addQueryItem(QStringLiteral("q"), article);
-        q.addQueryItem(QStringLiteral("rs"), QStringLiteral("typed"));
-        url.setQuery(q);
-        QList<QPair<QByteArray, QByteArray>> headers = browserHeaders;
-        headers.append(qMakePair(QByteArray("Accept"), QByteArray("text/html,application/xhtml+xml;q=0.9,*/*;q=0.5")));
-        const Page p = fetch(&r, QStringLiteral("Pinterest страница"), url, headers, cancelled);
+    if (answered == 0 && !refusals.isEmpty())
+        r.error = refusals.join(QStringLiteral("; "));
+    else
+        r.trace << QStringLiteral("Магазины: артикул %1 не найден (спросили магазинов: %2)").arg(article).arg(answered);
+    return r;
+}
+
+// ---------------------------------------------------------------- New Balance
+
+Reply searchNewBalance(const QString &article, const Cancel &cancelled)
+{
+    Reply r;
+    // Артикулы New Balance: буквы-цифры-буквы («U574WPG», «MR530SG», «BB480LEC»). Остальное (Nike, adidas) не спрашиваем.
+    const QString code = normalize(article).toLower();
+    static const QRegularExpression style(QStringLiteral("^[a-z]{1,3}\\d{3,4}[a-z0-9]{0,5}$"));
+    static const QRegularExpression nikeLike(QStringLiteral("^[a-z]{2}\\d{7}$"));
+    if (!style.match(code).hasMatch() || nikeLike.match(code).hasMatch()) {
+        r.skipped = true;
+        r.trace << QStringLiteral("New Balance: «%1» не похож на артикул New Balance").arg(article);
+        return r;
+    }
+    const QString base = envOr("INVENTORY_NB_URL", QStringLiteral("https://nb.scene7.com/is/image/NB"));
+    for (const QString &view : {QStringLiteral("02"), QStringLiteral("03"), QStringLiteral("04"), QStringLiteral("05")}) {
+        const QString link = QStringLiteral("%1/%2_nb_%3_i?$pdpflexf2$&wid=800&hei=800").arg(base, code, view);
+        pause(shopPauseMs(), cancelled);
+        const Page p = fetch(&r, QStringLiteral("New Balance"), QUrl(link, QUrl::TolerantMode), {{"Accept", "image/*"}}, cancelled);
         if (r.stopped) {
             r.error = QString::fromUtf8(kStopped);
             return r;
         }
-        if (!p.error.isEmpty()) {
-            QString msg = p.error;
-            if (p.status == 429 || p.status == 403)
-                msg += QStringLiteral(" (Pinterest ограничил запросы - повторите позже)");
-            problems << QStringLiteral("страница поиска: %1").arg(msg);
-        } else {
-            r.hits = parsePinterestHtml(p.body, article);
-            r.trace << QStringLiteral("Pinterest (страница): найдено картинок %1 (проверенных %2)").arg(r.hits.size()).arg(std::count_if(r.hits.cbegin(), r.hits.cend(), [](const Hit &h) { return h.verified; }));
-            if (r.hits.isEmpty() && (p.body.contains("login") || p.body.contains("Log in")) && !p.body.contains("pinimg"))
-                problems << QStringLiteral("страница поиска: без входа Pinterest не показал результаты");
+        // Нет такого снимка: каталог отвечает на несуществующий отказом (403). Нет первого - у модели нет снимков вовсе.
+        if (!p.error.isEmpty() || p.body.size() < kMinImageBytes) {
+            if (r.hits.isEmpty()) {
+                if (p.status != 403 && p.status != 404 && !p.error.isEmpty())
+                    r.error = p.error;
+                break;
+            }
+            continue;
         }
+        Hit h;
+        h.url = link;
+        h.thumbUrl = link;
+        h.pageUrl = QStringLiteral("https://www.newbalance.com/");
+        h.title = QStringLiteral("New Balance %1").arg(code.toUpper());
+        h.source = sourceName(NewBalance);
+        h.verified = true;
+        r.hits << h;
     }
-    // Ответил хоть один запрос, пусть и пустым списком - это «ничего не нашли», а не отказ.
-    const bool answered = r.trace.size() > 0 && r.trace.join(QLatin1Char('\n')).contains(QStringLiteral("найдено картинок"));
-    if (r.hits.isEmpty() && !answered && !problems.isEmpty())
-        r.error = problems.join(QStringLiteral("; "));
-    else if (r.hits.isEmpty() && !problems.isEmpty())
-        r.trace << QStringLiteral("Pinterest: ") + problems.join(QStringLiteral("; "));
+    r.trace << QStringLiteral("New Balance: снимков %1").arg(r.hits.size());
     return r;
 }
 
@@ -449,118 +498,53 @@ QList<Hit> parseGoogleCse(const QByteArray &json, const QString &article, QStrin
     return hits;
 }
 
-QList<Hit> parseGooglePage(const QByteArray &html, const QString &article)
-{
-    // В странице картинки лежат в данных скрипта массивами ["адрес", высота, ширина]: сначала миниатюра на gstatic,
-    // следом оригинал. Подписей и страниц-источников без полного разбора данных нет, поэтому «проверено» только
-    // если артикул встречается в самом адресе картинки.
-    const QString text = unescapeJs(QString::fromUtf8(html));
-    static const QRegularExpression arr(QStringLiteral("\\[\"(https?://[^\"\\\\\\s]+)\",(\\d+),(\\d+)\\]"));
-    QList<Hit> hits;
-    QSet<QString> seen;
-    QString pendingThumb;
-    for (auto it = arr.globalMatch(text); it.hasNext();) {
-        const auto m = it.next();
-        const QString link = m.captured(1);
-        if (isGstatic(link)) {
-            pendingThumb = link;
-            continue;
-        }
-        if (link.contains(QLatin1String("google.")) || !looksLikeImage(link)) {
-            pendingThumb.clear();
-            continue;
-        }
-        Hit h;
-        h.url = link;
-        h.thumbUrl = pendingThumb;
-        h.source = sourceName(Google);
-        h.verified = mentions(link, article);
-        pendingThumb.clear();
-        addHit(&hits, &seen, h);
-    }
-    // Простая версия страницы: только миниатюры <img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:...">
-    if (hits.isEmpty()) {
-        static const QRegularExpression img(QStringLiteral("<img[^>]+src=\"(https?://[^\"]*gstatic\\.com/images\\?[^\"]+)\""));
-        for (auto it = img.globalMatch(QString::fromUtf8(html)); it.hasNext();) {
-            Hit h;
-            h.url = unescapeHtml(it.next().captured(1));
-            h.thumbUrl = h.url;
-            h.source = sourceName(Google);
-            addHit(&hits, &seen, h);
-        }
-    }
-    while (hits.size() > kMaxHits)
-        hits.removeLast();
-    return hits;
-}
-
 Reply searchGoogle(const QString &article, const Settings &settings, const Cancel &cancelled)
 {
     Reply r;
-    const QString plain = article;
-    if (settings.hasGoogleApi()) {
-        QUrl url(envOr("INVENTORY_GOOGLE_CSE_URL", QStringLiteral("https://www.googleapis.com/customsearch/v1")));
-        QUrlQuery q;
-        q.addQueryItem(QStringLiteral("key"), settings.googleKey.trimmed());
-        q.addQueryItem(QStringLiteral("cx"), settings.googleCx.trimmed());
-        q.addQueryItem(QStringLiteral("q"), QLatin1Char('"') + plain + QLatin1Char('"'));
-        q.addQueryItem(QStringLiteral("searchType"), QStringLiteral("image"));
-        q.addQueryItem(QStringLiteral("num"), QStringLiteral("10"));
-        q.addQueryItem(QStringLiteral("safe"), QStringLiteral("off"));
-        q.addQueryItem(QStringLiteral("hl"), QStringLiteral("ru"));
-        url.setQuery(q);
-        const Page p = fetch(&r, QStringLiteral("Google API"), url, {{"Accept", "application/json"}}, cancelled);
-        if (r.stopped) {
-            r.error = QString::fromUtf8(kStopped);
-            return r;
-        }
-        QString apiError;
-        r.hits = parseGoogleCse(p.body, plain, &apiError);
-        if (!apiError.isEmpty() || !p.error.isEmpty()) {
-            r.error = apiError.isEmpty() ? p.error : apiError;
-            r.trace << QStringLiteral("Google API: отказ - %1").arg(r.error);
-        } else {
-            r.trace << QStringLiteral("Google API: найдено картинок %1 (проверенных %2)").arg(r.hits.size()).arg(std::count_if(r.hits.cbegin(), r.hits.cend(), [](const Hit &h) { return h.verified; }));
-            return r;
-        }
-        // Ключ не подошёл или закончилась суточная квота - пробуем страницу поиска без ключа.
+    if (!settings.hasGoogleApi()) {
+        r.error = QStringLiteral("не задан ключ Google API");
+        return r;
     }
-    QUrl url(envOr("INVENTORY_GOOGLE_URL", QStringLiteral("https://www.google.com/search")));
+    QUrl url(envOr("INVENTORY_GOOGLE_CSE_URL", QStringLiteral("https://www.googleapis.com/customsearch/v1")));
     QUrlQuery q;
-    q.addQueryItem(QStringLiteral("q"), QLatin1Char('"') + plain + QLatin1Char('"'));
-    q.addQueryItem(QStringLiteral("tbm"), QStringLiteral("isch"));
-    q.addQueryItem(QStringLiteral("hl"), QStringLiteral("ru"));
-    q.addQueryItem(QStringLiteral("gl"), QStringLiteral("ru"));
+    q.addQueryItem(QStringLiteral("key"), settings.googleKey.trimmed());
+    q.addQueryItem(QStringLiteral("cx"), settings.googleCx.trimmed());
+    q.addQueryItem(QStringLiteral("q"), QLatin1Char('"') + article + QLatin1Char('"'));
+    q.addQueryItem(QStringLiteral("searchType"), QStringLiteral("image"));
+    q.addQueryItem(QStringLiteral("num"), QStringLiteral("10"));
     q.addQueryItem(QStringLiteral("safe"), QStringLiteral("off"));
+    q.addQueryItem(QStringLiteral("hl"), QStringLiteral("ru"));
     url.setQuery(q);
-    const Page p = fetch(&r, QStringLiteral("Google"), url, {{"Accept", "text/html"}}, cancelled);
+    const Page p = fetch(&r, QStringLiteral("Google API"), url, {{"Accept", "application/json"}}, cancelled);
     if (r.stopped) {
         r.error = QString::fromUtf8(kStopped);
         return r;
     }
-    if (!p.error.isEmpty()) {
-        QString msg = p.error;
-        if (p.status == 429 || p.status == 503)
-            msg += QStringLiteral(" (Google ограничил запросы без ключа - задайте ключ Google API)");
-        r.error = r.error.isEmpty() ? msg : r.error + QStringLiteral("; страница поиска: ") + msg;
+    QString apiError;
+    r.hits = parseGoogleCse(p.body, article, &apiError);
+    if (!apiError.isEmpty() || !p.error.isEmpty()) {
+        r.error = apiError.isEmpty() ? p.error : apiError;
+        r.trace << QStringLiteral("Google API: отказ - %1").arg(r.error);
         return r;
     }
-    r.error.clear(); // страница ответила: отказ API остаётся только в trace
-    QList<Hit> pageHits = parseGooglePage(p.body, plain);
-    r.trace << QStringLiteral("Google: найдено картинок %1 (проверенных %2)").arg(pageHits.size()).arg(std::count_if(pageHits.cbegin(), pageHits.cend(), [](const Hit &h) { return h.verified; }));
-    if (pageHits.isEmpty() && (p.body.contains("captcha") || p.body.contains("unusual traffic") || p.body.contains("enablejs")))
-        r.error = QStringLiteral("Google просит подтвердить, что вы не робот, или требует включить скрипты - задайте ключ Google API");
-    r.hits = pageHits;
+    r.trace << QStringLiteral("Google API: найдено картинок %1 (проверенных %2)").arg(r.hits.size()).arg(std::count_if(r.hits.cbegin(), r.hits.cend(), [](const Hit &h) { return h.verified; }));
     return r;
 }
 
 Reply search(Source source, const QString &article, const Settings &settings, const Cancel &cancelled)
 {
     switch (source) {
-    case Pinterest: return searchPinterest(article, cancelled);
+    case Shops: return searchShops(article, cancelled);
+    case NewBalance: return searchNewBalance(article, cancelled);
     case Google: return searchGoogle(article, settings, cancelled);
     default: return {};
     }
+}
+
+void forgetRefusals()
+{
+    QMutexLocker lock(&g_refusedLock);
+    g_refused.clear();
 }
 
 } // namespace ImageSearch

@@ -14,7 +14,7 @@ class QRadioButton;
 class QSpinBox;
 
 // «Найти фото»: подбирает фото товарам и сохраняет в базе. Источники - Яндекс Маркет, карточки Маркета в программе и
-// интернет по артикулу (Pinterest, Google, см. PhotoFetch). По умолчанию найденное сначала показывается
+// интернет по артикулу (магазины, New Balance, Google по ключу, см. PhotoFetch). По умолчанию найденное сначала показывается
 // (PhotoReviewDialog) и сохраняется только выбранное; можно сохранять сразу, тогда берутся лишь проверенные снимки.
 class PhotoFetchDialog : public QDialog
 {
@@ -50,8 +50,10 @@ private:
     QCheckBox *m_replace;
     QCheckBox *m_fromMarket;
     QCheckBox *m_fromCards;
-    QCheckBox *m_fromPinterest;
+    QCheckBox *m_fromShops;
+    QCheckBox *m_fromNb;
     QCheckBox *m_fromGoogle;
+    bool m_hasGoogle = false;
     QLabel *m_googleState;
     QPushButton *m_googleBtn;
     QRadioButton *m_modePreview;

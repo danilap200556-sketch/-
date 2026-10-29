@@ -14,8 +14,8 @@
 //  1) с самого Яндекс Маркета - кабинеты из таблицы market_accounts, по артикулу на Маркете (у товара без него - по
 //     обычному артикулу);
 //  2) из карточек Маркета, подготовленных в программе (market_cards.pictures);
-//  3) из интернета ПО АРТИКУЛУ: Pinterest, затем Google (см. ImageSearch). Среди найденного «проверенными» считаются
-//     снимки, где артикул нашёлся в названии, подписи, адресе страницы или в данных товара; остальные - только по желанию.
+//  3) из интернета ПО АРТИКУЛУ: открытые магазины, каталог New Balance, затем Google по ключу (см. ImageSearch). Среди
+//     найденного «проверенными» считаются снимки, где артикул нашёлся в данных товара; остальные - только по желанию.
 // Картинки скачиваются, приводятся к JPEG и сохраняются у товара в общей базе (product_photos), поэтому их сразу видят
 // все компьютеры и сайт. Можно сначала только собрать найденное (collect), показать и сохранить выбранное (save).
 namespace PhotoFetch {
@@ -26,7 +26,7 @@ struct Options {
     bool fromMarket = true;          // спрашивать Маркет по API
     bool fromCards = true;           // ссылки из карточек Маркета в программе
     bool fromWeb = true;             // искать в интернете по артикулу - тем, для кого нигде нет ссылок
-    int webSources = ImageSearch::AllSources; // какие из Pinterest / Google (если fromWeb)
+    int webSources = ImageSearch::AllSources; // какие из магазинов / New Balance / Google (если fromWeb)
     ImageSearch::Settings google;    // ключ и cx Google Custom Search (можно пустые)
     int perProduct = 1;              // сколько фото добавлять каждому товару (1..kMaxPhotosPerProduct)
     bool replaceExisting = false;    // найдено новое - прежние фото товара удаляются (нет нового - остаются)
@@ -63,7 +63,7 @@ constexpr int kMaxProblems = 50;
 // Один найденный снимок.
 struct Candidate {
     PhotoStore::Prepared photo;
-    QString source;                  // «Яндекс Маркет», «Карточки Маркета», «Pinterest», «Google»
+    QString source;                  // «Яндекс Маркет», «Карточки Маркета», «Магазин: …», «New Balance», «Google»
     QString origin;                  // ссылка на картинку
     QString title;                   // подпись источника (если была)
     bool verified = true;            // артикул подтверждён; у Маркета и карточек всегда true

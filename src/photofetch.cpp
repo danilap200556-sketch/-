@@ -297,9 +297,11 @@ WebFound pickFromWeb(const QStringList &articles, const Options &options, int wa
     auto stopped = [&]() { return cancelled && cancelled(); };
 
     QList<ImageSearch::Hit> allHits;
-    for (const ImageSearch::Source src : {ImageSearch::Pinterest, ImageSearch::Google}) {
+    for (const ImageSearch::Source src : {ImageSearch::Shops, ImageSearch::NewBalance, ImageSearch::Google}) {
         if (!(options.webSources & src))
             continue;
+        if (src == ImageSearch::Google && !options.google.hasGoogleApi())
+            continue; // без ключа Google не используется
         QList<ImageSearch::Hit> hits;
         QSet<QString> urls;
         bool answered = false;
@@ -307,6 +309,8 @@ WebFound pickFromWeb(const QStringList &articles, const Options &options, int wa
             const ImageSearch::Reply reply = ImageSearch::search(src, article, options.google, cancelled);
             if (reply.stopped || stopped())
                 return out;
+            if (reply.skipped)
+                continue;
             if (!reply.error.isEmpty())
                 out.errors << QStringLiteral("%1: %2").arg(ImageSearch::sourceName(src), reply.error);
             else
