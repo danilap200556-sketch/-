@@ -5,6 +5,7 @@
 #include "barcode.h"
 #include "bulkeditdialog.h"
 #include "bulkphotosdialog.h"
+#include "photoexceldialog.h"
 #include "photofetchdialog.h"
 #include "thermalprintdialog.h"
 #include "photostore.h"
@@ -107,6 +108,8 @@ ProductsTab::ProductsTab(QWidget *parent)
                             "штрихкод снизу."));
     auto *ownCodesBtn = new QPushButton(tr("Штрихкоды всем..."), toolbar);
     ownCodesBtn->setToolTip(tr("Присвоить свой штрихкод EAN-13 всем товарам, у которых штрихкода ещё нет (новые товары получают его сами)."));
+    auto *excelPhotoBtn = new QPushButton(tr("Фото из Excel..."), toolbar);
+    excelPhotoBtn->setToolTip(tr("Загрузить фото по ссылкам из файла Excel или CSV: артикул и колонки «Фото 1», «Фото 2»… Можно заменить прежние фото."));
     auto *findPhotoBtn = new QPushButton(tr("Найти фото..."), toolbar);
     findPhotoBtn->setToolTip(tr("Подобрать фото товарам без фото и сохранить в карточки: с Яндекс Маркета (по артикулу) "
                                 "или из интернета (поиск по названию). Выделенным товарам или всем."));
@@ -116,6 +119,7 @@ ProductsTab::ProductsTab(QWidget *parent)
     toolbarLayout->addWidget(photoBtn);
     toolbarLayout->addWidget(bulkEditBtn);
     toolbarLayout->addWidget(bulkPhotoBtn);
+    toolbarLayout->addWidget(excelPhotoBtn);
     toolbarLayout->addWidget(findPhotoBtn);
     toolbarLayout->addWidget(printBtn); // печатать может и роль «только просмотр»
     toolbarLayout->addWidget(ownCodesBtn);
@@ -129,7 +133,7 @@ ProductsTab::ProductsTab(QWidget *parent)
     exportBtn->setToolTip(tr("Полные данные товаров: артикул, название, описание, цена, штрихкоды, остатки по складам, места хранения.\n"
                              "Выгружается то, что сейчас в списке (с учётом поиска); если отмечено несколько товаров - можно выгрузить только их."));
     toolbarLayout->addWidget(exportBtn); // не в m_editWidgets: выгружать может и роль «только просмотр»
-    m_editWidgets << addBtn << deleteBtn << bulkEditBtn << bulkPhotoBtn << findPhotoBtn;
+    m_editWidgets << addBtn << deleteBtn << bulkEditBtn << bulkPhotoBtn << excelPhotoBtn << findPhotoBtn;
     editBtn->setToolTip(tr("Открыть карточку товара"));
     layout->addWidget(toolbar);
     m_searchStatus = new QLabel(this);
@@ -158,6 +162,7 @@ ProductsTab::ProductsTab(QWidget *parent)
     connect(photoBtn, &QPushButton::clicked, this, &ProductsTab::openSelectedPhoto);
     connect(bulkEditBtn, &QPushButton::clicked, this, &ProductsTab::bulkEdit);
     connect(bulkPhotoBtn, &QPushButton::clicked, this, &ProductsTab::bulkPhotos);
+    connect(excelPhotoBtn, &QPushButton::clicked, this, &ProductsTab::photosFromExcel);
     connect(findPhotoBtn, &QPushButton::clicked, this, &ProductsTab::findPhotos);
     connect(printBtn, &QPushButton::clicked, this, &ProductsTab::printBarcodes);
     connect(ownCodesBtn, &QPushButton::clicked, this, &ProductsTab::assignOwnBarcodes);
@@ -290,6 +295,17 @@ void ProductsTab::assignOwnBarcodes()
     }
     QMessageBox::information(this, tr("Штрихкоды"), tr("Присвоено штрихкодов: %1.").arg(created));
     refresh();
+}
+
+void ProductsTab::photosFromExcel()
+{
+    PhotoExcelDialog dlg(this);
+    dlg.exec();
+    if (dlg.changed()) {
+        PhotoCache::clear();
+        refresh();
+        emit productsChanged();
+    }
 }
 
 void ProductsTab::findPhotos()

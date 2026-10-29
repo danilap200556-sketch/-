@@ -493,6 +493,13 @@ Result process(const Options &options, const Progress &progress, bool preview, c
         }
     }
 
+    // --- Готовые ссылки (из Excel): впереди остальных
+    for (auto it = options.extraLinks.cbegin(); it != options.extraLinks.cend(); ++it) {
+        const int pos = indexById.value(it.key(), -1);
+        if (pos >= 0)
+            items[pos].links = it.value() + items[pos].links;
+    }
+
     QList<int> work;    // позиции в items, для которых есть что скачивать с Маркета
     QList<int> webWork; // ...и те, у кого ссылок нет - их ищем в интернете
     QStringList noLinks;
@@ -521,22 +528,26 @@ Result process(const Options &options, const Progress &progress, bool preview, c
     int done = 0;
     for (int start = 0; start < work.size(); start += kBatchProducts) {
         const QList<int> batch = work.mid(start, kBatchProducts);
+        // Одна и та же картинка у нескольких товаров (размеры одной модели) скачивается один раз.
         QList<QUrl> urls;
+        QHash<QString, int> urlIndex;
         for (int pos : batch)
             for (const QString &link : std::as_const(items[pos].links))
-                urls << QUrl(link);
+                if (!urlIndex.contains(link)) {
+                    urlIndex.insert(link, int(urls.size()));
+                    urls << QUrl(link);
+                }
         const QString text = QStringLiteral("Скачиваю фото: товар %1 из %2, добавлено фото: %3").arg(done + 1).arg(total).arg(res.added);
         if (!report(done, total, text))
             return res;
         // Нажали «Остановить» во время скачивания: то, что успело скачаться, всё равно сохраняем.
         const QVector<Downloaded> got = downloadAll(urls, [&]() { return !report(done, total, text); });
 
-        int g = 0;
         for (int pos : batch) {
             Item &it = items[pos];
             QList<Candidate> ready;
-            for (int k = 0; k < it.links.size(); ++k, ++g) {
-                const Downloaded &d = got[g];
+            for (int k = 0; k < it.links.size(); ++k) {
+                const Downloaded &d = got[urlIndex.value(it.links[k])];
                 if (d.stopped)
                     continue;
                 if (!d.error.isEmpty()) {
@@ -551,15 +562,19 @@ Result process(const Options &options, const Progress &progress, bool preview, c
                     addProblem(&res, QStringLiteral("%1: %2 - %3").arg(it.sku, it.links[k], err));
                     continue;
                 }
-                c.source = QStringLiteral("Яндекс Маркет");
+                c.source = options.extraLinks.contains(it.id) ? QStringLiteral("Файл Excel") : QStringLiteral("Яндекс Маркет");
                 c.origin = it.links[k];
                 c.verified = true;
                 ready << c;
             }
             // Ссылки на Маркете были, но ни одна не скачалась - ищем в интернете, как и тем, у кого ссылок нет.
-            if (deliver(it, ready, res) == 0 && ready.isEmpty() && web && !res.cancelled) {
-                webWork << pos;
-                ++total;
+            if (deliver(it, ready, res) == 0 && ready.isEmpty() && !res.cancelled) {
+                if (web) {
+                    webWork << pos;
+                    ++total;
+                } else {
+                    res.allFailed << it.sku;
+                }
             }
             ++done;
         }
@@ -655,6 +670,16 @@ Result run(const Options &options, const Progress &progress)
         if (options.replaceExisting) {
             changes.removed = PhotoStore::ids(it.id);
             changes.coverAddedIndex = 0;
+            // Те же самые фото в том же количестве - заменять нечего (повторная загрузка того же файла).
+            if (changes.removed.size() == changes.added.size()) {
+                bool same = true;
+                for (const PhotoStore::Prepared &p : std::as_const(changes.added))
+                    same = same && PhotoStore::exists(it.id, p);
+                if (same) {
+                    ++res.unchanged;
+                    return 0;
+                }
+            }
         }
         QString err;
         if (!PhotoStore::apply(it.id, changes, &err)) {
@@ -665,7 +690,7 @@ Result run(const Options &options, const Progress &progress)
         res.replaced += changes.removed.size();
         res.added += changes.added.size();
         ++res.productsFilled;
-        if (!cands.isEmpty() && cands.first().source != QLatin1String("Яндекс Маркет"))
+        if (!cands.isEmpty() && cands.first().source != QStringLiteral("Яндекс Маркет") && cands.first().source != QStringLiteral("Файл Excel"))
             res.sources << QStringLiteral("%1 ← %2").arg(it.sku, origins.first());
         return changes.added.size();
     };

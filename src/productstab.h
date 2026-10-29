@@ -36,6 +36,7 @@ private slots:
     void bulkEdit();
     void bulkPhotos();
     void findPhotos();
+    void photosFromExcel();
     void printBarcodes();
     void assignOwnBarcodes();
     void exportExcel();

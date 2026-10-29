@@ -3,6 +3,7 @@
 #include "imagesearch.h"
 #include "photostore.h"
 
+#include <QHash>
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -30,6 +31,9 @@ struct Options {
     int perProduct = 1;              // сколько фото добавлять каждому товару (1..kMaxPhotosPerProduct)
     bool replaceExisting = false;    // найдено новое - прежние фото товара удаляются (нет нового - остаются)
     bool acceptUnverified = false;   // сохранять и непроверенные снимки (артикул нигде не упомянут)
+    // Готовые ссылки на фото по товарам (например, из Excel, см. PhotoExcel): скачиваются первыми и считаются проверенными.
+    // Для «только из файла» выключите остальные источники и задайте productIds = ключи этого списка.
+    QHash<int, QStringList> extraLinks;
 };
 
 struct Result {
@@ -40,8 +44,10 @@ struct Result {
     int added = 0;                   // всего добавлено фото
     int replaced = 0;                // удалено прежних фото при замене
     int duplicates = 0;              // пропущено: такое же фото у товара уже есть
+    int unchanged = 0;               // товаров, у которых при замене нашлись те же самые фото - менять нечего
     int failed = 0;                  // не скачалось или не картинка
     QStringList noLinks;             // артикулы товаров, для которых фото нигде не нашлось
+    QStringList allFailed;           // артикулы, у которых ссылки были, но ни одна не скачалась (и искать в интернете не просили)
     QStringList unverified;          // артикулы, для которых нашлись только непроверенные снимки (не сохранены)
     QStringList sources;             // "артикул ← источник, ссылка": откуда взято фото из интернета
     QStringList problems;            // подробности по ошибкам (не больше kMaxProblems)
