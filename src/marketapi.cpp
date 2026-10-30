@@ -64,7 +64,7 @@ QList<MarketAccount> MarketAccount::loadAll()
 {
     QList<MarketAccount> result;
     QSqlQuery q("SELECT id, name, api_key, business_id, campaign_id, warehouse_groups, "
-                "market_warehouse_id FROM market_accounts ORDER BY name");
+                "market_warehouse_id, COALESCE(writeoff_warehouse_id, 0) FROM market_accounts ORDER BY name");
     while (q.next()) {
         MarketAccount a;
         a.id = q.value(0).toInt();
@@ -74,6 +74,7 @@ QList<MarketAccount> MarketAccount::loadAll()
         a.campaignId = q.value(4).toLongLong();
         a.warehouseGroups = q.value(5).toBool();
         a.marketWarehouseId = q.value(6).toLongLong();
+        a.writeoffWarehouseId = q.value(7).toInt();
         result.append(a);
     }
     QSqlQuery w("SELECT account_id, warehouse_id FROM market_account_warehouses");
@@ -103,10 +104,10 @@ bool MarketAccount::save(QString *error)
     QSqlQuery q;
     if (id == 0) {
         q.prepare("INSERT INTO market_accounts (name, api_key, business_id, campaign_id, "
-                  "warehouse_groups, market_warehouse_id) VALUES (?, ?, ?, ?, ?, ?) RETURNING id");
+                  "warehouse_groups, market_warehouse_id, writeoff_warehouse_id) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id");
     } else {
         q.prepare("UPDATE market_accounts SET name = ?, api_key = ?, business_id = ?, campaign_id = ?, "
-                  "warehouse_groups = ?, market_warehouse_id = ? WHERE id = ?");
+                  "warehouse_groups = ?, market_warehouse_id = ?, writeoff_warehouse_id = ? WHERE id = ?");
     }
     q.addBindValue(name);
     q.addBindValue(apiKey);
@@ -114,6 +115,7 @@ bool MarketAccount::save(QString *error)
     q.addBindValue(campaignId);
     q.addBindValue(warehouseGroups);
     q.addBindValue(marketWarehouseId > 0 ? QVariant(marketWarehouseId) : QVariant(QMetaType(QMetaType::LongLong)));
+    q.addBindValue(writeoffWarehouseId > 0 ? QVariant(writeoffWarehouseId) : QVariant(QMetaType(QMetaType::Int)));
     if (id != 0)
         q.addBindValue(id);
     if (!q.exec())

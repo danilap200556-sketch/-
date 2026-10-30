@@ -1,4 +1,7 @@
 #include "ordertab.h"
+
+#include "orderwriteoff.h"
+#include "orderwriteoffdialog.h"
 #include "xlsx.h"
 #include "producteditor.h"
 #include "productfinder.h"
@@ -165,6 +168,11 @@ OrdersTab::OrdersTab(QWidget *parent)
     actionRow->addWidget(m_formatCombo);
     auto *labelsBtn = new QPushButton(tr("Скачать ярлыки (PDF)..."), this);
     actionRow->addWidget(labelsBtn);
+    actionRow->addSpacing(20);
+    auto *writeOffBtn = new QPushButton(tr("Списать со склада..."), this);
+    writeOffBtn->setToolTip(tr("Списать пару за каждый заказ (и вернуть отменённые) с выбранного в настройках кабинета склада; заказы сайта - тоже. "
+                               "Сначала покажет, что будет сделано."));
+    actionRow->addWidget(writeOffBtn);
     actionRow->addStretch();
     layout->addLayout(actionRow);
 
@@ -181,6 +189,7 @@ OrdersTab::OrdersTab(QWidget *parent)
 
     auto *hint = new QLabel(tr("Ярлыки и Excel делаются по выделенным в таблице заказам, а если ничего не "
                                "выделено - по всем показанным (с учётом поиска). Ярлыки есть только у заказов в обработке. "
+                               "«Списать со склада...» открывает окно с предпросмотром: ничего не списывается, пока вы не нажмёте кнопку там. "
                                "Двойной клик по строке открывает карточку товара - там можно сразу поправить цену, "
                                "штрихкод или остаток."),
                             this);
@@ -221,6 +230,7 @@ OrdersTab::OrdersTab(QWidget *parent)
     connect(loadBtn, &QPushButton::clicked, this, &OrdersTab::loadOrders);
     connect(excelBtn, &QPushButton::clicked, this, &OrdersTab::exportExcel);
     connect(labelsBtn, &QPushButton::clicked, this, &OrdersTab::downloadLabels);
+    connect(writeOffBtn, &QPushButton::clicked, this, &OrdersTab::writeOffOrders);
 
 }
 
@@ -402,6 +412,37 @@ QList<const OrdersTab::LoadedOrder *> OrdersTab::selectedOrders() const
         }
     }
     return result;
+}
+
+void OrdersTab::writeOffOrders()
+{
+    QList<OrderWriteoff::Order> orders;
+    for (const LoadedOrder *lo : selectedOrders()) {
+        OrderWriteoff::Order o;
+        o.source = QStringLiteral("market");
+        for (const auto &a : m_accounts)
+            if (a.campaignId == lo->order.campaignId && a.name == lo->accountName)
+                o.accountId = a.id;
+        if (o.accountId == 0)
+            for (const auto &a : m_accounts)
+                if (a.campaignId == lo->order.campaignId)
+                    o.accountId = a.id;
+        o.accountName = lo->accountName;
+        o.ref = QString::number(lo->order.id);
+        o.status = lo->order.status;
+        o.substatus = lo->order.substatus;
+        o.shipment = humanDate(lo->order.shipmentDate, false);
+        for (const MarketOrderItem &it : lo->order.items)
+            o.lines.append({it.offerId, it.name, it.count});
+        if (o.accountId > 0)
+            orders << o;
+    }
+    OrderWriteoffDialog dlg(orders, this);
+    dlg.exec();
+    if (dlg.changed()) {
+        m_locations = loadLocations();
+        emit productEdited(); // остатки изменились: другие вкладки перечитают
+    }
 }
 
 void OrdersTab::exportExcel()

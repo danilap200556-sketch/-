@@ -307,6 +307,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     connect(m_ordersTab, &OrdersTab::productEdited, this, [this]() {
         markDirty(m_productsTab);
         markDirty(m_stockTab);
+        markDirty(m_documentsTab);
         markDirty(m_labelsTab);
     });
 

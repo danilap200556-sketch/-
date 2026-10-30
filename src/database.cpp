@@ -299,6 +299,31 @@ const QStringList &schemaDdl()
             UNIQUE (account_id, offer_id)
         ))",
         "CREATE INDEX IF NOT EXISTS market_cards_product_idx ON market_cards (product_id)",
+        // --- Списание заказов. С какого нашего склада списывать заказы кабинета (пусто - списание не настроено).
+        "ALTER TABLE market_accounts ADD COLUMN IF NOT EXISTS writeoff_warehouse_id INTEGER REFERENCES warehouses(id) ON DELETE SET NULL",
+        // Какие заказы уже списаны со склада (а какие вернулись при отмене): один заказ - одна запись, поэтому повторное
+        // списание невозможно, даже если кнопку нажали на двух компьютерах. source: market (заказ Маркета, account_id - кабинет)
+        // или site (заказ нашего сайта: его кладёт в очередь сайт, state = pending, а списывает кнопка в приложении).
+        // state: pending (ждёт списания), writing / returning (операция идёт), written_off, cancel_requested (сайт отменил
+        // уже списанный заказ), returned, cancelled (сайт отменил заказ до списания). lines - что заказано (key = артикул на
+        // Маркете, артикул или штрихкод), written - что реально списано (товар и штуки), по нему же делается возврат.
+        R"(CREATE TABLE IF NOT EXISTS order_writeoffs (
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            source TEXT NOT NULL,
+            account_id INTEGER NOT NULL DEFAULT 0,
+            order_ref TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'pending',
+            lines JSONB NOT NULL DEFAULT '[]'::jsonb,
+            written JSONB NOT NULL DEFAULT '[]'::jsonb,
+            warehouse_id INTEGER,
+            doc_id INTEGER,
+            return_doc_id INTEGER,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            written_at TIMESTAMPTZ,
+            returned_at TIMESTAMPTZ,
+            UNIQUE (source, account_id, order_ref)
+        ))",
     };
     return ddl;
 }

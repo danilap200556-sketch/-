@@ -160,6 +160,8 @@ add_executable(inventory_manager
     src/flowlayout.cpp
     src/photoexcel.cpp
     src/photoexceldialog.cpp
+    src/orderwriteoff.cpp
+    src/orderwriteoffdialog.cpp
     src/photoreviewdialog.cpp
     src/thermallabel.cpp
     src/thermalprintdialog.cpp

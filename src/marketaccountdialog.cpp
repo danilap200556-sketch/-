@@ -97,6 +97,19 @@ MarketAccountDialog::MarketAccountDialog(const MarketAccount &account, QWidget *
     localHint->setStyleSheet("color: gray;");
     form->addRow(QString(), localHint);
 
+    m_writeoffWarehouse = new QComboBox(this);
+    m_writeoffWarehouse->addItem(tr("Не выбран (списывать заказы нельзя)"), 0);
+    QSqlQuery wq("SELECT id, name FROM warehouses ORDER BY name");
+    while (wq.next())
+        m_writeoffWarehouse->addItem(wq.value(1).toString(), wq.value(0).toInt());
+    const int wi = m_writeoffWarehouse->findData(account.writeoffWarehouseId);
+    m_writeoffWarehouse->setCurrentIndex(wi < 0 ? 0 : wi);
+    form->addRow(tr("Склад списания заказов"), m_writeoffWarehouse);
+    auto *writeoffHint = new QLabel(tr("С этого склада кнопка «Списать со склада...» во вкладке «Заказы Маркета» списывает пару за каждый заказ этого кабинета."), this);
+    writeoffHint->setWordWrap(true);
+    writeoffHint->setStyleSheet("color: gray;");
+    form->addRow(QString(), writeoffHint);
+
     m_status = new QLabel(this);
     m_status->setWordWrap(true);
     layout->addWidget(m_status);
@@ -233,6 +246,7 @@ void MarketAccountDialog::validateAndAccept()
     m_account.businessId = m_campaign->currentData(RoleBusinessId).toLongLong();
     m_account.warehouseGroups = m_groups->isChecked();
     m_account.marketWarehouseId = m_account.warehouseGroups ? 0 : m_warehouse->currentData().toLongLong();
+    m_account.writeoffWarehouseId = m_writeoffWarehouse->currentData().toInt();
     m_account.localWarehouseIds.clear();
     for (int i = 0; i < m_localWarehouses->count(); ++i) {
         const auto *item = m_localWarehouses->item(i);
