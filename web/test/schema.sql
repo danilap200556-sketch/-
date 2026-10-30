@@ -219,12 +219,8 @@ CREATE TABLE IF NOT EXISTS order_writeoffs (
             written_at TIMESTAMPTZ,
             returned_at TIMESTAMPTZ,
             UNIQUE (source, account_id, order_ref)
-
-
-
-
-
-        R"(CREATE TABLE IF NOT EXISTS site_prices (
+        );
+CREATE TABLE IF NOT EXISTS site_prices (
             model_key TEXT PRIMARY KEY,
             price NUMERIC(12,2) NOT NULL CHECK (price >= 0),
             sale_price NUMERIC(12,2) CHECK (sale_price IS NULL OR sale_price >= 0),

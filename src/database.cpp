@@ -323,6 +323,7 @@ const QStringList &schemaDdl()
             written_at TIMESTAMPTZ,
             returned_at TIMESTAMPTZ,
             UNIQUE (source, account_id, order_ref)
+        ))",
         // --- Цены и скидки для САЙТА магазина (проект web): свои, независимые от products.price (цена склада - для учёта
         // и Яндекс Маркета). Цена задаётся на модель - артикул без размера (SitePrices::modelKey) - и действует на все
         // её размеры. Нет строки - сайт берёт цену склада. sale_price - цена со скидкой, действует с sale_from по sale_to
