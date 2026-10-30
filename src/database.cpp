@@ -299,6 +299,20 @@ const QStringList &schemaDdl()
             UNIQUE (account_id, offer_id)
         ))",
         "CREATE INDEX IF NOT EXISTS market_cards_product_idx ON market_cards (product_id)",
+        // --- Цены и скидки для САЙТА магазина (проект web): свои, независимые от products.price (цена склада - для учёта
+        // и Яндекс Маркета). Цена задаётся на модель - артикул без размера (SitePrices::modelKey) - и действует на все
+        // её размеры. Нет строки - сайт берёт цену склада. sale_price - цена со скидкой, действует с sale_from по sale_to
+        // включительно (пусто - без границы). Сайт читает эту таблицу (grants.sql в проекте web), менять её может только
+        // программа. НОВЫЕ ОПЕРАТОРЫ СХЕМЫ ДОБАВЛЯЮТСЯ В КОНЕЦ СПИСКА.
+        R"(CREATE TABLE IF NOT EXISTS site_prices (
+            model_key TEXT PRIMARY KEY,
+            price NUMERIC(12,2) NOT NULL CHECK (price >= 0),
+            sale_price NUMERIC(12,2) CHECK (sale_price IS NULL OR sale_price >= 0),
+            sale_from DATE,
+            sale_to DATE,
+            updated_by TEXT NOT NULL DEFAULT '',
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        ))",
     };
     return ddl;
 }

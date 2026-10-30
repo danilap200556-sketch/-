@@ -18,6 +18,7 @@ class MarketTab;
 class CardsTab;
 class DocumentsTab;
 class OrdersTab;
+class SitePricesTab;
 class UsersTab;
 class UpdatesTab;
 class Updater;
@@ -94,6 +95,7 @@ private:
     CardsTab *m_cardsTab;
     DocumentsTab *m_documentsTab;
     OrdersTab *m_ordersTab;
+    SitePricesTab *m_sitePricesTab = nullptr;
     UsersTab *m_usersTab = nullptr;
     Updater *m_updater = nullptr;
     UpdatesTab *m_updatesTab = nullptr;

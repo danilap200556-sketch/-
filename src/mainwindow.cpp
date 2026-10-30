@@ -13,6 +13,7 @@
 #include "documents.h"
 #include "marketautosync.h"
 #include "ordertab.h"
+#include "sitepricestab.h"
 #include "userstab.h"
 #include "applog.h"
 #include "authservice.h"
@@ -230,6 +231,9 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         addPage(tr("Яндекс Маркет"), Theme::Icon::Market, m_marketTab);
         addPage(tr("Карточки Маркета"), Theme::Icon::Cards, m_cardsTab);
         addPage(tr("Заказы Маркета"), Theme::Icon::Orders, m_ordersTab);
+        // Свои цены и скидки для сайта магазина (проект web): не зависят от цены склада.
+        m_sitePricesTab = new SitePricesTab(this);
+        addPage(tr("Цены сайта"), Theme::Icon::Tag, m_sitePricesTab);
         // Коды маркировки «Честного знака»: только в программе, на сайте этой страницы нет.
         m_markingTab = new MarkingTab(this);
         addPage(tr("Честный знак"), Theme::Icon::Marking, m_markingTab);
@@ -376,6 +380,8 @@ void MainWindow::refreshPage(QWidget *w)
         m_cardsTab->refresh();
     else if (w == m_ordersTab)
         m_ordersTab->refresh();
+    else if (w == m_sitePricesTab && m_sitePricesTab)
+        m_sitePricesTab->refresh();
     else if (w == m_markingTab && m_markingTab)
         m_markingTab->refresh();
     else if (w == m_usersTab)

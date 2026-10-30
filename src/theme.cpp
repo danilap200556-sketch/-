@@ -321,6 +321,12 @@ QIcon icon(Icon which, const QColor &color, int size)
         p.drawLine(P(8.5, 13), P(10.8, 15.4)); p.drawLine(P(10.8, 15.4), P(15.5, 10.6));
         break;
     }
+    case Icon::Tag: {
+        // ценник: пятиугольник с отверстием для верёвочки
+        poly({P(3.5, 12.5), P(12.5, 3.5), P(20.5, 3.5), P(20.5, 11.5), P(11.5, 20.5)});
+        p.drawEllipse(P(16.5, 7.5), 1.4 * u, 1.4 * u);
+        break;
+    }
     case Icon::Marking: {
         // квадрат Data Matrix: сплошные левая и нижняя стороны, пунктир сверху и справа, несколько модулей внутри
         p.drawRect(QRectF(4 * u, 4 * u, 16 * u, 16 * u));
