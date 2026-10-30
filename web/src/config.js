@@ -19,8 +19,14 @@ function load(env = process.env) {
   if (!['require', 'verify', 'disable'].includes(ssl)) {
     throw new Error('DB_SSL должен быть require, verify или disable');
   }
+  // Токен, с которым сайт-магазин передаёт заказы (POST /api/orders). Не задан - приём заказов выключен.
+  const siteOrdersToken = (env.SITE_ORDERS_TOKEN || '').trim();
+  if (siteOrdersToken && siteOrdersToken.length < 24) {
+    throw new Error('SITE_ORDERS_TOKEN слишком короткий (нужна случайная строка от 24 символов, например openssl rand -hex 24)');
+  }
   return {
     prod,
+    siteOrdersToken,
     port: intEnv(env.PORT, 3000),
     host: env.HOST || '0.0.0.0',
     secret,

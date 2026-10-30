@@ -9,3 +9,5 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
   stocktakes, stocktake_items
 TO web_user;
 GRANT SELECT ON market_accounts TO web_user;
+-- Приём заказов от сайта-магазина (POST /api/orders): сайт кладёт заказ в очередь и отменяет его, списывает со склада приложение.
+GRANT SELECT, INSERT, UPDATE ON order_writeoffs TO web_user;

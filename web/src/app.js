@@ -212,6 +212,9 @@ function createApp(cfg, db) {
     res.redirect('/login');
   });
 
+  // --- Приём заказов от сайта-магазина (по токену, без входа): очередь на списание со склада
+  require('./routes/siteorders')(app, { cfg, db });
+
   // --- Дальше только для вошедших
   app.get('/', requireLogin, (req, res) => res.redirect('/stock'));
 

@@ -202,7 +202,29 @@ CREATE TABLE IF NOT EXISTS market_cards (
             UNIQUE (account_id, offer_id)
         );
 CREATE INDEX IF NOT EXISTS market_cards_product_idx ON market_cards (product_id);
-CREATE TABLE IF NOT EXISTS site_prices (
+ALTER TABLE market_accounts ADD COLUMN IF NOT EXISTS writeoff_warehouse_id INTEGER REFERENCES warehouses(id) ON DELETE SET NULL;
+CREATE TABLE IF NOT EXISTS order_writeoffs (
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            source TEXT NOT NULL,
+            account_id INTEGER NOT NULL DEFAULT 0,
+            order_ref TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'pending',
+            lines JSONB NOT NULL DEFAULT '[]'::jsonb,
+            written JSONB NOT NULL DEFAULT '[]'::jsonb,
+            warehouse_id INTEGER,
+            doc_id INTEGER,
+            return_doc_id INTEGER,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            written_at TIMESTAMPTZ,
+            returned_at TIMESTAMPTZ,
+            UNIQUE (source, account_id, order_ref)
+
+
+
+
+
+        R"(CREATE TABLE IF NOT EXISTS site_prices (
             model_key TEXT PRIMARY KEY,
             price NUMERIC(12,2) NOT NULL CHECK (price >= 0),
             sale_price NUMERIC(12,2) CHECK (sale_price IS NULL OR sale_price >= 0),

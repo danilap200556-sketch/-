@@ -33,6 +33,7 @@ private slots:
     void loadOrders();
     void exportExcel();
     void downloadLabels();
+    void writeOffOrders();
     void applyFilter();
     void editProductOfRow(int row);
 

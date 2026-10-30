@@ -39,5 +39,6 @@ private:
     QComboBox *m_warehouse;
     QPushButton *m_loadWarehousesBtn;
     QListWidget *m_localWarehouses;
+    QComboBox *m_writeoffWarehouse;
     QLabel *m_status;
 };
