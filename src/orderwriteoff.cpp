@@ -40,6 +40,8 @@ QString humanStatus(const QString &status)
 
 QString orderTitle(const Order &o)
 {
+    if (!o.title.isEmpty())
+        return o.title;
     if (o.source == QLatin1String("site"))
         return QStringLiteral("заказ сайта №%1").arg(o.ref);
     return o.accountName.isEmpty() ? QStringLiteral("заказ Маркета №%1").arg(o.ref)
@@ -290,6 +292,8 @@ QList<Planned> plan(const QList<Order> &orders, QString *error)
     QHash<int, QHash<int, int>> stockByWh; // склад -> товар -> остаток (убывает по мере планирования)
     QHash<int, QSet<int>> idsByWh;
     auto warehouseOf = [&](const Planned &p) {
+        if (p.order.warehouseId > 0)
+            return p.order.warehouseId;
         return p.order.source == QLatin1String("site") ? siteWh : accountWh.value(p.order.accountId);
     };
     for (Planned &p : out) {
@@ -437,7 +441,8 @@ Outcome apply(const QList<Planned> &selected, const std::function<bool(int, int)
             }
             QStringList problems;
             QString err;
-            if (!Database::adjustStockBatch(items, p.warehouseId, true, QStringLiteral("Заказ: %1").arg(title), &problems, &err)) {
+            const QString commentTitle = title.left(1).toUpper() + title.mid(1); // «Заказ Маркета №100 (Магазин 1)»
+            if (!Database::adjustStockBatch(items, p.warehouseId, true, commentTitle, &problems, &err)) {
                 // Не списалось: заказ снова свободен.
                 QSqlQuery undo;
                 if (p.order.source == QLatin1String("site"))
@@ -503,6 +508,142 @@ Outcome apply(const QList<Planned> &selected, const std::function<bool(int, int)
     if (progress && !res.cancelled)
         progress(selected.size(), selected.size());
     return res;
+}
+
+namespace {
+
+struct Existing {
+    bool found = false;
+    int id = 0;
+    QString state;
+    int docId = 0;
+    int returnDocId = 0;
+    int warehouseId = 0;
+    QJsonArray written;
+};
+
+Existing lookup(const QString &source, const QString &ref)
+{
+    Existing e;
+    QSqlQuery q;
+    q.prepare(QStringLiteral("SELECT id, state, COALESCE(doc_id, 0), COALESCE(return_doc_id, 0), COALESCE(warehouse_id, 0), written::text FROM order_writeoffs "
+                             "WHERE source = ? AND account_id = 0 AND order_ref = ?"));
+    q.addBindValue(source);
+    q.addBindValue(ref);
+    if (q.exec() && q.next()) {
+        e.found = true;
+        e.id = q.value(0).toInt();
+        e.state = q.value(1).toString();
+        e.docId = q.value(2).toInt();
+        e.returnDocId = q.value(3).toInt();
+        e.warehouseId = q.value(4).toInt();
+        e.written = QJsonDocument::fromJson(q.value(5).toString().toUtf8()).array();
+    }
+    return e;
+}
+
+Result fromOutcome(const Outcome &o, const QString &source, const QString &ref, bool returning)
+{
+    Result r;
+    if ((returning ? o.returned : o.written) == 1 && !o.documents.isEmpty()) {
+        r.status = Result::Written;
+        r.docId = o.documents.first();
+        return r;
+    }
+    if (o.skipped > 0) {
+        // Другой компьютер успел раньше: отвечаем так же, как при повторном вызове.
+        const Existing e = lookup(source, ref);
+        r.status = Result::AlreadyDone;
+        r.docId = returning ? e.returnDocId : e.docId;
+        return r;
+    }
+    r.status = Result::Failed;
+    r.message = o.problems.join(QStringLiteral("; "));
+    if (r.message.contains(QStringLiteral("на складе")))
+        r.status = Result::NotEnoughStock;
+    return r;
+}
+
+} // namespace
+
+Result writeOffItems(const QString &source, const QString &ref, const QString &title, int warehouseId, const QList<Item> &items)
+{
+    Result r;
+    if (source.trimmed().isEmpty() || ref.trimmed().isEmpty()) {
+        r.message = QStringLiteral("Не указан источник или номер заказа");
+        return r;
+    }
+    if (warehouseId <= 0) {
+        r.message = QStringLiteral("Не указан склад списания");
+        return r;
+    }
+    if (items.isEmpty()) {
+        r.message = QStringLiteral("В заказе нет позиций");
+        return r;
+    }
+    for (const Item &it : items)
+        if (it.productId <= 0 || it.qty <= 0) {
+            r.message = QStringLiteral("Позиция без товара или с количеством не больше нуля");
+            return r;
+        }
+    const Existing e = lookup(source, ref);
+    if (e.found) {
+        if (e.state == QLatin1String("written_off") || e.state == QLatin1String("cancel_requested") || e.state == QLatin1String("returned")) {
+            r.status = Result::AlreadyDone;
+            r.docId = e.docId;
+            return r;
+        }
+        if (e.state == QLatin1String("writing") || e.state == QLatin1String("returning")) {
+            r.message = QStringLiteral("Операция по этому заказу уже идёт (или оборвалась) - проверьте раздел «Документы»");
+            return r;
+        }
+        r.message = QStringLiteral("Заказ уже есть в очереди списаний в состоянии «%1»").arg(e.state);
+        return r;
+    }
+    Planned p;
+    p.order.source = source;
+    p.order.ref = ref;
+    p.order.title = title.trimmed().isEmpty() ? QStringLiteral("заказ %1 №%2").arg(source, ref) : title.trimmed();
+    p.order.status = QStringLiteral("PROCESSING");
+    p.action = Action::WriteOff;
+    p.warehouseId = warehouseId;
+    p.items = items;
+    for (const Item &it : items)
+        p.order.lines.append({it.sku.isEmpty() ? QString::number(it.productId) : it.sku, it.name, it.qty});
+    return fromOutcome(apply({p}), source, ref, false);
+}
+
+Result returnOrder(const QString &source, const QString &ref)
+{
+    Result r;
+    const Existing e = lookup(source, ref);
+    if (!e.found || e.state == QLatin1String("pending") || e.state == QLatin1String("cancelled")) {
+        r.message = QStringLiteral("Этот заказ не списывался - возвращать нечего");
+        return r;
+    }
+    if (e.state == QLatin1String("returned")) {
+        r.status = Result::AlreadyDone;
+        r.docId = e.returnDocId;
+        return r;
+    }
+    if (e.state != QLatin1String("written_off") && e.state != QLatin1String("cancel_requested")) {
+        r.message = QStringLiteral("Операция по этому заказу уже идёт (или оборвалась) - проверьте раздел «Документы»");
+        return r;
+    }
+    Planned p;
+    p.order.source = source;
+    p.order.ref = ref;
+    p.order.status = QStringLiteral("CANCELLED");
+    p.action = Action::Return;
+    p.recordId = e.id;
+    p.warehouseId = e.warehouseId;
+    for (const QJsonValue &v : e.written) {
+        const QJsonObject w = v.toObject();
+        p.items.append({w.value(QStringLiteral("product_id")).toInt(), w.value(QStringLiteral("sku")).toString(), w.value(QStringLiteral("name")).toString(),
+                        w.value(QStringLiteral("qty")).toInt(), 0});
+    }
+    p.order.title = QStringLiteral("заказ %1 №%2").arg(source, ref);
+    return fromOutcome(apply({p}), source, ref, true);
 }
 
 } // namespace OrderWriteoff

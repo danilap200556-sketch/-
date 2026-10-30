@@ -31,6 +31,8 @@ struct Order {
     QString status;       // Маркет: PROCESSING, DELIVERY, CANCELLED...; сайт: pending | cancel_requested
     QString substatus;
     QString shipment;     // дата отгрузки (для таблицы)
+    QString title;        // как назвать заказ в документе («заказ сайта №10001»); пусто - по виду и номеру
+    int warehouseId = 0;  // явный склад списания; 0 - по настройкам кабинета (Маркет) или сайта
     QList<Line> lines;
 };
 
@@ -87,5 +89,30 @@ struct Outcome {
 
 // Выполняет отмеченные заказы (только с actionable()). progress(сделано, всего) возвращает false - остановить.
 Outcome apply(const QList<Planned> &selected, const std::function<bool(int, int)> &progress = {});
+
+// --- Универсальный вход для других вкладок и модулей (например, заказы интернет-магазина, который работает с той же базой):
+// список готовых позиций «товар - штуки», склад, источник и номер заказа. Ключ идемпотентности - пара (source, ref): повторный
+// вызов с тем же ключом ничего не списывает и возвращает номер уже созданного документа. Результат - один документ «Списание»
+// (раздел «Документы», его можно отменить) и запись в order_writeoffs, по которой потом возвращается пара при отмене заказа.
+// source - любая своя метка («webshop»), чтобы ключи разных источников не пересекались; Маркет и очередь сайта занимают
+// «market» и «site».
+struct Result {
+    enum Status {
+        Written,         // списано, docId - номер документа
+        AlreadyDone,     // по этому ключу уже списано (или возвращено): ничего не изменилось, docId - прежний документ
+        NotEnoughStock,  // не хватает остатка: ничего не списано, ключ свободен - после прихода можно повторить
+        Failed           // неверные данные, ошибка базы или операция по ключу уже идёт: message объясняет
+    };
+    Status status = Failed;
+    int docId = 0;
+    QString message;
+    bool ok() const { return status == Written || status == AlreadyDone; }
+};
+
+// title - как назвать заказ в комментарии документа («заказ сайта №10001» -> «Заказ сайта №10001»).
+Result writeOffItems(const QString &source, const QString &ref, const QString &title, int warehouseId, const QList<Item> &items);
+// Вернуть пару за заказ, списанный выше (заказ отменили): приходом, на тот же склад, тем же количеством. Повторный вызов -
+// AlreadyDone с номером документа возврата. Заказ, который не списывался, - Failed.
+Result returnOrder(const QString &source, const QString &ref);
 
 } // namespace OrderWriteoff
