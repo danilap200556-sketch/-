@@ -202,3 +202,12 @@ CREATE TABLE IF NOT EXISTS market_cards (
             UNIQUE (account_id, offer_id)
         );
 CREATE INDEX IF NOT EXISTS market_cards_product_idx ON market_cards (product_id);
+CREATE TABLE IF NOT EXISTS site_prices (
+            model_key TEXT PRIMARY KEY,
+            price NUMERIC(12,2) NOT NULL CHECK (price >= 0),
+            sale_price NUMERIC(12,2) CHECK (sale_price IS NULL OR sale_price >= 0),
+            sale_from DATE,
+            sale_to DATE,
+            updated_by TEXT NOT NULL DEFAULT '',
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
