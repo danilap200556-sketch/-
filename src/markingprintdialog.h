@@ -29,6 +29,7 @@ public:
     explicit MarkingPrintDialog(const QList<int> &codeIds, QWidget *parent = nullptr);
 
     int count() const { return m_rows.size(); }
+    int skippedNoTail() const { return m_skippedNoTail; } // коды без криптохвоста, исключённые из печати
     bool printed() const { return m_printed; }
     ThermalLabel::Settings currentSettings() const;
     // Шаблон и поля (для проверок и настройки без окна): cabinet - «как в кабинете»; поле пусто - берётся из карточки товара.
@@ -68,4 +69,5 @@ private:
     QLabel *m_preview;
     QLabel *m_summary;
     bool m_printed = false;
+    int m_skippedNoTail = 0;
 };

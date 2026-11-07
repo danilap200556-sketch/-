@@ -1,6 +1,9 @@
 #include "markingcode.h"
 
+#include "csvimport.h"
+
 #include <QHash>
+#include <QMap>
 #include <QRegularExpression>
 #include <QSet>
 #include <QSqlDatabase>
@@ -259,7 +262,7 @@ bool linkGtin(const QString &gtin, int productId, QString *error)
     return true;
 }
 
-AddResult add(const QStringList &rawCodes, const QString &source, const QString &orderId, int forceProductId)
+AddResult add(const QStringList &rawCodes, const QString &source, const QString &orderId, int forceProductId, const QString &status)
 {
     AddResult res;
     struct Item {
@@ -318,12 +321,12 @@ AddResult add(const QStringList &rawCodes, const QString &source, const QString 
         QStringList rows;
         QVariantList binds;
         for (int i = start; i < end; ++i) {
-            rows << (i == start ? QStringLiteral("(?::text, ?::text, ?::text, ?::int, ?::text, ?::text)") : QStringLiteral("(?, ?, ?, ?, ?, ?)"));
+            rows << (i == start ? QStringLiteral("(?::text, ?::text, ?::text, ?::int, ?::text, ?::text, ?::text)") : QStringLiteral("(?, ?, ?, ?, ?, ?, ?)"));
             binds << items[i].p.code << items[i].p.gtin << items[i].p.serial
-                  << (items[i].productId > 0 ? QVariant(items[i].productId) : nullInt()) << nn(source) << nn(orderId);
+                  << (items[i].productId > 0 ? QVariant(items[i].productId) : nullInt()) << nn(source) << nn(orderId) << (status == QLatin1String("printed") ? QStringLiteral("printed") : QStringLiteral("new"));
         }
         QSqlQuery q;
-        q.prepare(QStringLiteral("INSERT INTO marking_codes (code, gtin, serial, product_id, source, order_id) VALUES %1 "
+        q.prepare(QStringLiteral("INSERT INTO marking_codes (code, gtin, serial, product_id, source, order_id, status) VALUES %1 "
                                  "ON CONFLICT (code) DO NOTHING RETURNING code").arg(rows.join(QLatin1Char(','))));
         for (const QVariant &b : std::as_const(binds))
             q.addBindValue(b);
@@ -353,6 +356,92 @@ AddResult add(const QStringList &rawCodes, const QString &source, const QString 
     res.unknownGtins = QStringList(unknown.begin(), unknown.end());
     res.unknownGtins.sort();
     return res;
+}
+
+bool hasCryptoTail(const QString &code)
+{
+    const QStringList groups = code.split(kGs, Qt::SkipEmptyParts);
+    for (int i = 1; i < groups.size(); ++i) {
+        const QString ai = groups[i].left(2);
+        if (ai == QLatin1String("91") || ai == QLatin1String("92") || ai == QLatin1String("93"))
+            return true;
+    }
+    return false;
+}
+
+bool readRegistryCsv(const QString &path, QList<RegistryRow> *rows, QString *error)
+{
+    rows->clear();
+    if (!path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive))
+        return false;
+    const CsvImport::Table t = CsvImport::readFile(path);
+    if (!t.ok) {
+        if (error)
+            *error = t.error;
+        return false;
+    }
+    // Заголовок - строка, где есть «Код» и «GTIN» (перед ним может быть строка «Фильтр(...)»).
+    int head = -1;
+    QHash<QString, int> col;
+    for (int r = 0; r < qMin(int(t.rows.size()), 6) && head < 0; ++r) {
+        QHash<QString, int> c;
+        for (int i = 0; i < t.rows[r].size(); ++i)
+            c.insert(t.rows[r][i].trimmed(), i);
+        if (c.contains(QStringLiteral("Код")) && c.contains(QStringLiteral("GTIN"))) {
+            head = r;
+            col = c;
+        }
+    }
+    if (head < 0)
+        return false;
+    auto cell = [&](const QStringList &row, const char *name) {
+        const int i = col.value(QString::fromUtf8(name), -1);
+        return i >= 0 && i < row.size() ? row[i].trimmed() : QString();
+    };
+    for (int r = head + 1; r < t.rows.size(); ++r) {
+        const QStringList &row = t.rows[r];
+        RegistryRow x;
+        x.code = cell(row, "Код");
+        if (x.code.isEmpty())
+            continue;
+        x.gtin = cell(row, "GTIN");
+        x.name = cell(row, "Наименование товара");
+        x.brand = cell(row, "Бренд");
+        x.status = cell(row, "Статус кода").toUpper();
+        x.method = cell(row, "Способ ввода в оборот");
+        x.orderId = cell(row, "Номер заказа в СУЗ");
+        x.owner = cell(row, "Владелец");
+        x.appliedAt = cell(row, "Дата нанесения");
+        x.emittedAt = cell(row, "Дата эмиссии");
+        rows->append(x);
+    }
+    return true;
+}
+
+AddResult addRegistry(const QList<RegistryRow> &rows)
+{
+    // Коды одного заказа и статуса - одной группой (так у кода остаётся номер заказа).
+    QMap<QString, QStringList> groups; // «статус|заказ» -> коды
+    for (const RegistryRow &r : rows)
+        groups[(r.status == QLatin1String("EMITTED") ? QStringLiteral("new") : QStringLiteral("printed")) + QLatin1Char('|') + r.orderId] << r.code;
+    AddResult total;
+    for (auto it = groups.cbegin(); it != groups.cend(); ++it) {
+        const QStringList key = it.key().split(QLatin1Char('|'));
+        const AddResult part = add(it.value(), QStringLiteral("registry"), key.value(1), 0, key.value(0));
+        total.added += part.added;
+        total.duplicates += part.duplicates;
+        total.invalid += part.invalid;
+        total.linked += part.linked;
+        total.unlinked += part.unlinked;
+        for (const QString &g : part.unknownGtins)
+            if (!total.unknownGtins.contains(g))
+                total.unknownGtins << g;
+        for (const QString &pr : part.problems)
+            if (total.problems.size() < kMaxProblems)
+                total.problems << pr;
+    }
+    total.unknownGtins.sort();
+    return total;
 }
 
 int relink()

@@ -61,11 +61,19 @@ MarkingPrintDialog::MarkingPrintDialog(const QList<int> &codeIds, QWidget *paren
 {
     setWindowTitle(tr("Печать кодов маркировки на термоэтикетках"));
     resize(1000, 680);
+    int noTail = 0;
     for (int id : codeIds) {
         const MarkingCode::Row r = MarkingCode::get(id);
-        if (r.id > 0)
-            m_rows << r;
+        if (r.id <= 0)
+            continue;
+        // Код без криптохвоста (код идентификации) напечатать нельзя: такой Data Matrix Система маркировки не примет.
+        if (!MarkingCode::hasCryptoTail(r.code)) {
+            ++noTail;
+            continue;
+        }
+        m_rows << r;
     }
+    m_skippedNoTail = noTail;
 
     QList<int> productIds;
     for (const MarkingCode::Row &r : std::as_const(m_rows))
@@ -212,8 +220,9 @@ MarkingPrintDialog::MarkingPrintDialog(const QList<int> &codeIds, QWidget *paren
         m_table->selectRow(0);
     updatePreview();
     const int again = alreadyPrinted();
-    m_summary->setText(tr("Этикеток к печати: %1 (по одной на код).%2").arg(m_rows.size())
-                           .arg(again > 0 ? tr(" Из них уже печатались: %1 - код маркировки наклеивается на товар один раз, повторно печатайте только если этикетка испорчена.").arg(again) : QString()));
+    m_summary->setText(tr("Этикеток к печати: %1 (по одной на код).%2%3").arg(m_rows.size())
+                           .arg(again > 0 ? tr(" Из них уже печатались: %1 - код маркировки наклеивается на товар один раз, повторно печатайте только если этикетка испорчена.").arg(again) : QString(),
+                                m_skippedNoTail > 0 ? tr(" Пропущено кодов без криптохвоста (коды идентификации, напечатать нельзя): %1.").arg(m_skippedNoTail) : QString()));
 }
 
 ThermalLabel::Settings MarkingPrintDialog::currentSettings() const

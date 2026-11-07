@@ -348,7 +348,12 @@ void MarkingTab::reload()
     m_table->setRowCount(int(rows.size()));
     for (int r = 0; r < rows.size(); ++r) {
         const MarkingCode::Row &row = rows[r];
-        auto *status = new QTableWidgetItem(row.status == QLatin1String("printed") ? tr("напечатан") : tr("новый"));
+        // Код без криптохвоста - код идентификации (КИ): им подают сведения в Систему маркировки, напечатать из него нельзя.
+        const bool ki = !MarkingCode::hasCryptoTail(row.code);
+        auto *status = new QTableWidgetItem(row.status == QLatin1String("printed") ? (ki ? tr("нанесён (КИ)") : tr("напечатан")) : (ki ? tr("КИ, без криптохвоста") : tr("новый")));
+        if (ki)
+            status->setToolTip(tr("Код идентификации: в нём нет криптохвоста (групп 91 и 92), поэтому Data Matrix для нанесения на товар из него не получится. "
+                                  "Такие коды нужны для документов Системы маркировки; печать для них отключена."));
         status->setData(Qt::UserRole, row.id);
         m_table->setItem(r, ColStatus, status);
         m_table->setItem(r, ColSku, new QTableWidgetItem(row.productId > 0 ? row.sku : tr("- не найден -")));
@@ -358,7 +363,7 @@ void MarkingTab::reload()
         auto *code = new QTableWidgetItem(MarkingCode::shortText(row.code));
         code->setToolTip(QString(row.code).replace(MarkingCode::kGs, QStringLiteral("␝")));
         m_table->setItem(r, ColCode, code);
-        m_table->setItem(r, ColSource, new QTableWidgetItem(row.source == QLatin1String("suz") ? tr("СУЗ %1").arg(row.orderId) : (row.source == QLatin1String("scan") ? tr("сканер") : tr("импорт"))));
+        m_table->setItem(r, ColSource, new QTableWidgetItem(row.source == QLatin1String("suz") ? tr("СУЗ %1").arg(row.orderId) : (row.source == QLatin1String("scan") ? tr("сканер") : (row.source == QLatin1String("registry") ? tr("реестр ЧЗ") : tr("импорт")))));
         m_table->setItem(r, ColPrints, new QTableWidgetItem(QString::number(row.printCount)));
         m_table->setItem(r, ColCreated, new QTableWidgetItem(row.createdAt.toLocalTime().toString(QStringLiteral("dd.MM.yyyy HH:mm"))));
     }
@@ -397,6 +402,33 @@ void MarkingTab::addFromFile()
     if (path.isEmpty())
         return;
     QString err;
+    // Выгрузка «Реестр кодов» из личного кабинета (CSV с колонками «Код», «GTIN», «Статус кода»...) - коды идентификации с их статусами.
+    QList<MarkingCode::RegistryRow> registry;
+    if (MarkingCode::readRegistryCsv(path, &registry, &err)) {
+        if (registry.isEmpty()) {
+            QMessageBox::information(this, tr("Файл"), tr("Это выгрузка «Реестр кодов», но в ней нет ни одного кода."));
+            return;
+        }
+        int noTail = 0, applied = 0;
+        for (const MarkingCode::RegistryRow &r : std::as_const(registry)) {
+            noTail += !MarkingCode::hasCryptoTail(MarkingCode::parse(r.code).code);
+            applied += r.status != QLatin1String("EMITTED");
+        }
+        const MarkingCode::AddResult r = MarkingCode::addRegistry(registry);
+        reload();
+        emit codesChanged();
+        showAddResult(r);
+        if (noTail > 0)
+            QMessageBox::information(this, tr("Реестр кодов"),
+                                     tr("Это выгрузка «Реестр кодов» из личного кабинета: строк %1, из них нанесённых на товар (не «Эмитирован») - %2. В %3 кодах нет криптохвоста "
+                                        "(это коды идентификации): они добавлены для учёта и документов, а напечатать из них этикетку нельзя - для печати нужны коды, "
+                                        "скачанные из заказа («Получение кодов» в кабинете или «Получить коды» в СУЗ).").arg(registry.size()).arg(applied).arg(noTail));
+        return;
+    }
+    if (!err.isEmpty()) {
+        QMessageBox::warning(this, tr("Файл"), tr("Не удалось прочитать файл: %1").arg(err));
+        return;
+    }
     const QStringList codes = readCodesFromFile(path, &err);
     if (!err.isEmpty()) {
         QMessageBox::warning(this, tr("Файл"), tr("Не удалось прочитать файл: %1").arg(err));

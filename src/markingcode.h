@@ -52,7 +52,30 @@ struct AddResult {
 };
 // Добавляет коды (строки в любом виде, см. parse). forceProductId > 0 - все коды привязываются к этому товару, а его штрихкод
 // становится GTIN кодов (если он свободен). source: «import», «scan», «suz». orderId - заказ в СУЗ.
-AddResult add(const QStringList &rawCodes, const QString &source, const QString &orderId = QString(), int forceProductId = 0);
+AddResult add(const QStringList &rawCodes, const QString &source, const QString &orderId = QString(), int forceProductId = 0,
+              const QString &status = QStringLiteral("new"));
+
+// Есть ли у кода криптохвост (группа 91 / 92 или 93 после GS). Без него это КОД ИДЕНТИФИКАЦИИ (КИ): им подают сведения в Систему маркировки
+// (ввод в оборот, вывод из оборота), но Data Matrix для нанесения на товар из него не получится - такой код печатать нельзя.
+bool hasCryptoTail(const QString &code);
+
+// Строка выгрузки «Реестр кодов» из личного кабинета «Честного знака» (CSV).
+struct RegistryRow {
+    QString code;        // КИ (чаще без криптохвоста)
+    QString gtin;
+    QString name;        // наименование товара
+    QString brand;
+    QString status;      // EMITTED, APPLIED, INTRODUCED...
+    QString method;      // способ ввода в оборот: COMMISSION, PRODUCTION...
+    QString orderId;     // номер заказа в СУЗ
+    QString owner;       // ИНН владельца
+    QString appliedAt, emittedAt;
+};
+// Читает такую выгрузку: первая строка - описание фильтра «Фильтр(...)», затем заголовок «Код, GTIN, ...» и коды. true - файл распознан как
+// реестр (rows заполнены); false - это не реестр (*error пуст) или файл не прочитался (*error - причина).
+bool readRegistryCsv(const QString &path, QList<RegistryRow> *rows, QString *error = nullptr);
+// Добавляет строки реестра: источник «registry», статус по статусу кода в системе (EMITTED - новый, остальное: нанесён, в обороте... - напечатан).
+AddResult addRegistry(const QList<RegistryRow> &rows);
 // Достаёт коды из текста: по одному в строке, либо вставленные вплотную; пустые строки и заголовки пропускаются.
 QStringList splitText(const QString &text);
 
