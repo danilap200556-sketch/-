@@ -45,6 +45,7 @@ private slots:
     void writeToProducts();
     void pullFromMarket();
     void checkOnMarket();
+    void pushBarcodes();
     void sendToMarket();
     void chooseCategory();
     void photoLinksFromDatabase();

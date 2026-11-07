@@ -1,4 +1,6 @@
 #include "cardstab.h"
+
+#include "marketbarcodesdialog.h"
 #include "applog.h"
 #include "categorypicker.h"
 #include "marketapi.h"
@@ -114,6 +116,9 @@ CardsTab::CardsTab(QWidget *parent)
     auto *toProductBtn = new QPushButton(tr("Записать в товары…"), left);
     toProductBtn->setToolTip(tr("Сохранить бренд, страну, габариты, ТН ВЭД, теги, категорию и характеристики из выбранных карточек в товары базы"));
     ll->addWidget(toProductBtn);
+    auto *gtinBtn = new QPushButton(tr("Штрихкоды (GTIN) на Маркет…"), left);
+    gtinBtn->setToolTip(tr("Сравнить штрихкоды наших товаров с карточками на Маркете и передать на Маркет только штрихкоды: по выделенным карточкам, а если ничего не выделено - по всем товарам кабинета"));
+    ll->addWidget(gtinBtn);
     auto *sendBtn = new QPushButton(tr("Отправить на Маркет"), left);
     sendBtn->setProperty("primary", true);
     ll->addWidget(sendBtn);
@@ -255,6 +260,7 @@ CardsTab::CardsTab(QWidget *parent)
     connect(m_adult, &QCheckBox::toggled, this, [this]() { markDirty(); });
 
     connect(m_accountCombo, &QComboBox::currentIndexChanged, this, &CardsTab::accountChanged);
+    connect(gtinBtn, &QPushButton::clicked, this, &CardsTab::pushBarcodes);
     connect(m_table, &QTableWidget::itemSelectionChanged, this, &CardsTab::currentRowChanged);
     connect(m_search, &QLineEdit::textChanged, this, &CardsTab::applyFilter);
     connect(addBtn, &QPushButton::clicked, this, &CardsTab::addFromProducts);
@@ -1019,6 +1025,23 @@ void CardsTab::checkOnMarket()
     const int keep = m_shown >= 0 ? m_cards[m_shown].id : 0;
     reloadCards(keep);
     setStatus(tr("Проверено: %1, найдено на Маркете: %2, с замечаниями Маркета: %3.").arg(sel.size()).arg(found).arg(withErrors));
+}
+
+void CardsTab::pushBarcodes()
+{
+    MarketAccount acc;
+    if (!currentAccount(&acc) || !commitCurrent())
+        return;
+    QStringList offers;
+    for (int i : selectedCardIndexes())
+        if (!m_cards[i].offerId.trimmed().isEmpty())
+            offers << m_cards[i].offerId.trimmed();
+    MarketBarcodesDialog dlg(acc, offers, this);
+    dlg.exec();
+    if (dlg.changed()) {
+        const int cur = currentCardIndex();
+        reloadCards(cur >= 0 && cur < m_cards.size() ? m_cards[cur].id : 0); // штрихкоды в карточках могли измениться
+    }
 }
 
 void CardsTab::sendToMarket()

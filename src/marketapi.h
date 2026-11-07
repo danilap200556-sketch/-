@@ -166,6 +166,10 @@ public:
     // Товаров без фото или отсутствующих на Маркете в результате нет.
     bool offerPictures(const MarketAccount &acc, const QStringList &offerIds, QHash<QString, QStringList> *out,
                        QString *error);
+    // Только штрихкоды товаров (offerId -> штрихкоды в том порядке, как у Маркета); одним запросом на 100 товаров.
+    // Товаров без штрихкодов или отсутствующих на Маркете в результате нет.
+    bool offerBarcodes(const MarketAccount &acc, const QStringList &offerIds, QHash<QString, QStringList> *out,
+                       QString *error);
 
     bool prices(qint64 businessId, QHash<QString, MarketPrice> *out, QString *error);
     bool updatePrices(qint64 businessId, const QList<MarketPriceUpdate> &items, QString *error);

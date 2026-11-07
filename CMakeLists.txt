@@ -165,6 +165,8 @@ add_executable(inventory_manager
     src/photoexceldialog.cpp
     src/orderwriteoff.cpp
     src/orderwriteoffdialog.cpp
+    src/marketbarcodes.cpp
+    src/marketbarcodesdialog.cpp
     src/photoreviewdialog.cpp
     src/thermallabel.cpp
     src/thermalprintdialog.cpp
