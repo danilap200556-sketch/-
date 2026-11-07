@@ -338,6 +338,9 @@ const QStringList &schemaDdl()
             updated_by TEXT NOT NULL DEFAULT '',
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         ))",
+        // --- Правка документов остатков в разделе «Документы»: когда и кем документ изменён (состав или комментарий).
+        "ALTER TABLE stock_documents ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ, "
+        "ADD COLUMN IF NOT EXISTS edited_by TEXT NOT NULL DEFAULT ''",
     };
     return ddl;
 }

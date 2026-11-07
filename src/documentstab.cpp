@@ -1,6 +1,8 @@
 #include "documentstab.h"
+#include "batchdialog.h"
 #include "cancelmovementsdialog.h"
 #include "database.h"
+#include "documentdeletedialog.h"
 #include "theme.h"
 
 #include <QApplication>
@@ -8,8 +10,10 @@
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSplitter>
@@ -56,17 +60,36 @@ DocumentsTab::DocumentsTab(QWidget *parent)
     layout->addLayout(top);
 
     auto *buttons = new QHBoxLayout();
+    m_newBtn = new QPushButton(tr("Новый документ"), this);
+    m_newBtn->setProperty("primary", true);
+    auto *newMenu = new QMenu(m_newBtn);
+    newMenu->addAction(tr("Приход…"), this, [this]() { createDocument(int(BatchDialog::Kind::Receipt)); });
+    newMenu->addAction(tr("Списание…"), this, [this]() { createDocument(int(BatchDialog::Kind::WriteOff)); });
+    newMenu->addAction(tr("Перемещение между складами…"), this, [this]() { createDocument(int(BatchDialog::Kind::Transfer)); });
+    m_newBtn->setMenu(newMenu);
+    m_editBtn = new QPushButton(tr("Изменить документ…"), this);
+    m_commentBtn = new QPushButton(tr("Комментарий…"), this);
     m_cancelBtn = new QPushButton(tr("Отменить документ целиком…"), this);
     m_lastBtn = new QPushButton(tr("Отменить последний документ…"), this);
+    m_deleteBtn = new QPushButton(tr("Удалить документ…"), this);
     m_exportBtn = new QPushButton(tr("Выгрузить документ в Excel…"), this);
+    buttons->addWidget(m_newBtn);
+    buttons->addWidget(m_editBtn);
+    buttons->addWidget(m_commentBtn);
+    buttons->addSpacing(12);
     buttons->addWidget(m_cancelBtn);
     buttons->addWidget(m_lastBtn);
+    buttons->addWidget(m_deleteBtn);
+    buttons->addSpacing(12);
     buttons->addWidget(m_exportBtn);
     buttons->addStretch(1);
     layout->addLayout(buttons);
 
     auto *hint = new QLabel(tr("Каждое списание, приход, перемещение и инвентаризация - отдельный документ: внутри одна позиция или много. "
-                               "Ошиблись - откройте документ и отмените его целиком: остатки вернутся, в журнале появится документ «Отмена»."), this);
+                               "«Новый документ» проводит приход, списание или перемещение списком; двойной щелчок по документу (или «Изменить документ») "
+                               "открывает его для правки: позиции, количество, склад, комментарий - остатки пересчитаются на разницу. "
+                               "Ошиблись - «Отменить документ целиком» вернёт остатки и оставит документ «Отмена» в журнале, а «Удалить документ» "
+                               "убирает документ из истории совсем (с возвратом остатков или без него - вы выберете)."), this);
     hint->setWordWrap(true);
     hint->setObjectName("muted");
     layout->addWidget(hint);
@@ -127,14 +150,26 @@ DocumentsTab::DocumentsTab(QWidget *parent)
     connect(m_cancelBtn, &QPushButton::clicked, this, &DocumentsTab::cancelSelected);
     connect(m_lastBtn, &QPushButton::clicked, this, &DocumentsTab::cancelLast);
     connect(m_exportBtn, &QPushButton::clicked, this, &DocumentsTab::exportSelected);
+    connect(m_editBtn, &QPushButton::clicked, this, &DocumentsTab::editSelected);
+    connect(m_commentBtn, &QPushButton::clicked, this, &DocumentsTab::editComment);
+    connect(m_deleteBtn, &QPushButton::clicked, this, &DocumentsTab::deleteSelected);
+    connect(m_docs, &QTableWidget::cellDoubleClicked, this, [this]() { editSelected(); });
+    m_docs->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_docs, &QWidget::customContextMenuRequested, this, &DocumentsTab::showContextMenu);
     updateButtons();
 }
 
 void DocumentsTab::setReadOnly(bool readOnly)
 {
     m_readOnly = readOnly;
-    m_cancelBtn->setVisible(!readOnly);
-    m_lastBtn->setVisible(!readOnly);
+    for (QPushButton *b : {m_newBtn, m_editBtn, m_commentBtn, m_cancelBtn, m_lastBtn, m_deleteBtn})
+        b->setVisible(!readOnly);
+}
+
+void DocumentsTab::setAdmin(bool admin)
+{
+    m_admin = admin;
+    updateButtons();
 }
 
 void DocumentsTab::refresh()
@@ -227,7 +262,10 @@ void DocumentsTab::fillLines(const Documents::Info &d)
     m_header->setText(tr("%1 · %2 · %3%4 · %5")
                           .arg(Documents::title(d), d.createdAt.toLocalTime().toString(QStringLiteral("dd.MM.yyyy HH:mm")),
                                d.username.isEmpty() ? tr("автор неизвестен") : d.username,
-                               d.comment.isEmpty() ? QString() : QStringLiteral(" · «%1»").arg(d.comment), Documents::statusText(d)));
+                               d.comment.isEmpty() ? QString() : QStringLiteral(" · «%1»").arg(d.comment), Documents::statusText(d)) +
+                      (d.editedAt.isValid() ? tr(" · изменён %1%2").arg(d.editedAt.toLocalTime().toString(QStringLiteral("dd.MM.yyyy HH:mm")),
+                                                                         d.editedBy.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(d.editedBy))
+                                            : QString()));
     const auto lines = Documents::lines(d.key);
     m_lines->setRowCount(0);
     const auto &colors = Theme::colors();
@@ -252,12 +290,21 @@ void DocumentsTab::fillLines(const Documents::Info &d)
 void DocumentsTab::updateButtons()
 {
     const int id = selectedDocumentId();
-    bool can = false;
+    bool can = false, editable = false, known = false;
     for (const Documents::Info &d : std::as_const(m_list))
-        if (d.id == id)
+        if (d.id == id) {
+            known = true;
             can = d.kind != QLatin1String("cancel") && d.reverted < d.lines;
+            // Дешёвая проверка по строке списка; полную (нет ли склада-пары, связи с заказом) делает окно правки с объяснением.
+            editable = (d.kind == QLatin1String("receipt") || d.kind == QLatin1String("writeoff") || d.kind == QLatin1String("transfer")) && d.reverted == 0 && d.lines > 0;
+        }
     m_cancelBtn->setEnabled(can);
     m_exportBtn->setEnabled(id > 0);
+    m_editBtn->setEnabled(editable);
+    m_editBtn->setToolTip(known && !editable ? tr("Править можно приход, списание и перемещение, которые ещё не отменены. Остальные документы - отменить или удалить.") : QString());
+    m_commentBtn->setEnabled(known);
+    m_deleteBtn->setEnabled(known && m_admin);
+    m_deleteBtn->setToolTip(m_admin ? tr("Убрать документ из истории совсем: с возвратом остатков или без него.") : tr("Удалять документы может только администратор."));
 }
 
 void DocumentsTab::cancelSelected()
@@ -300,6 +347,7 @@ void DocumentsTab::cancelDocument(int id)
     dlg.setReason(tr("документ №%1").arg(d.id));
     dlg.exec();
     if (dlg.cancelled()) {
+        emit stockChanged();
         refresh();
         showDocument(id);
     }
@@ -320,4 +368,89 @@ void DocumentsTab::exportSelected()
     if (!Xlsx::write(path.endsWith(QLatin1String(".xlsx"), Qt::CaseInsensitive) ? path : path + QStringLiteral(".xlsx"),
                      {Documents::toSheet(d, Documents::lines(d.key))}, &err))
         QMessageBox::warning(this, tr("Не удалось сохранить"), err);
+}
+
+void DocumentsTab::createDocument(int kind)
+{
+    BatchDialog dlg(static_cast<BatchDialog::Kind>(kind), this);
+    dlg.exec();
+    if (!dlg.applied())
+        return;
+    emit stockChanged();
+    m_kind->setCurrentIndex(0);
+    m_search->clear();
+    refresh();
+    const int id = Database::lastDocumentId();
+    if (id > 0)
+        showDocument(id);
+}
+
+void DocumentsTab::editSelected()
+{
+    const int id = selectedDocumentId();
+    if (id <= 0 || m_readOnly)
+        return;
+    BatchDialog dlg(BatchDialog::Kind::Receipt, this);
+    QString why;
+    if (!dlg.setEditing(id, &why)) {
+        QMessageBox::information(this, tr("Править нельзя"), why);
+        return;
+    }
+    dlg.exec();
+    if (!dlg.applied())
+        return;
+    emit stockChanged();
+    refresh();
+    showDocument(id);
+}
+
+void DocumentsTab::editComment()
+{
+    const int id = selectedDocumentId();
+    if (id <= 0)
+        return;
+    const Documents::Info d = Documents::get(id);
+    bool ok = false;
+    const QString text = QInputDialog::getText(this, tr("Комментарий к документу"), tr("Комментарий к документу №%1:").arg(id), QLineEdit::Normal, d.comment, &ok);
+    if (!ok)
+        return;
+    QString err;
+    if (!Documents::setComment(id, text, &err)) {
+        QMessageBox::warning(this, tr("Не сохранено"), err);
+        return;
+    }
+    refresh();
+    showDocument(id);
+}
+
+void DocumentsTab::deleteSelected()
+{
+    const int id = selectedDocumentId();
+    if (id <= 0 || !m_admin)
+        return;
+    DocumentDeleteDialog dlg(id, this);
+    dlg.exec();
+    if (!dlg.deleted())
+        return;
+    emit stockChanged();
+    m_lines->setRowCount(0);
+    refresh();
+}
+
+void DocumentsTab::showContextMenu(const QPoint &pos)
+{
+    const QModelIndex idx = m_docs->indexAt(pos);
+    if (!idx.isValid())
+        return;
+    m_docs->selectRow(idx.row());
+    QMenu menu(this);
+    if (!m_readOnly) {
+        menu.addAction(m_editBtn->text(), this, &DocumentsTab::editSelected)->setEnabled(m_editBtn->isEnabled());
+        menu.addAction(m_commentBtn->text(), this, &DocumentsTab::editComment);
+        menu.addAction(m_cancelBtn->text(), this, &DocumentsTab::cancelSelected)->setEnabled(m_cancelBtn->isEnabled());
+        menu.addAction(m_deleteBtn->text(), this, &DocumentsTab::deleteSelected)->setEnabled(m_deleteBtn->isEnabled());
+        menu.addSeparator();
+    }
+    menu.addAction(m_exportBtn->text(), this, &DocumentsTab::exportSelected);
+    menu.exec(m_docs->viewport()->mapToGlobal(pos));
 }

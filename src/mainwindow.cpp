@@ -253,6 +253,12 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         m_cardsTab->hide();
         m_ordersTab->hide();
     }
+    m_documentsTab->setAdmin(isAdmin);
+    connect(m_documentsTab, &DocumentsTab::stockChanged, this, [this]() {
+        markDirty(m_stockTab);
+        markDirty(m_labelsTab);
+        markDirty(m_importTab);
+    });
     if (isAdmin) {
         m_usersTab = new UsersTab(username, this);
         addPage(tr("Пользователи"), Theme::Icon::Users, m_usersTab);

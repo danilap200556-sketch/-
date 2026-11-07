@@ -3,6 +3,7 @@
 #include "chestnyznak.h"
 #include "csvimport.h"
 #include "flowlayout.h"
+#include "markingorderdialog.h"
 #include "markingprintdialog.h"
 #include "xlsx.h"
 
@@ -220,174 +221,6 @@ private:
     QLabel *m_state;
 };
 
-// ---------------------------------------------------------------- заказ кодов в СУЗ
-
-class OrderDialog : public QDialog
-{
-public:
-    explicit OrderDialog(QWidget *parent)
-        : QDialog(parent)
-    {
-        setWindowTitle(tr("Заказать коды маркировки в СУЗ"));
-        resize(760, 620);
-        auto *l = new QVBoxLayout(this);
-        auto *hint = new QLabel(tr("Выберите товар (GTIN берётся из его штрихкода EAN-13) и количество, нажмите «Создать заказ». Коды готовятся не мгновенно: "
-                                   "через некоторое время нажмите «Получить коды» - они попадут в таблицу. Заказ, созданный в личном кабинете, - введите его номер "
-                                   "и GTIN и сразу нажмите «Получить коды»."), this);
-        hint->setWordWrap(true);
-        l->addWidget(hint);
-        auto *form = new QFormLayout();
-        m_product = new QComboBox(this);
-        fillProducts(m_product, true, tr("- выбрать товар -"));
-        m_gtin = new QLineEdit(this);
-        m_gtin->setPlaceholderText(tr("GTIN, 14 цифр"));
-        m_qty = new QSpinBox(this);
-        m_qty->setRange(1, 150000);
-        m_qty->setValue(10);
-        m_order = new QLineEdit(this);
-        m_order->setPlaceholderText(tr("номер заказа (появится после «Создать заказ»)"));
-        form->addRow(tr("Товар:"), m_product);
-        form->addRow(tr("GTIN:"), m_gtin);
-        form->addRow(tr("Количество кодов:"), m_qty);
-        form->addRow(tr("Номер заказа:"), m_order);
-        l->addLayout(form);
-        auto *btns = new QHBoxLayout();
-        auto *ping = new QPushButton(tr("Проверить связь"), this);
-        auto *create = new QPushButton(tr("Создать заказ"), this);
-        auto *status = new QPushButton(tr("Состояние заказа"), this);
-        auto *fetch = new QPushButton(tr("Получить коды"), this);
-        auto *close = new QPushButton(tr("Закрыть"), this);
-        for (QPushButton *b : {ping, create, status, fetch, close}) {
-            b->setAutoDefault(false);
-            btns->addWidget(b);
-        }
-        l->addLayout(btns);
-        m_log = new QPlainTextEdit(this);
-        m_log->setReadOnly(true);
-        l->addWidget(m_log, 1);
-
-        connect(m_product, &QComboBox::currentIndexChanged, this, [this]() { fillGtin(); });
-        connect(m_product->lineEdit(), &QLineEdit::editingFinished, this, [this]() { fillGtin(); });
-        connect(ping, &QPushButton::clicked, this, [this]() { run([this](const ChestnyZnak::Settings &s) { return ChestnyZnak::ping(s); }, tr("Связь")); });
-        connect(create, &QPushButton::clicked, this, [this]() { create_(); });
-        connect(status, &QPushButton::clicked, this, [this]() {
-            const QString order = m_order->text().trimmed(), gtin = m_gtin->text().trimmed();
-            if (order.isEmpty()) {
-                log(tr("Введите номер заказа."));
-                return;
-            }
-            run([order, gtin](const ChestnyZnak::Settings &s) { return ChestnyZnak::orderStatus(s, order, gtin); }, tr("Состояние заказа"));
-        });
-        connect(fetch, &QPushButton::clicked, this, [this]() { fetch_(); });
-        connect(close, &QPushButton::clicked, this, &QDialog::accept);
-    }
-    int added() const { return m_added; }
-
-private:
-    void log(const QString &line) { m_log->appendPlainText(line); }
-    void fillGtin()
-    {
-        const int id = comboProductId(m_product);
-        if (id <= 0)
-            return;
-        QSqlQuery q;
-        q.prepare(QStringLiteral("SELECT barcode FROM product_barcodes WHERE product_id = ? AND barcode ~ '^[0-9]{12,13}$' ORDER BY length(barcode) DESC, created_at LIMIT 1"));
-        q.addBindValue(id);
-        if (q.exec() && q.next())
-            m_gtin->setText(MarkingCode::gtinFromBarcode(q.value(0).toString()));
-        else
-            m_gtin->clear();
-    }
-    bool ready(ChestnyZnak::Settings *s)
-    {
-        *s = ChestnyZnak::loadSettings();
-        if (!s->isConfigured()) {
-            log(tr("СУЗ не настроен: кнопка «Настройки СУЗ…» на странице «Честный знак»."));
-            return false;
-        }
-        return true;
-    }
-    template <class F> void run(F call, const QString &what)
-    {
-        ChestnyZnak::Settings s;
-        if (!ready(&s))
-            return;
-        const ChestnyZnak::Reply r = call(s);
-        for (const QString &t : r.trace)
-            log(QStringLiteral("  ") + t);
-        if (!r.ok)
-            log(tr("%1: ошибка - %2").arg(what, r.error));
-        else
-            log(tr("%1: %2").arg(what, r.body.isEmpty() ? tr("ответ получен") : QString::fromUtf8(r.body.left(600)).simplified()));
-    }
-    void create_()
-    {
-        ChestnyZnak::Settings s;
-        if (!ready(&s))
-            return;
-        const QString gtin = m_gtin->text().trimmed();
-        if (!MarkingCode::gtinChecksumOk(gtin) || gtin.size() != 14) {
-            log(tr("GTIN должен состоять из 14 цифр с верной контрольной цифрой."));
-            return;
-        }
-        const ChestnyZnak::Reply r = ChestnyZnak::createOrder(s, {{gtin, m_qty->value(), 0}});
-        for (const QString &t : r.trace)
-            log(QStringLiteral("  ") + t);
-        if (!r.ok) {
-            log(tr("Заказ не создан: %1").arg(r.error));
-            return;
-        }
-        const QString id = r.json.value(QStringLiteral("orderId")).toVariant().toString();
-        if (id.isEmpty()) {
-            log(tr("СУЗ ответил, но номера заказа в ответе нет: %1").arg(QString::fromUtf8(r.body.left(300))));
-            return;
-        }
-        m_order->setText(id);
-        log(tr("Заказ создан: %1. Подождите, пока СУЗ подготовит коды, и нажмите «Получить коды».").arg(id));
-    }
-    void fetch_()
-    {
-        ChestnyZnak::Settings s;
-        if (!ready(&s))
-            return;
-        const QString order = m_order->text().trimmed(), gtin = m_gtin->text().trimmed();
-        if (order.isEmpty() || gtin.isEmpty()) {
-            log(tr("Нужны номер заказа и GTIN."));
-            return;
-        }
-        QStringList codes, trace;
-        QString err;
-        const bool ok = ChestnyZnak::fetchCodes(s, order, gtin, m_qty->value(), &codes, &err, &trace, [this](int got, int total) {
-            log(tr("  получено %1 из %2").arg(got).arg(total));
-            QApplication::processEvents();
-            return true;
-        });
-        for (const QString &t : std::as_const(trace))
-            log(QStringLiteral("  ") + t);
-        if (!ok) {
-            log(tr("Коды не получены: %1").arg(err));
-            return;
-        }
-        // GTIN взят из штрихкода товара, поэтому коды привяжутся к нему сами (по GTIN).
-        const MarkingCode::AddResult res = MarkingCode::add(codes, QStringLiteral("suz"), order);
-        m_added += res.added;
-        log(tr("Получено кодов: %1; добавлено в таблицу: %2, уже были: %3, не распознано: %4.").arg(codes.size()).arg(res.added).arg(res.duplicates).arg(res.invalid));
-        for (const QString &p : res.problems)
-            log(QStringLiteral("  ") + p);
-        if (!err.isEmpty())
-            log(tr("Предупреждение: %1").arg(err));
-        if (res.unlinked > 0)
-            log(tr("Товар по GTIN не найден у %1 кодов - привяжите их кнопкой «Привязать к товару…».").arg(res.unlinked));
-    }
-
-    QComboBox *m_product;
-    QLineEdit *m_gtin;
-    QSpinBox *m_qty;
-    QLineEdit *m_order;
-    QPlainTextEdit *m_log;
-    int m_added = 0;
-};
-
 } // namespace
 
 // ---------------------------------------------------------------- страница
@@ -586,7 +419,7 @@ void MarkingTab::scanned()
 
 void MarkingTab::orderCodes()
 {
-    OrderDialog dlg(this);
+    MarkingOrderDialog dlg(this);
     dlg.exec();
     reload();
     emit codesChanged();

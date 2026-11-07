@@ -159,6 +159,7 @@ add_executable(inventory_manager
     src/datamatrix.cpp
     src/markingcode.cpp
     src/markingprintdialog.cpp
+    src/markingorderdialog.cpp
     src/markingtab.cpp
     src/flowlayout.cpp
     src/photoexcel.cpp
@@ -178,6 +179,7 @@ add_executable(inventory_manager
     src/batchdialog.cpp
     src/productexport.cpp
     src/cancelmovementsdialog.cpp
+    src/documentdeletedialog.cpp
     src/productsync.cpp
     src/productimportdialog.cpp
     src/applog.cpp

@@ -2,6 +2,7 @@
 
 #include "batchparser.h"
 #include "database.h"
+#include "documents.h"
 
 #include <QDialog>
 #include <QHash>
@@ -36,6 +37,12 @@ public:
     void setWarehouseTo(int warehouseId); // для перемещения: куда
     void setComment(const QString &comment);
 
+    // Правка уже проведённого документа (приход, списание или перемещение): список заполняется его содержимым, вид менять
+    // нельзя, «Сейчас» - остаток без этого документа, а кнопка сохраняет изменения тем же документом (Documents::update).
+    // false - править нельзя (причина в *why).
+    bool setEditing(int documentId, QString *why = nullptr);
+    int editingDocument() const { return m_editId; }
+
     int rowCount() const;
     qint64 totalQty() const;
     // Проводит документ (без вопросов). При отказе - false, причины в problems() и lastError().
@@ -65,6 +72,7 @@ private:
     void addChosen(int productId, qint64 qty);
     int rowOf(int productId) const;
     void showProblems();
+    QString snapshot() const;
     QList<Database::BatchItem> itemsFromTable() const;
 
     QComboBox *m_kind = nullptr;
@@ -75,6 +83,7 @@ private:
     QLineEdit *m_comment = nullptr;
     QLineEdit *m_scan = nullptr;
     QTableWidget *m_table = nullptr;
+    QLabel *m_hint = nullptr;
     QLabel *m_summary = nullptr;
     QLabel *m_problemsLabel = nullptr;
     QPushButton *m_commitButton = nullptr;
@@ -85,4 +94,8 @@ private:
     bool m_applied = false;
     QHash<int, QPair<QString, QString>> m_info; // id товара -> (артикул, название), читаются пачкой
     bool m_updating = false;
+    // Правка документа: номер, остаток без документа (товар, склад) -> что документ сейчас делает с остатком, исходный вид списка.
+    int m_editId = 0;
+    QHash<QPair<int, int>, qint64> m_effect;
+    QString m_initial;
 };

@@ -229,3 +229,4 @@ CREATE TABLE IF NOT EXISTS site_prices (
             updated_by TEXT NOT NULL DEFAULT '',
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+ALTER TABLE stock_documents ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ, ADD COLUMN IF NOT EXISTS edited_by TEXT NOT NULL DEFAULT '';
