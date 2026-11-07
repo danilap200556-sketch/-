@@ -100,7 +100,7 @@ QString errorText(int status, const QByteArray &body)
             parts << text;
     }
     if (status == 401 || status == 403)
-        parts << QStringLiteral("проверьте clientToken и идентификатор СУЗ (omsId)");
+        parts << QStringLiteral("проверьте clientToken (он может быть временным - до 10 часов - и устареть: получите новый) и идентификатор СУЗ (omsId)");
     return QStringLiteral("HTTP %1%2").arg(status).arg(parts.isEmpty() ? QString() : QStringLiteral(": ") + parts.join(QStringLiteral("; ")));
 }
 
