@@ -11,6 +11,7 @@
 #include <QPainter>
 #include <QPrinter>
 #include <QPrinterInfo>
+#include <QRegularExpression>
 #include <QSettings>
 
 #include <algorithm>
@@ -170,6 +171,29 @@ QImage renderEan13(const Ean13Label &label, const Settings &s, int dpi, bool mon
     return monochrome ? img.convertToFormat(QImage::Format_Mono, Qt::ThresholdDither | Qt::MonoOnly) : img;
 }
 
+namespace {
+
+struct ArticleParts {
+    QString model; // артикул без размера
+    QString size;  // размер («42», «38.5», «M»); пусто - в артикуле его нет
+};
+
+// «DD1391-100_42» -> модель «DD1391-100», размер «42». Обувные размеры 30-52 (в том числе с половиной) отделяются и через дефис,
+// буквенные (XS...XXXL, OS) - только через «_» (иначе «AD-S-40» превратился бы в размер S).
+ArticleParts splitSize(const QString &article)
+{
+    static const QRegularExpression shoe(QStringLiteral("^(.*\\S)\\s*[-_/ ]\\s*((?:3\\d|4\\d|5[0-2])(?:[.,]5)?)$"));
+    static const QRegularExpression letters(QStringLiteral("^(.*\\S)\\s*_\\s*(XXS|XS|S|M|L|XL|XXL|XXXL|OS)$"), QRegularExpression::CaseInsensitiveOption);
+    for (const QRegularExpression *re : {&shoe, &letters}) {
+        const auto m = re->match(article.trimmed());
+        if (m.hasMatch() && m.captured(1).size() >= 3)
+            return {m.captured(1), m.captured(2).replace(QLatin1Char(','), QLatin1Char('.')).toUpper()};
+    }
+    return {article.trimmed(), QString()};
+}
+
+} // namespace
+
 QImage renderMarking(const MarkingLabel &label, const Settings &s, int dpi, bool monochrome)
 {
     const int W = px(s.widthMm, dpi), H = px(s.heightMm, dpi);
@@ -178,78 +202,175 @@ QImage renderMarking(const MarkingLabel &label, const Settings &s, int dpi, bool
     QPainter p(&img);
     p.setRenderHint(QPainter::TextAntialiasing, !monochrome);
     p.setPen(Qt::black);
-    const int margin = px(1.6, dpi);
+    // Поле 2 мм: у термопринтеров по краям бумаги есть непропечатываемая полоска, меньшее поле обрезает этикетку.
+    const int margin = px(2.0, dpi);
+    const int ruleGap = px(1.1, dpi);
+    const bool wide = W >= H * 1.25; // горизонтальная: код слева, текст справа; иначе код сверху, текст под ним
 
-    // --- Читаемый текст внизу: (01) GTIN (21) серийный номер - одной строкой, при нехватке места мельче или в две строки.
     const MarkingCode::Parsed parsed = MarkingCode::parse(label.code);
-    const QString human = parsed.ok ? QStringLiteral("(01)%1 (21)%2").arg(parsed.gtin, parsed.serial) : label.code.left(40);
-    int humanPx = px(2.6, dpi);
+
+    // --- Читаемый текст внизу: (01) GTIN и (21) серийный номер. Две строки (слева, под кодом); у низкой этикетки - одна.
+    const QString gtinText = QStringLiteral("(01) %1").arg(parsed.gtin), serialText = QStringLiteral("(21) %1").arg(parsed.serial);
+    QStringList humanLines;
+    if (!parsed.ok)
+        humanLines = {label.code.left(40)};
+    else if (s.heightMm >= 34)
+        humanLines = {gtinText, serialText};
+    else
+        humanLines = {gtinText + QStringLiteral("  ") + serialText};
+    auto widest = [&](const QFont &f) {
+        int w = 0;
+        for (const QString &l : std::as_const(humanLines))
+            w = qMax(w, QFontMetrics(f).horizontalAdvance(l));
+        return w;
+    };
+    int humanPx = px(2.9, dpi);
     QFont hf = labelFont(humanPx, false);
-    while (humanPx > px(1.9, dpi) && QFontMetrics(hf).horizontalAdvance(human) > W - 2 * margin) {
+    while (humanPx > px(1.9, dpi) && widest(hf) > W - 2 * margin) {
         humanPx -= qMax(1, px(0.1, dpi));
         hf = labelFont(humanPx, false);
     }
-    QStringList humanLines{human};
-    if (QFontMetrics(hf).horizontalAdvance(human) > W - 2 * margin && parsed.ok)
-        humanLines = QStringList{QStringLiteral("(01)%1").arg(parsed.gtin), QStringLiteral("(21)%1").arg(parsed.serial)};
+    if (humanLines.size() == 1 && parsed.ok && widest(hf) > W - 2 * margin) {
+        humanLines = {gtinText, serialText};
+        humanPx = px(2.6, dpi);
+        hf = labelFont(humanPx, false);
+        while (humanPx > px(1.9, dpi) && widest(hf) > W - 2 * margin) {
+            humanPx -= qMax(1, px(0.1, dpi));
+            hf = labelFont(humanPx, false);
+        }
+    }
     const QFontMetrics hfm(hf);
     const int humanH = int(humanLines.size()) * hfm.lineSpacing();
-    p.setFont(hf);
-    for (int i = 0; i < humanLines.size(); ++i)
-        p.drawText(QRect(margin, H - margin - humanH + i * hfm.lineSpacing(), W - 2 * margin, hfm.lineSpacing()), Qt::AlignHCenter | Qt::AlignVCenter, humanLines[i]);
 
-    // --- Data Matrix слева сверху: не больше 30 мм и не больше 62% ширины.
+    // --- Data Matrix: не больше 27 мм (модуль - целое число точек, чтобы квадраты были чёткими).
     QString dmError;
     const DataMatrix::Symbol sym = parsed.ok ? DataMatrix::encode(parsed.code.toLatin1(), true, &dmError) : DataMatrix::Symbol();
-    const int gap = px(1.2, dpi);
-    const int availH = H - 2 * margin - humanH - gap;
-    int maxSide = qMin(qMin(availH, px(30, dpi)), int(W * 0.62));
-    int dmSide = 0;
+    int maxSide = 0, ruleY = 0, yDm = 0, xDm = 0;
+    if (wide) {
+        // Горизонтальная: не больше половины ширины. Блок «код + линия + читаемый текст» стоит по центру по вертикали.
+        maxSide = qMin(qMin(H - 2 * margin - humanH - 2 * ruleGap, px(27, dpi)), int(W * 0.5));
+    } else {
+        // Вертикальная: читаемый текст прижат к низу, под кодом остаётся место для артикула и названия (не меньше 11 мм).
+        ruleY = H - margin - humanH - ruleGap;
+        maxSide = qMin(qMin(W - 2 * margin, ruleY - ruleGap - margin - px(11, dpi)), px(27, dpi));
+    }
+    maxSide = qMax(maxSide, px(8, dpi));
+    int module = 0, dmSide = maxSide;
     if (!sym.isNull()) {
-        const int module = qMax(1, maxSide / sym.size);
+        module = qMax(1, maxSide / sym.size);
         dmSide = module * sym.size;
-        const int x0 = margin, y0 = margin + qMax(0, (availH - dmSide) / 2);
+    }
+    if (wide) {
+        const int stackH = dmSide + 2 * ruleGap + humanH;
+        yDm = margin + qMax(0, (H - 2 * margin - stackH) / 2);
+        xDm = margin;
+        ruleY = yDm + dmSide + ruleGap;
+    } else {
+        yDm = margin;
+        xDm = (W - dmSide) / 2;
+    }
+    if (!sym.isNull()) {
         for (int r = 0; r < sym.size; ++r)
             for (int c = 0; c < sym.size; ++c)
                 if (sym.dark(r, c))
-                    p.fillRect(x0 + c * module, y0 + r * module, module, module, Qt::black);
+                    p.fillRect(xDm + c * module, yDm + r * module, module, module, Qt::black);
     } else {
         p.setFont(labelFont(px(2.8, dpi), false));
-        p.drawText(QRect(margin, margin, maxSide, availH), Qt::AlignCenter | Qt::TextWordWrap, QObject::tr("Код не помещается в Data Matrix"));
-        dmSide = maxSide;
+        p.drawText(QRect(xDm, yDm, dmSide, dmSide), Qt::AlignCenter | Qt::TextWordWrap, QObject::tr("Код не помещается в Data Matrix"));
     }
 
-    // --- Справа: артикул (жирно, до двух строк) и описание мелко.
-    const int colX = margin + dmSide + px(2.0, dpi);
+    // --- Тонкая линия и читаемый текст под ней, выровнены по левому краю кода.
+    p.fillRect(margin, ruleY, W - 2 * margin, qMax(1, px(0.25, dpi)), Qt::black);
+    p.setFont(hf);
+    const int humanTop = ruleY + ruleGap;
+    for (int i = 0; i < humanLines.size(); ++i)
+        p.drawText(QRect(margin, humanTop + i * hfm.lineSpacing(), W - 2 * margin, hfm.lineSpacing()), (wide ? Qt::AlignLeft : Qt::AlignHCenter) | Qt::AlignVCenter,
+                   humanLines[i]);
+
+    // --- Текст: у горизонтальной этикетки справа от кода (верх и низ - по краям кода), у вертикальной - под кодом.
+    const int colX = wide ? margin + dmSide + px(3.0, dpi) : margin;
     const int colW = W - margin - colX;
-    if (colW >= px(10, dpi)) {
-        int articlePx = px(4.2, dpi);
+    const int textTop = wide ? yDm : yDm + dmSide + px(1.4, dpi);
+    const int textBottom = wide ? yDm + dmSide : ruleY - px(1.0, dpi);
+    if (colW >= px(10, dpi) && textBottom > textTop) {
+        const Qt::Alignment hAlign = wide ? Qt::AlignLeft : Qt::AlignHCenter;
+        const ArticleParts parts = splitSize(label.article);
+        // Артикул: жирно. Сначала пробуем уместить в одну строку (шрифт сжимается до ~3,2 мм); если не вышло - две строки с
+        // переносом по дефису, а не посреди слова.
+        const QString model = wide ? parts.model : label.article.simplified();
+        int articlePx = px(wide ? 4.6 : 3.8, dpi);
+        const int minArticlePx = px(3.2, dpi);
         QFont af = labelFont(articlePx, true);
-        const QString article = label.article.simplified();
-        QStringList articleLines = wrapText(article, QFontMetrics(af), colW, 2);
-        while (articlePx > px(2.6, dpi) && articleLines.size() > 0 && (articleLines.size() > 1 && articleLines.last().endsWith(QStringLiteral("…")))) {
-            articlePx -= qMax(1, px(0.2, dpi));
+        QStringList articleLines;
+        for (;;) {
             af = labelFont(articlePx, true);
-            articleLines = wrapText(article, QFontMetrics(af), colW, 2);
+            if (QFontMetrics(af).elidedText(model, Qt::ElideRight, colW) == model) { // «помещается» - по тому же измерению, которым потом рисуем
+                articleLines = {model};
+                break;
+            }
+            if (articlePx <= minArticlePx)
+                break;
+            articlePx = qMax(minArticlePx, articlePx - qMax(1, px(0.2, dpi)));
+        }
+        if (articleLines.isEmpty()) {
+            af = labelFont(px(3.4, dpi), true);
+            const QFontMetrics fm2(af);
+            for (int i = model.size() - 2; i > 0 && articleLines.isEmpty(); --i) {
+                const QChar c = model[i];
+                if ((c == QLatin1Char('-') || c == QLatin1Char('_') || c == QLatin1Char(' ') || c == QLatin1Char('/'))
+                    && fm2.elidedText(model.left(i + 1).trimmed(), Qt::ElideRight, colW) == model.left(i + 1).trimmed()
+                    && fm2.elidedText(model.mid(i + 1).trimmed(), Qt::ElideRight, colW) == model.mid(i + 1).trimmed())
+                    articleLines = {model.left(i + 1).trimmed(), model.mid(i + 1).trimmed()};
+            }
+            if (articleLines.isEmpty())
+                articleLines = wrapText(model, fm2, colW, 2);
         }
         const QFontMetrics afm(af);
         p.setFont(af);
-        int y = margin;
+        int y = textTop;
         for (const QString &line : std::as_const(articleLines)) {
-            p.drawText(QRect(colX, y, colW, afm.lineSpacing()), Qt::AlignLeft | Qt::AlignVCenter, afm.elidedText(line, Qt::ElideRight, colW));
+            p.drawText(QRect(colX, y, colW, afm.lineSpacing()), hAlign | Qt::AlignVCenter, afm.elidedText(line, Qt::ElideRight, colW));
             y += afm.lineSpacing();
         }
         y += px(1.0, dpi);
-        const int bottom = H - margin - humanH - gap;
-        if (bottom > y && !label.description.trimmed().isEmpty()) {
+
+        // Размер крупно внизу правой колонки (только у горизонтальной этикетки и только если он есть в артикуле).
+        int descBottom = textBottom;
+        if (wide && !parts.size.isEmpty()) {
+            int sizePx = px(7.5, dpi);
+            QFont zf = labelFont(sizePx, true);
+            while (sizePx > px(3.5, dpi) && QFontMetrics(zf).horizontalAdvance(parts.size) > colW) {
+                sizePx -= qMax(1, px(0.3, dpi));
+                zf = labelFont(sizePx, true);
+            }
+            const QFontMetrics zfm(zf);
+            QFont cf = labelFont(px(2.3, dpi), false);
+            const QFontMetrics cfm(cf);
+            const int need = zfm.lineSpacing() + cfm.lineSpacing();
+            if (textBottom - need - px(1.0, dpi) >= y) {
+                p.setFont(cf);
+                p.drawText(QRect(colX, textBottom - need, colW, cfm.lineSpacing()), Qt::AlignLeft | Qt::AlignVCenter, QObject::tr("размер"));
+                p.setFont(zf);
+                p.drawText(QRect(colX, textBottom - zfm.lineSpacing(), colW, zfm.lineSpacing()), Qt::AlignLeft | Qt::AlignVCenter, parts.size);
+                descBottom = textBottom - need - px(1.0, dpi);
+            } else if (textBottom - zfm.lineSpacing() - px(1.0, dpi) >= y) {
+                p.setFont(zf);
+                p.drawText(QRect(colX, textBottom - zfm.lineSpacing(), colW, zfm.lineSpacing()), Qt::AlignLeft | Qt::AlignVCenter, parts.size);
+                descBottom = textBottom - zfm.lineSpacing() - px(1.0, dpi);
+            }
+        }
+        // Название: мелко, в оставшемся месте.
+        if (descBottom > y && !label.description.trimmed().isEmpty()) {
             QFont df = labelFont(px(2.5, dpi), false);
             const QFontMetrics dfm(df);
-            const int maxLines = qBound(1, (bottom - y) / qMax(1, dfm.lineSpacing()), 6);
-            p.setFont(df);
-            const QStringList lines = wrapText(label.description, dfm, colW, maxLines);
-            for (const QString &line : lines) {
-                p.drawText(QRect(colX, y, colW, dfm.lineSpacing()), Qt::AlignLeft | Qt::AlignVCenter, line);
-                y += dfm.lineSpacing();
+            const int maxLines = qBound(1, (descBottom - y) / qMax(1, dfm.lineSpacing()), 6);
+            if (descBottom - y >= dfm.lineSpacing()) {
+                p.setFont(df);
+                const QStringList lines = wrapText(label.description, dfm, colW, maxLines);
+                for (const QString &line : lines) {
+                    p.drawText(QRect(colX, y, colW, dfm.lineSpacing()), hAlign | Qt::AlignVCenter, line);
+                    y += dfm.lineSpacing();
+                }
             }
         }
     }
