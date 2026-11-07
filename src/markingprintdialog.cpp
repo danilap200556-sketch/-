@@ -1,5 +1,6 @@
 #include "markingprintdialog.h"
 
+#include "labelfonts.h"
 #include "productmarket.h"
 
 #include <algorithm>
@@ -102,6 +103,15 @@ MarkingPrintDialog::MarkingPrintDialog(const QList<int> &codeIds, QWidget *paren
     sl->addSpacing(12);
     sl->addWidget(new QLabel(tr("Принтер:"), settingsBox));
     sl->addWidget(m_printer, 1);
+    sl->addSpacing(12);
+    sl->addWidget(new QLabel(tr("Шрифт:"), settingsBox));
+    m_font = new QComboBox(settingsBox);
+    m_font->setToolTip(tr("Montserrat встроен (близок к фирменному шрифту «Честного знака»). Свой шрифт положите в папку fonts рядом с программой."));
+    for (const QString &family : LabelFonts::families())
+        m_font->addItem(family == QLatin1String("Montserrat") ? tr("Montserrat (встроенный)") : family, family);
+    const int fi = m_font->findData(saved.fontFamily.isEmpty() ? LabelFonts::defaultFamily() : saved.fontFamily);
+    m_font->setCurrentIndex(fi >= 0 ? fi : 0);
+    sl->addWidget(m_font);
     layout->addWidget(settingsBox);
 
     auto *templateRow = new QHBoxLayout();
@@ -190,6 +200,7 @@ MarkingPrintDialog::MarkingPrintDialog(const QList<int> &codeIds, QWidget *paren
     connect(m_width, &QDoubleSpinBox::valueChanged, this, &MarkingPrintDialog::updatePreview);
     connect(m_height, &QDoubleSpinBox::valueChanged, this, &MarkingPrintDialog::updatePreview);
     connect(m_rotate, &QCheckBox::toggled, this, &MarkingPrintDialog::updatePreview);
+    connect(m_font, &QComboBox::currentIndexChanged, this, &MarkingPrintDialog::updatePreview);
     connect(m_template, &QComboBox::currentIndexChanged, this, [this]() {
         m_fieldsBox->setVisible(m_template->currentData().toString() == QLatin1String("cabinet"));
         QSettings().setValue(QStringLiteral("thermal/markingTemplate"), m_template->currentData().toString());
@@ -212,6 +223,7 @@ ThermalLabel::Settings MarkingPrintDialog::currentSettings() const
     s.heightMm = m_height->value();
     s.rotate = m_rotate->isChecked();
     s.printer = m_printer->currentData().toString();
+    s.fontFamily = m_font->currentData().toString();
     return s;
 }
 
@@ -230,6 +242,13 @@ ThermalLabel::MarkingLabel MarkingPrintDialog::labelFor(int row) const
     label.manufacturer = pick(m_manufacturer, info.vendor);
     label.country = pick(m_country, info.countries.isEmpty() ? QString() : info.countries.first()); // на этикетке одна страна: первая из карточки
     return label;
+}
+
+void MarkingPrintDialog::setFontFamily(const QString &family)
+{
+    const int i = m_font->findData(family);
+    if (i >= 0)
+        m_font->setCurrentIndex(i);
 }
 
 void MarkingPrintDialog::setCabinetTemplate(bool cabinet)

@@ -60,6 +60,7 @@ private:
     QDoubleSpinBox *m_height;
     QCheckBox *m_rotate;
     QComboBox *m_printer;
+    QComboBox *m_font;
     QComboBox *m_middle;
     QSpinBox *m_allCopies;
     QComboBox *m_stockWarehouse;

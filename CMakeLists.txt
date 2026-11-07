@@ -107,6 +107,7 @@ endif()
 
 add_executable(inventory_manager
     src/main.cpp
+    resources/fonts.qrc
     src/database.cpp
     src/serverconfig.cpp
     src/connectiondialog.cpp
@@ -180,6 +181,7 @@ add_executable(inventory_manager
     src/productexport.cpp
     src/cancelmovementsdialog.cpp
     src/documentdeletedialog.cpp
+    src/labelfonts.cpp
     src/productsync.cpp
     src/productimportdialog.cpp
     src/applog.cpp

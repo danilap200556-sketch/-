@@ -33,6 +33,7 @@ public:
     ThermalLabel::Settings currentSettings() const;
     // Шаблон и поля (для проверок и настройки без окна): cabinet - «как в кабинете»; поле пусто - берётся из карточки товара.
     void setCabinetTemplate(bool cabinet);
+    void setFontFamily(const QString &family);
     void setOverrides(const QString &brand, const QString &product, const QString &color, const QString &manufacturer, const QString &country);
     // Этикетка для строки списка в том виде, как её напечатает окно.
     ThermalLabel::MarkingLabel previewLabel(int row) const { return labelFor(row); }
@@ -52,6 +53,7 @@ private:
     QList<MarkingCode::Row> m_rows;
     QHash<int, ProductMarketInfo> m_info; // карточки товаров (бренд, страны, вид товара)
     QComboBox *m_template;
+    QComboBox *m_font;
     QGroupBox *m_fieldsBox;
     QLineEdit *m_brand;
     QLineEdit *m_product;

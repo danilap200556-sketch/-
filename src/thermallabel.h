@@ -17,6 +17,7 @@ struct Settings {
     double heightMm = 40;
     bool rotate = false; // повернуть этикетку на 90°: нужно, если драйвер принтера считает бумагу «повёрнутой»
     QString printer;     // имя принтера; пусто - принтер по умолчанию
+    QString fontFamily;  // шрифт этикеток (см. LabelFonts); пусто - Montserrat, а если его нет - Arial
 };
 
 Settings loadSettings();

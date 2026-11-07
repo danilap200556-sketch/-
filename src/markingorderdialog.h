@@ -23,8 +23,9 @@ class MarkingOrderDialog : public QDialog
 public:
     explicit MarkingOrderDialog(QWidget *parent = nullptr);
 
-    // Позиций в одном заказе СУЗ (длиннее - несколько заказов подряд).
-    static constexpr int kLinesPerOrder = 100;
+    // Позиций (кодов товара GTIN) в одном заказе СУЗ: так задано в кабинете для заказа файлом (не больше 10 для всех групп, кроме лекарств);
+    // длиннее список - несколько заказов подряд. Предел самого API не проверялся, поэтому берётся тот же.
+    static constexpr int kLinesPerOrder = 10;
     static constexpr int kMaxQty = 150000;
 
     struct Line {

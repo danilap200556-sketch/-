@@ -2,6 +2,7 @@
 
 #include "barcode.h"
 #include "database.h"
+#include "labelfonts.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -71,6 +72,15 @@ ThermalPrintDialog::ThermalPrintDialog(const QList<Item> &items, QWidget *parent
     sl->addSpacing(12);
     sl->addWidget(new QLabel(tr("В середине:"), settingsBox));
     sl->addWidget(m_middle);
+    sl->addSpacing(12);
+    sl->addWidget(new QLabel(tr("Шрифт:"), settingsBox));
+    m_font = new QComboBox(settingsBox);
+    m_font->setToolTip(tr("Montserrat встроен. Свой шрифт положите в папку fonts рядом с программой."));
+    for (const QString &family : LabelFonts::families())
+        m_font->addItem(family == QLatin1String("Montserrat") ? tr("Montserrat (встроенный)") : family, family);
+    const int fi = m_font->findData(saved.fontFamily.isEmpty() ? LabelFonts::defaultFamily() : saved.fontFamily);
+    m_font->setCurrentIndex(fi >= 0 ? fi : 0);
+    sl->addWidget(m_font);
     layout->addWidget(settingsBox);
 
     // --- Товары и число копий
@@ -177,6 +187,7 @@ ThermalPrintDialog::ThermalPrintDialog(const QList<Item> &items, QWidget *parent
     for (auto *w : {static_cast<QWidget *>(m_width), static_cast<QWidget *>(m_height)})
         connect(static_cast<QDoubleSpinBox *>(w), &QDoubleSpinBox::valueChanged, this, &ThermalPrintDialog::settingsChanged);
     connect(m_rotate, &QCheckBox::toggled, this, &ThermalPrintDialog::settingsChanged);
+    connect(m_font, &QComboBox::currentIndexChanged, this, &ThermalPrintDialog::settingsChanged);
     connect(m_middle, &QComboBox::currentIndexChanged, this, &ThermalPrintDialog::settingsChanged);
     if (m_table->rowCount() > 0)
         m_table->selectRow(0);
@@ -207,6 +218,7 @@ ThermalLabel::Settings ThermalPrintDialog::currentSettings() const
     s.heightMm = m_height->value();
     s.rotate = m_rotate->isChecked();
     s.printer = m_printer->currentData().toString();
+    s.fontFamily = m_font->currentData().toString();
     return s;
 }
 

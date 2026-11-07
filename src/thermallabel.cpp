@@ -2,6 +2,7 @@
 
 #include "barcode.h"
 #include "datamatrix.h"
+#include "labelfonts.h"
 #include "markingcode.h"
 
 #include <QFont>
@@ -23,13 +24,23 @@ namespace {
 
 int px(double mm, int dpi) { return int(std::lround(mm * dpi / 25.4)); }
 
+// Шрифт текущей этикетки: его задаёт Settings::fontFamily в начале отрисовки.
+QString g_family;
+
+struct FamilyScope {
+    explicit FamilyScope(const QString &family) : previous(g_family) { g_family = family; }
+    ~FamilyScope() { g_family = previous; }
+    QString previous;
+};
+
+QFont labelFontW(int pixelSize, int weight)
+{
+    return LabelFonts::font(g_family, weight, pixelSize);
+}
+
 QFont labelFont(int pixelSize, bool bold)
 {
-    QFont f(QStringLiteral("Arial"));
-    f.setPixelSize(qMax(6, pixelSize));
-    f.setBold(bold);
-    f.setStyleStrategy(QFont::PreferAntialias);
-    return f;
+    return labelFontW(pixelSize, bold ? 700 : 400);
 }
 
 } // namespace
@@ -42,6 +53,7 @@ Settings loadSettings()
     s.heightMm = qBound(15.0, q.value(QStringLiteral("thermal/heightMm"), 40.0).toDouble(), 120.0);
     s.rotate = q.value(QStringLiteral("thermal/rotate"), false).toBool();
     s.printer = q.value(QStringLiteral("thermal/printer")).toString();
+    s.fontFamily = q.value(QStringLiteral("thermal/fontFamily")).toString();
     return s;
 }
 
@@ -52,6 +64,7 @@ void saveSettings(const Settings &s)
     q.setValue(QStringLiteral("thermal/heightMm"), s.heightMm);
     q.setValue(QStringLiteral("thermal/rotate"), s.rotate);
     q.setValue(QStringLiteral("thermal/printer"), s.printer);
+    q.setValue(QStringLiteral("thermal/fontFamily"), s.fontFamily);
 }
 
 QStringList wrapText(const QString &text, const QFontMetrics &fm, int maxWidth, int maxLines)
@@ -92,6 +105,7 @@ QStringList wrapText(const QString &text, const QFontMetrics &fm, int maxWidth, 
 
 QImage renderEan13(const Ean13Label &label, const Settings &s, int dpi, bool monochrome)
 {
+    const FamilyScope fontScope(s.fontFamily);
     const int W = px(s.widthMm, dpi), H = px(s.heightMm, dpi);
     QImage img(W, H, QImage::Format_RGB32);
     img.fill(Qt::white);
@@ -197,13 +211,13 @@ ArticleParts splitSize(const QString &article)
 namespace {
 
 // Самый крупный шрифт (в пикселях) от maxPx до minPx, в котором text помещается в width.
-QFont fitFont(const QString &text, int width, int maxPx, int minPx, bool bold)
+QFont fitFont(const QString &text, int width, int maxPx, int minPx, int weight)
 {
     int size = qMax(minPx, maxPx);
-    QFont f = labelFont(size, bold);
+    QFont f = labelFontW(size, weight);
     while (size > minPx && QFontMetrics(f).horizontalAdvance(text) > width) {
         size = qMax(minPx, size - qMax(1, size / 20));
-        f = labelFont(size, bold);
+        f = labelFontW(size, weight);
     }
     return f;
 }
@@ -261,11 +275,11 @@ struct FittedText {
 
 // Значение в прямоугольнике width x roomH: самый крупный шрифт от maxPx до minPx, при котором оно помещается в одну или несколько
 // строк; в самом мелком, если не помещается, последняя строка сокращается многоточием.
-FittedText fitLines(const QString &text, int width, int roomH, int maxPx, int minPx, bool bold)
+FittedText fitLines(const QString &text, int width, int roomH, int maxPx, int minPx, int weight)
 {
     FittedText out;
     for (int size = qMax(minPx, maxPx);; size = qMax(minPx, size - qMax(1, size / 16))) {
-        out.font = labelFont(size, bold);
+        out.font = labelFontW(size, weight);
         const QFontMetrics fm(out.font);
         bool fits = true;
         out.lines = chunkWrap(text, fm, width, qMax(1, roomH / qMax(1, fm.lineSpacing())), &fits);
@@ -302,8 +316,8 @@ void drawLogo(QPainter &p, const QRect &r, int dpi)
     if (tw < px(4, dpi))
         return;
     const QString top = QObject::tr("ЧЕСТНЫЙ"), bottom = QObject::tr("ЗНАК");
-    const QFont topFont = fitFont(top, tw, int(side * 0.36), px(1.2, dpi), true);
-    const QFont bottomFont = fitFont(bottom, tw, int(side * 0.62), px(1.6, dpi), true);
+    const QFont topFont = fitFont(top, tw, int(side * 0.36), px(1.2, dpi), 700);
+    const QFont bottomFont = fitFont(bottom, tw, int(side * 0.62), px(1.6, dpi), 800);
     const QFontMetrics tfm(topFont), bfm(bottomFont);
     const int total = tfm.height() + bfm.height() - px(0.3, dpi);
     int y = y0 + (side - total) / 2;
@@ -346,10 +360,10 @@ QImage renderCabinet(const MarkingLabel &label, const Settings &s, int dpi, bool
     int module = qMax(2, px(20.0, dpi) / symSize);
     int colW = qBound(px(15.0, dpi), module * symSize, int((R - L) * 0.46));
     module = qMax(1, qMin(module, colW / symSize));
-    QFont cf = labelFont(px(1.9, dpi), true);
+    QFont cf = labelFontW(px(1.9, dpi), 600);
     QStringList codeLines;
     for (int size2 = px(1.9, dpi);; size2 -= qMax(1, px(0.05, dpi))) {
-        cf = labelFont(size2, true);
+        cf = labelFontW(size2, 600);
         const QFontMetrics fm(cf);
         QString rest = readable;
         codeLines.clear();
@@ -383,7 +397,7 @@ QImage renderCabinet(const MarkingLabel &label, const Settings &s, int dpi, bool
         const QString brand = label.brand.trimmed().toUpper();
         if (!brand.isEmpty()) {
             const int w = ruleX - L - px(1.0, dpi), h = band - px(0.7, dpi);
-            const FittedText fit = fitLines(brand, w, h, px(4.8, dpi), px(2.0, dpi), true);
+            const FittedText fit = fitLines(brand, w, h, px(4.8, dpi), px(2.0, dpi), 800);
             const QFontMetrics bfm(fit.font);
             p.setFont(fit.font);
             // Прижато к нижней линии: у однострочного бренда как в образце, у двухстрочного - две строки над линией.
@@ -394,7 +408,7 @@ QImage renderCabinet(const MarkingLabel &label, const Settings &s, int dpi, bool
             }
         }
         const QString url = QObject::tr("www.честныйзнак.рф");
-        const QFont uf = fitFont(url, colW, px(1.9, dpi), px(1.1, dpi), true);
+        const QFont uf = fitFont(url, colW, px(1.9, dpi), px(1.1, dpi), 700);
         p.setFont(uf);
         p.drawText(QRect(colX, T, colW, band - px(0.7, dpi)), Qt::AlignHCenter | Qt::AlignBottom, url);
     }
@@ -428,38 +442,48 @@ QImage renderCabinet(const MarkingLabel &label, const Settings &s, int dpi, bool
     const int y2 = rowsTop + rowsH * 33 / 100, y3 = y2 + rowsH * 30 / 100;
     p.fillRect(L, y2, leftW, rule, Qt::black);
     p.fillRect(L, y3, leftW, rule, Qt::black);
-    const QFont capFont = labelFont(px(1.65, dpi), false);
+    QFont capFont = labelFontW(px(1.65, dpi), 500);
+    capFont.setLetterSpacing(QFont::AbsoluteSpacing, qMax(0.0, px(0.07, dpi) * 1.0));
     const QFontMetrics capFm(capFont);
     const int pad = px(1.0, dpi), top = px(0.9, dpi);
-    auto cell = [&](int x, int y, int w, int rowH, const QString &caption, const QString &value, double maxMm, double minMm) {
-        const int cx = x + pad, cw = w - pad - px(0.5, dpi);
-        p.setFont(capFont);
-        p.drawText(QRect(cx, y + top, cw, capFm.height()), Qt::AlignLeft | Qt::AlignVCenter, caption);
-        // Значение: самый крупный шрифт, при котором оно помещается в одну или несколько строк под подписью; в низкой этикетке
-        // шрифт меньше. Если и в самом мелком не помещается - последняя строка сокращается многоточием.
+    // Строка таблицы из нескольких ячеек (подпись мелко, под ней значение). Значения одной строки рисуются ОДНИМ размером шрифта - по самой
+    // «тесной» ячейке: ряд выглядит ровно, как в образце. Значение переносится на несколько строк, если так крупнее.
+    struct Cell {
+        int x, w;
+        QString caption, value;
+    };
+    auto row = [&](int y, int rowH, const QList<Cell> &cells, double maxMm, double minMm) {
         const int room = rowH - top - capFm.height() - px(0.5, dpi);
         const int minPx = px(minMm, dpi);
         const int maxPx = qMax(minPx, qMin(px(maxMm, dpi), int(room / 1.18)));
-        const FittedText fit = fitLines(value, cw, room, maxPx, minPx, true);
-        const QFont &vf = fit.font;
-        const QStringList &vlines = fit.lines;
-        const QFontMetrics vfm(vf);
-        p.setFont(vf);
-        int vy = y + top + capFm.height();
-        for (const QString &line : std::as_const(vlines)) {
-            p.drawText(QRect(cx, vy, cw, vfm.lineSpacing()), Qt::AlignLeft | Qt::AlignVCenter, line);
-            vy += vfm.lineSpacing();
+        QList<FittedText> fits;
+        int common = maxPx;
+        for (const Cell &c : cells) {
+            fits << fitLines(c.value, c.w - pad - px(0.5, dpi), room, maxPx, minPx, 700);
+            common = qMin(common, fits.last().font.pixelSize());
+        }
+        for (int i = 0; i < cells.size(); ++i) {
+            const Cell &c = cells[i];
+            const int cx = c.x + pad, cw = c.w - pad - px(0.5, dpi);
+            p.setFont(capFont);
+            p.drawText(QRect(cx, y + top, cw, capFm.height()), Qt::AlignLeft | Qt::AlignVCenter, c.caption);
+            const FittedText fit = fits[i].font.pixelSize() == common ? fits[i] : fitLines(c.value, cw, room, common, qMin(common, minPx), 700);
+            const QFontMetrics vfm(fit.font);
+            p.setFont(fit.font);
+            int vy = y + top + capFm.height();
+            for (const QString &line : std::as_const(fit.lines)) {
+                p.drawText(QRect(cx, vy, cw, vfm.lineSpacing()), Qt::AlignLeft | Qt::AlignVCenter, line);
+                vy += vfm.lineSpacing();
+            }
         }
     };
     const int h1 = y2 - rowsTop, h2 = y3 - y2, h3 = B - y3 + 1;
-    cell(L, rowsTop, leftW, h1, QObject::tr("АРТИКУЛ"), model, 4.2, 1.8);
+    row(rowsTop, h1, {{L, leftW, QObject::tr("АРТИКУЛ"), model}}, 4.2, 1.8);
     const int w1 = leftW * 40 / 100, w2 = leftW * 32 / 100, w3 = leftW - w1 - w2;
-    cell(L, y2 + rule, w1, h2, QObject::tr("ПРОДУКЦИЯ"), label.product.trimmed().toUpper(), 3.0, 1.5);
-    cell(L + w1, y2 + rule, w2, h2, QObject::tr("ЦВЕТ"), label.color.trimmed().toUpper(), 3.0, 1.5);
-    cell(L + w1 + w2, y2 + rule, w3, h2, QObject::tr("РАЗМЕР"), size, 3.0, 1.5);
+    row(y2 + rule, h2, {{L, w1, QObject::tr("ПРОДУКЦИЯ"), label.product.trimmed().toUpper()}, {L + w1, w2, QObject::tr("ЦВЕТ"), label.color.trimmed().toUpper()},
+                         {L + w1 + w2, w3, QObject::tr("РАЗМЕР"), size}}, 3.0, 1.5);
     const int wm = leftW * 58 / 100;
-    cell(L, y3 + rule, wm, h3, QObject::tr("ИЗГОТОВИТЕЛЬ"), label.manufacturer.trimmed().toUpper(), 3.0, 1.5);
-    cell(L + wm, y3 + rule, leftW - wm, h3, QObject::tr("СТРАНА"), label.country.trimmed().toUpper(), 3.0, 1.5);
+    row(y3 + rule, h3, {{L, wm, QObject::tr("ИЗГОТОВИТЕЛЬ"), label.manufacturer.trimmed().toUpper()}, {L + wm, leftW - wm, QObject::tr("СТРАНА"), label.country.trimmed().toUpper()}}, 3.0, 1.5);
     p.fillRect(L + wm, y3, rule, B - y3 + 1, Qt::black);
 
     p.end();
@@ -470,6 +494,7 @@ QImage renderCabinet(const MarkingLabel &label, const Settings &s, int dpi, bool
 
 QImage renderMarking(const MarkingLabel &label, const Settings &s, int dpi, bool monochrome)
 {
+    const FamilyScope fontScope(s.fontFamily);
     if (label.layout == MarkingLabel::Layout::Cabinet && px(s.widthMm, dpi) * 5 >= px(s.heightMm, dpi) * 6)
         return renderCabinet(label, s, dpi, monochrome);
     const int W = px(s.widthMm, dpi), H = px(s.heightMm, dpi);
