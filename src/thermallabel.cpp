@@ -194,8 +194,284 @@ ArticleParts splitSize(const QString &article)
 
 } // namespace
 
+namespace {
+
+// Самый крупный шрифт (в пикселях) от maxPx до minPx, в котором text помещается в width.
+QFont fitFont(const QString &text, int width, int maxPx, int minPx, bool bold)
+{
+    int size = qMax(minPx, maxPx);
+    QFont f = labelFont(size, bold);
+    while (size > minPx && QFontMetrics(f).horizontalAdvance(text) > width) {
+        size = qMax(minPx, size - qMax(1, size / 20));
+        f = labelFont(size, bold);
+    }
+    return f;
+}
+
+// Перенос значения по местам, где можно переломить (пробел, дефис, «_», «/»), не больше maxLines строк. *fits = false, если так не
+// поместилось (слишком длинное слово или строк больше): тогда последняя строка собирает остаток и сокращается многоточием.
+QStringList chunkWrap(const QString &text, const QFontMetrics &fm, int width, int maxLines, bool *fits)
+{
+    QStringList chunks;
+    QString cur;
+    for (const QChar c : text) {
+        cur += c;
+        if (c == QLatin1Char(' ') || c == QLatin1Char('-') || c == QLatin1Char('_') || c == QLatin1Char('/')) {
+            chunks << cur;
+            cur.clear();
+        }
+    }
+    if (!cur.isEmpty())
+        chunks << cur;
+    *fits = true;
+    QStringList lines;
+    QString line;
+    for (const QString &chunk : std::as_const(chunks)) {
+        if (fm.horizontalAdvance((line + chunk).trimmed()) <= width) {
+            line += chunk;
+            continue;
+        }
+        if (!line.trimmed().isEmpty())
+            lines << line.trimmed();
+        if (fm.horizontalAdvance(chunk.trimmed()) > width)
+            *fits = false; // одно слово шире строки
+        line = chunk;
+    }
+    if (!line.trimmed().isEmpty())
+        lines << line.trimmed();
+    if (lines.isEmpty())
+        lines << QString();
+    if (lines.size() > maxLines) {
+        *fits = false;
+        QString rest;
+        for (int i = maxLines - 1; i < lines.size(); ++i)
+            rest += (rest.isEmpty() ? QString() : QStringLiteral(" ")) + lines[i];
+        lines = lines.mid(0, maxLines - 1);
+        lines << fm.elidedText(rest, Qt::ElideRight, width);
+    } else if (!*fits) {
+        lines.last() = fm.elidedText(lines.last(), Qt::ElideRight, width);
+    }
+    return lines;
+}
+
+struct FittedText {
+    QFont font;
+    QStringList lines;
+};
+
+// Значение в прямоугольнике width x roomH: самый крупный шрифт от maxPx до minPx, при котором оно помещается в одну или несколько
+// строк; в самом мелком, если не помещается, последняя строка сокращается многоточием.
+FittedText fitLines(const QString &text, int width, int roomH, int maxPx, int minPx, bool bold)
+{
+    FittedText out;
+    for (int size = qMax(minPx, maxPx);; size = qMax(minPx, size - qMax(1, size / 16))) {
+        out.font = labelFont(size, bold);
+        const QFontMetrics fm(out.font);
+        bool fits = true;
+        out.lines = chunkWrap(text, fm, width, qMax(1, roomH / qMax(1, fm.lineSpacing())), &fits);
+        if (fits || size <= minPx)
+            break;
+    }
+    return out;
+}
+
+// Логотип «Честный знак»: рамка-видоискатель с галочкой и подпись «ЧЕСТНЫЙ / ЗНАК». Рисуется в прямоугольнике r.
+void drawLogo(QPainter &p, const QRect &r, int dpi)
+{
+    const int side = qMin(r.height(), r.width() / 3);
+    const int line = qMax(1, px(0.38, dpi));
+    QPen pen(Qt::black, line, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    const int x0 = r.left(), y0 = r.top() + (r.height() - side) / 2;
+    const int arm = qMax(2, side * 32 / 100);
+    const int x1 = x0 + side - 1, y1 = y0 + side - 1;
+    // Четыре угла рамки.
+    p.drawLine(x0, y0, x0 + arm, y0); p.drawLine(x0, y0, x0, y0 + arm);
+    p.drawLine(x1, y0, x1 - arm, y0); p.drawLine(x1, y0, x1, y0 + arm);
+    p.drawLine(x0, y1, x0 + arm, y1); p.drawLine(x0, y1, x0, y1 - arm);
+    p.drawLine(x1, y1, x1 - arm, y1); p.drawLine(x1, y1, x1, y1 - arm);
+    // Галочка.
+    QPen tick(Qt::black, qMax(line, side / 8), Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
+    p.setPen(tick);
+    p.drawPolyline(QPolygon({QPoint(x0 + side * 27 / 100, y0 + side * 52 / 100), QPoint(x0 + side * 43 / 100, y0 + side * 68 / 100),
+                             QPoint(x0 + side * 74 / 100, y0 + side * 33 / 100)}));
+    p.setPen(Qt::black);
+    const int tx = x0 + side + px(1.0, dpi);
+    const int tw = r.right() - tx + 1;
+    if (tw < px(4, dpi))
+        return;
+    const QString top = QObject::tr("ЧЕСТНЫЙ"), bottom = QObject::tr("ЗНАК");
+    const QFont topFont = fitFont(top, tw, int(side * 0.36), px(1.2, dpi), true);
+    const QFont bottomFont = fitFont(bottom, tw, int(side * 0.62), px(1.6, dpi), true);
+    const QFontMetrics tfm(topFont), bfm(bottomFont);
+    const int total = tfm.height() + bfm.height() - px(0.3, dpi);
+    int y = y0 + (side - total) / 2;
+    p.setFont(topFont);
+    p.drawText(QRect(tx, y, tw, tfm.height()), Qt::AlignLeft | Qt::AlignVCenter, top);
+    y += tfm.height() - px(0.3, dpi);
+    p.setFont(bottomFont);
+    p.drawText(QRect(tx, y, tw, bfm.height()), Qt::AlignLeft | Qt::AlignVCenter, bottom);
+}
+
+// Этикетка «как в личном кабинете Честного знака» (см. MarkingLabel::Layout::Cabinet).
+QImage renderCabinet(const MarkingLabel &label, const Settings &s, int dpi, bool monochrome)
+{
+    const int W = px(s.widthMm, dpi), H = px(s.heightMm, dpi);
+    QImage img(W, H, QImage::Format_RGB32);
+    img.fill(Qt::white);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::TextAntialiasing, !monochrome);
+    p.setPen(Qt::black);
+    const int m = px(2.0, dpi); // поле: у термопринтера по краям есть непропечатываемая полоска
+    const int L = m, T = m, R = W - m, B = H - m;
+    const int rule = qMax(1, px(0.3, dpi));
+    const MarkingCode::Parsed parsed = MarkingCode::parse(label.code);
+    const ArticleParts parts = splitSize(label.article);
+    const QString model = label.model.isEmpty() ? parts.model : label.model.trimmed();
+    const QString size = label.size.isEmpty() ? parts.size : label.size.trimmed();
+
+    // --- Data Matrix: модуль - целое число точек; столбец справа ровно по коду (но не уже 15 мм, чтобы поместились адрес и логотип).
+    QString dmError;
+    const DataMatrix::Symbol sym = parsed.ok ? DataMatrix::encode(parsed.code.toLatin1(), true, &dmError) : DataMatrix::Symbol();
+    const int symSize = sym.isNull() ? 24 : sym.size;
+    const bool tall = s.heightMm >= 34;
+    const int band = px(tall ? 6.5 : 5.0, dpi);   // верхняя полоса: бренд и адрес сайта
+    const int ruleY = T + band;
+    const int gap = px(0.9, dpi);
+    const int colTop = ruleY + rule + px(1.0, dpi);
+    const int logoH = px(tall ? 5.4 : 4.2, dpi);
+    // Читаемый текст кода «01<GTIN>21<серийный номер>» - до двух строк под кодом.
+    const QString readable = parsed.ok ? QStringLiteral("01") + parsed.gtin + QStringLiteral("21") + parsed.serial : label.code.left(40);
+    int module = qMax(2, px(20.0, dpi) / symSize);
+    int colW = qBound(px(15.0, dpi), module * symSize, int((R - L) * 0.46));
+    module = qMax(1, qMin(module, colW / symSize));
+    QFont cf = labelFont(px(1.9, dpi), true);
+    QStringList codeLines;
+    for (int size2 = px(1.9, dpi);; size2 -= qMax(1, px(0.05, dpi))) {
+        cf = labelFont(size2, true);
+        const QFontMetrics fm(cf);
+        QString rest = readable;
+        codeLines.clear();
+        for (int i = 0; i < 2 && !rest.isEmpty(); ++i) {
+            int n = rest.size();
+            while (n > 1 && fm.horizontalAdvance(rest.left(n)) > colW)
+                --n;
+            codeLines << rest.left(n);
+            rest = rest.mid(n);
+        }
+        if (rest.isEmpty() || size2 <= px(1.25, dpi)) {
+            if (!rest.isEmpty())
+                codeLines.last() = fm.elidedText(codeLines.last() + rest, Qt::ElideRight, colW);
+            break;
+        }
+    }
+    const int codeH = int(codeLines.size()) * QFontMetrics(cf).lineSpacing();
+    const int maxSide = (B - colTop) - logoH - codeH - 2 * gap;
+    module = qMax(1, qMin(module, maxSide / symSize));
+    const int dmSide = module * symSize;
+    colW = qMax(colW, qMin(dmSide, int((R - L) * 0.46)));
+    const int colX = R - colW + 1;
+    const int ruleX = colX - px(1.3, dpi);
+
+    // --- Линии: под верхней полосой на всю ширину и вертикальная между колонками.
+    p.fillRect(L, ruleY, R - L + 1, rule, Qt::black);
+    p.fillRect(ruleX, ruleY, rule, B - ruleY + 1, Qt::black);
+
+    // --- Верхняя полоса: бренд слева крупно, адрес сайта справа.
+    {
+        const QString brand = label.brand.trimmed().toUpper();
+        if (!brand.isEmpty()) {
+            const int w = ruleX - L - px(1.0, dpi), h = band - px(0.7, dpi);
+            const FittedText fit = fitLines(brand, w, h, px(4.8, dpi), px(2.0, dpi), true);
+            const QFontMetrics bfm(fit.font);
+            p.setFont(fit.font);
+            // Прижато к нижней линии: у однострочного бренда как в образце, у двухстрочного - две строки над линией.
+            int by = T + h - int(fit.lines.size()) * bfm.lineSpacing();
+            for (const QString &line : fit.lines) {
+                p.drawText(QRect(L, by, w, bfm.lineSpacing()), Qt::AlignLeft | Qt::AlignVCenter, line);
+                by += bfm.lineSpacing();
+            }
+        }
+        const QString url = QObject::tr("www.честныйзнак.рф");
+        const QFont uf = fitFont(url, colW, px(1.9, dpi), px(1.1, dpi), true);
+        p.setFont(uf);
+        p.drawText(QRect(colX, T, colW, band - px(0.7, dpi)), Qt::AlignHCenter | Qt::AlignBottom, url);
+    }
+
+    // --- Правая колонка: Data Matrix, текст кода, логотип.
+    {
+        const int xDm = colX + (colW - dmSide) / 2;
+        if (!sym.isNull()) {
+            for (int r = 0; r < sym.size; ++r)
+                for (int c = 0; c < sym.size; ++c)
+                    if (sym.dark(r, c))
+                        p.fillRect(xDm + c * module, colTop + r * module, module, module, Qt::black);
+        } else {
+            p.setFont(labelFont(px(2.2, dpi), false));
+            p.drawText(QRect(colX, colTop, colW, dmSide), Qt::AlignCenter | Qt::TextWordWrap, QObject::tr("Код не помещается в Data Matrix"));
+        }
+        p.setFont(cf);
+        const QFontMetrics cfm(cf);
+        int y = colTop + dmSide + gap;
+        for (const QString &line : std::as_const(codeLines)) {
+            p.drawText(QRect(colX, y, colW, cfm.lineSpacing()), Qt::AlignLeft | Qt::AlignVCenter, line);
+            y += cfm.lineSpacing();
+        }
+        drawLogo(p, QRect(colX, B - logoH + 1, colW, logoH), dpi);
+    }
+
+    // --- Левая колонка: три строки с полями. Подпись мелко, значение жирно под ней.
+    const int leftW = ruleX - L;
+    const int rowsTop = ruleY + rule;
+    const int rowsH = B - rowsTop + 1;
+    const int y2 = rowsTop + rowsH * 33 / 100, y3 = y2 + rowsH * 30 / 100;
+    p.fillRect(L, y2, leftW, rule, Qt::black);
+    p.fillRect(L, y3, leftW, rule, Qt::black);
+    const QFont capFont = labelFont(px(1.65, dpi), false);
+    const QFontMetrics capFm(capFont);
+    const int pad = px(1.0, dpi), top = px(0.9, dpi);
+    auto cell = [&](int x, int y, int w, int rowH, const QString &caption, const QString &value, double maxMm, double minMm) {
+        const int cx = x + pad, cw = w - pad - px(0.5, dpi);
+        p.setFont(capFont);
+        p.drawText(QRect(cx, y + top, cw, capFm.height()), Qt::AlignLeft | Qt::AlignVCenter, caption);
+        // Значение: самый крупный шрифт, при котором оно помещается в одну или несколько строк под подписью; в низкой этикетке
+        // шрифт меньше. Если и в самом мелком не помещается - последняя строка сокращается многоточием.
+        const int room = rowH - top - capFm.height() - px(0.5, dpi);
+        const int minPx = px(minMm, dpi);
+        const int maxPx = qMax(minPx, qMin(px(maxMm, dpi), int(room / 1.18)));
+        const FittedText fit = fitLines(value, cw, room, maxPx, minPx, true);
+        const QFont &vf = fit.font;
+        const QStringList &vlines = fit.lines;
+        const QFontMetrics vfm(vf);
+        p.setFont(vf);
+        int vy = y + top + capFm.height();
+        for (const QString &line : std::as_const(vlines)) {
+            p.drawText(QRect(cx, vy, cw, vfm.lineSpacing()), Qt::AlignLeft | Qt::AlignVCenter, line);
+            vy += vfm.lineSpacing();
+        }
+    };
+    const int h1 = y2 - rowsTop, h2 = y3 - y2, h3 = B - y3 + 1;
+    cell(L, rowsTop, leftW, h1, QObject::tr("АРТИКУЛ"), model, 4.2, 1.8);
+    const int w1 = leftW * 40 / 100, w2 = leftW * 32 / 100, w3 = leftW - w1 - w2;
+    cell(L, y2 + rule, w1, h2, QObject::tr("ПРОДУКЦИЯ"), label.product.trimmed().toUpper(), 3.0, 1.5);
+    cell(L + w1, y2 + rule, w2, h2, QObject::tr("ЦВЕТ"), label.color.trimmed().toUpper(), 3.0, 1.5);
+    cell(L + w1 + w2, y2 + rule, w3, h2, QObject::tr("РАЗМЕР"), size, 3.0, 1.5);
+    const int wm = leftW * 58 / 100;
+    cell(L, y3 + rule, wm, h3, QObject::tr("ИЗГОТОВИТЕЛЬ"), label.manufacturer.trimmed().toUpper(), 3.0, 1.5);
+    cell(L + wm, y3 + rule, leftW - wm, h3, QObject::tr("СТРАНА"), label.country.trimmed().toUpper(), 3.0, 1.5);
+    p.fillRect(L + wm, y3, rule, B - y3 + 1, Qt::black);
+
+    p.end();
+    return monochrome ? img.convertToFormat(QImage::Format_Mono, Qt::ThresholdDither | Qt::MonoOnly) : img;
+}
+
+} // namespace
+
 QImage renderMarking(const MarkingLabel &label, const Settings &s, int dpi, bool monochrome)
 {
+    if (label.layout == MarkingLabel::Layout::Cabinet && px(s.widthMm, dpi) * 5 >= px(s.heightMm, dpi) * 6)
+        return renderCabinet(label, s, dpi, monochrome);
     const int W = px(s.widthMm, dpi), H = px(s.heightMm, dpi);
     QImage img(W, H, QImage::Format_RGB32);
     img.fill(Qt::white);

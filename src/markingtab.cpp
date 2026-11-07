@@ -169,6 +169,11 @@ public:
                                    "«Из файла…» на странице «Честный знак»."), this);
         hint->setWordWrap(true);
         l->addWidget(hint);
+        auto *urlHint = new QLabel(tr("Адрес СУЗ - это адрес API: <b>https://suzgrid.crpt.ru/api/v3</b>. Адрес страницы «Управление заказами» из личного кабинета "
+                                      "(…/management/orders) - это сайт, а не API: программа заменяет его на адрес API сама."), this);
+        urlHint->setWordWrap(true);
+        urlHint->setTextFormat(Qt::RichText);
+        l->addWidget(urlHint);
         const ChestnyZnak::Settings s = ChestnyZnak::loadSettings();
         auto *form = new QFormLayout();
         m_url = new QLineEdit(s.baseUrl, this);
@@ -195,7 +200,13 @@ public:
         buttons->addButton(tr("Сохранить"), QDialogButtonBox::AcceptRole);
         buttons->addButton(tr("Отмена"), QDialogButtonBox::RejectRole);
         l->addWidget(buttons);
-        connect(buttons, &QDialogButtonBox::accepted, this, [this]() { ChestnyZnak::saveSettings(current()); accept(); });
+        connect(buttons, &QDialogButtonBox::accepted, this, [this]() {
+            const QString before = m_url->text().trimmed();
+            ChestnyZnak::saveSettings(current());
+            if (before != m_url->text().trimmed())
+                QMessageBox::information(this, windowTitle(), tr("Адрес СУЗ исправлен на адрес API: %1").arg(m_url->text()));
+            accept();
+        });
         connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
         connect(test, &QPushButton::clicked, this, [this]() {
             const ChestnyZnak::Reply r = ChestnyZnak::ping(current());
@@ -207,7 +218,9 @@ public:
     ChestnyZnak::Settings current() const
     {
         ChestnyZnak::Settings s;
-        s.baseUrl = m_url->text().trimmed();
+        s.baseUrl = ChestnyZnak::normalizeBaseUrl(m_url->text());
+        if (s.baseUrl != m_url->text().trimmed())
+            m_url->setText(s.baseUrl); // показываем исправленный адрес API
         s.omsId = m_oms->text().trimmed();
         s.clientToken = m_token->text().trimmed();
         s.signerUrl = m_signer->text().trimmed();

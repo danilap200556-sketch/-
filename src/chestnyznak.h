@@ -27,6 +27,11 @@ struct Settings {
 Settings loadSettings();
 void saveSettings(const Settings &settings);
 
+// Адрес API СУЗ из того, что вписал человек: часто берут адрес веб-страницы «Управление заказами» личного кабинета
+// (https://suzgrid.crpt.ru/management/orders) - это не API, а сайт: он отвечает HTML с кодом 200 на любой путь. Такой адрес (и адрес
+// без пути, и «…/api») приводится к виду <сервер>/api/v3; свой нестандартный путь остаётся как есть. Применяется при чтении и записи настроек.
+QString normalizeBaseUrl(const QString &url);
+
 struct Reply {
     bool ok = false;
     int status = 0;

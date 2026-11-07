@@ -35,6 +35,20 @@ struct MarkingLabel {
     QString article;
     QString description;
     QString code; // нормализованный КМ с символами GS (см. MarkingCode::parse)
+
+    // Вид этикетки. Standard - код слева, справа артикул, название и размер. Cabinet - как этикетка из личного кабинета «Честного знака»:
+    // вверху бренд и адрес честныйзнак.рф, слева в строках АРТИКУЛ / ПРОДУКЦИЯ, ЦВЕТ, РАЗМЕР / ИЗГОТОВИТЕЛЬ, СТРАНА, справа Data Matrix,
+    // его текст и логотип. Подходит горизонтальной этикетке (ширина не меньше 1,2 высоты), иначе рисуется Standard.
+    enum class Layout { Standard, Cabinet };
+    Layout layout = Layout::Standard;
+    // Поля вида Cabinet (пустое поле остаётся пустым; модель и размер, если не заданы, берутся из артикула: «DD1391-100_42»).
+    QString brand;         // вверху слева, крупно
+    QString model;         // АРТИКУЛ
+    QString product;       // ПРОДУКЦИЯ («кроссовки»)
+    QString color;         // ЦВЕТ
+    QString size;          // РАЗМЕР
+    QString manufacturer;  // ИЗГОТОВИТЕЛЬ
+    QString country;       // СТРАНА
 };
 
 // Рисует этикетку в изображение размером widthMm x heightMm при заданном разрешении. monochrome - чёрно-белое

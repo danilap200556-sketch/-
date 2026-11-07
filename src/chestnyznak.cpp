@@ -29,6 +29,7 @@ const char kKeyTemplate[] = "cz_template_id";
 
 struct Http {
     int status = 0;
+    QString contentType;
     QByteArray body;
     QString error; // сетевая ошибка (не HTTP-код)
     bool stopped = false;
@@ -64,12 +65,25 @@ Http send(const QString &method, const QUrl &url, const QList<QPair<QByteArray, 
     watch.start();
     loop.exec();
     out.status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    out.contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString();
     out.body = reply->readAll();
     if (!out.stopped && out.status == 0)
         out.error = reply->error() == QNetworkReply::TimeoutError ? QStringLiteral("сервер не ответил за %1 с").arg(kTimeoutMs / 1000) : reply->errorString();
     delete reply;
     return out;
 }
+
+// Веб-страница вместо ответа API (адрес указывает на сайт, а не на API).
+bool looksLikeHtml(const QString &contentType, const QByteArray &body)
+{
+    if (contentType.contains(QLatin1String("html"), Qt::CaseInsensitive))
+        return true;
+    const QByteArray head = body.left(200).trimmed().toLower();
+    return head.startsWith("<!doctype") || head.startsWith("<html") || head.startsWith("<head") || head.startsWith("<body");
+}
+
+const char kHtmlHint[] = "по этому адресу отвечает веб-страница, а не API СУЗ. В настройках адрес СУЗ должен быть адресом API, например "
+                         "https://suzgrid.crpt.ru/api/v3 (а не адресом страницы «Управление заказами» личного кабинета, который кончается на /management/orders)";
 
 // Понятное сообщение из ответа с ошибкой.
 QString errorText(int status, const QByteArray &body)
@@ -138,8 +152,19 @@ Reply finish(const Http &http, const QString &label, const QUrl &url, const QByt
         r.json = doc.object();
     else if (doc.isArray())
         r.json.insert(QStringLiteral("_array"), doc.array());
+    // Сайт вместо API отвечает 200 и страницей: это не «связь есть», а неверный адрес.
+    if (!doc.isObject() && !doc.isArray() && looksLikeHtml(http.contentType, http.body)) {
+        r.error = http.status >= 400 ? QStringLiteral("HTTP %1: %2").arg(http.status).arg(QString::fromUtf8(kHtmlHint)) : QString::fromUtf8(kHtmlHint);
+        return r;
+    }
     if (http.status >= 400) {
         r.error = errorText(http.status, http.body);
+        return r;
+    }
+    // Любой настоящий ответ API - JSON; всё остальное (пустая страница, текст) - не тот адрес или не тот сервер.
+    if (!http.body.trimmed().isEmpty() && !doc.isObject() && !doc.isArray()) {
+        r.error = QStringLiteral("ответ не похож на ответ API СУЗ (не JSON): %1. Проверьте адрес СУЗ в настройках (обычно https://suzgrid.crpt.ru/api/v3)")
+                      .arg(QString::fromUtf8(http.body.left(120)).simplified());
         return r;
     }
     r.ok = true;
@@ -148,12 +173,35 @@ Reply finish(const Http &http, const QString &label, const QUrl &url, const QByt
 
 } // namespace
 
+QString normalizeBaseUrl(const QString &input)
+{
+    QString text = input.trimmed();
+    while (text.endsWith(QLatin1Char('/')))
+        text.chop(1);
+    if (text.isEmpty())
+        return text;
+    QUrl url(text);
+    if (!url.isValid() || url.host().isEmpty())
+        return text;
+    const QString path = url.path().toLower();
+    if (path.isEmpty() || path.contains(QLatin1String("/management")))
+        url.setPath(QStringLiteral("/api/v3"));   // сайт кабинета или голый адрес сервера -> API
+    else if (path == QLatin1String("/api"))
+        url.setPath(QStringLiteral("/api/v3"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    QString out = url.toString(QUrl::FullyEncoded);
+    while (out.endsWith(QLatin1Char('/')))
+        out.chop(1);
+    return out;
+}
+
 Settings loadSettings()
 {
     Settings s;
     const QString url = AppSettings::get(QString::fromLatin1(kKeyUrl));
     if (!url.trimmed().isEmpty())
-        s.baseUrl = url.trimmed();
+        s.baseUrl = normalizeBaseUrl(url);
     s.omsId = AppSettings::get(QString::fromLatin1(kKeyOms)).trimmed();
     s.clientToken = AppSettings::get(QString::fromLatin1(kKeyToken)).trimmed();
     s.signerUrl = AppSettings::get(QString::fromLatin1(kKeySigner)).trimmed();
@@ -163,7 +211,7 @@ Settings loadSettings()
 
 void saveSettings(const Settings &s)
 {
-    AppSettings::set(QString::fromLatin1(kKeyUrl), s.baseUrl.trimmed());
+    AppSettings::set(QString::fromLatin1(kKeyUrl), normalizeBaseUrl(s.baseUrl));
     AppSettings::set(QString::fromLatin1(kKeyOms), s.omsId.trimmed());
     AppSettings::set(QString::fromLatin1(kKeyToken), s.clientToken.trimmed());
     AppSettings::set(QString::fromLatin1(kKeySigner), s.signerUrl.trimmed());
