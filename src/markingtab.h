@@ -29,6 +29,7 @@ private slots:
     void orderCodes();
     void settings();
     void print();
+    void introXml();
     void linkSelected();
     void removeSelected();
     void selectNew();

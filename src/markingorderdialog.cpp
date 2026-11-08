@@ -2,6 +2,7 @@
 
 #include "appsettings.h"
 #include "batchparser.h"
+#include "cabinetxmldialog.h"
 #include "chestnyznak.h"
 #include "markingcode.h"
 #include "productfinder.h"
@@ -12,6 +13,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonArray>
@@ -108,8 +110,10 @@ MarkingOrderDialog::MarkingOrderDialog(QWidget *parent)
     m_fetchBtn = new QPushButton(tr("Получить коды"), this);
     m_stopBtn = new QPushButton(tr("Остановить"), this);
     m_stopBtn->setEnabled(false);
+    auto *xmlBtn = new QPushButton(tr("XML для кабинета…"), this);
+    xmlBtn->setToolTip(tr("Сохранить список как файл заказа (urn:oms.order) для загрузки в личном кабинете: Заказы → Активные → Импортировать. Подпись в программе не нужна."));
     auto *close = new QPushButton(tr("Закрыть"), this);
-    for (QPushButton *b : {ping, m_createBtn, status, m_fetchBtn, m_stopBtn, close}) {
+    for (QPushButton *b : {ping, m_createBtn, status, m_fetchBtn, xmlBtn, m_stopBtn, close}) {
         b->setAutoDefault(false);
         btns->addWidget(b);
     }
@@ -130,6 +134,7 @@ MarkingOrderDialog::MarkingOrderDialog(QWidget *parent)
     });
     connect(m_scan, &QLineEdit::returnPressed, this, &MarkingOrderDialog::scanEntered);
     connect(pasteBtn, &QPushButton::clicked, this, &MarkingOrderDialog::pasteFromClipboard);
+    connect(xmlBtn, &QPushButton::clicked, this, [this]() { exportXml(); });
     connect(stockBtn, &QPushButton::clicked, this, [this]() {
         const int n = addByStock();
         appendLog(n > 0 ? tr("Добавлено позиций по остаткам: %1.").arg(n) : tr("Свободных кодов уже хватает на весь остаток (или остатка нет)."));
@@ -184,6 +189,30 @@ ChestnyZnak::Settings MarkingOrderDialog::freshSettings()
     if (!ChestnyZnak::ensureFreshToken(&s, &note) || !note.isEmpty())
         appendLog(note);
     return s;
+}
+
+// Список позиций - файлом заказа для личного кабинета (без отправки в СУЗ и без подписи).
+void MarkingOrderDialog::exportXml()
+{
+    QList<CabinetXml::OrderItem> items;
+    int skipped = 0;
+    for (const Line &l : lines()) {
+        if (l.problem || l.gtin.trimmed().isEmpty() || l.qty <= 0) {
+            ++skipped;
+            continue;
+        }
+        items.append({l.gtin.trimmed(), l.qty});
+    }
+    if (items.isEmpty()) {
+        appendLog(tr("XML: в списке нет позиций с GTIN и количеством - сначала добавьте товары."));
+        return;
+    }
+    if (skipped > 0)
+        appendLog(tr("XML: позиций без GTIN или с ошибкой пропущено: %1.").arg(skipped));
+    CabinetOrderXmlDialog dlg(items, this);
+    dlg.exec();
+    if (!dlg.files().isEmpty())
+        appendLog(tr("XML: сохранено файлов заказа: %1 (%2).").arg(dlg.files().size()).arg(QFileInfo(dlg.files().first()).absolutePath()));
 }
 
 int MarkingOrderDialog::lineCount() const { return m_table->rowCount(); }

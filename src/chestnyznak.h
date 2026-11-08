@@ -21,7 +21,11 @@ struct Settings {
     QString omsId;
     QString clientToken; // динамический (из единой аутентификации, живёт 10 часов) или статичный
     QString signerUrl;   // необязательно: POST тела запроса -> подпись (base64) в ответе
-    int templateId = 0;  // шаблон кода (0 - не указывать)
+    int templateId = 0;  // шаблон КМ (0 - по умолчанию для товарной группы: обувь 1, лёгкая промышленность 10)
+    // Поля заказа (СУЗ API 3.0, объект Order): без них СУЗ заказ не примет.
+    QString productGroup = QStringLiteral("shoes");        // товарная группа: shoes (обувь), lp (лёгкая промышленность)
+    QString releaseMethodType = QStringLiteral("PRODUCTION"); // способ выпуска в оборот (attributes.releaseMethodType)
+    QString contactPerson;                                  // контактное лицо (необязательно, до 128 знаков)
 
     // Динамический токен (единая аутентификация, True API). omsConnection - «Идентификатор соединения» устройства в разделе «Устройства» СУЗ.
     QString omsConnection;

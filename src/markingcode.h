@@ -101,6 +101,8 @@ struct Filter {
 };
 QList<Row> list(const Filter &filter = Filter());
 Row get(int id);
+// Коды (как в базе, с разделителями групп) по номерам строк: пачками по одному запросу, в порядке номеров.
+QStringList codesByIds(const QList<int> &ids);
 struct Counts {
     int total = 0, fresh = 0, printed = 0, unlinked = 0;
 };

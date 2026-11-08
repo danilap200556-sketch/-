@@ -37,8 +37,16 @@ jobs:
 
       - name: Install libqrencode and libpq via vcpkg
         shell: cmd
+        # Зависимости собираются из исходников и качают инструменты (Strawberry Perl) с github.com: он иногда отвечает 504,
+        # поэтому до трёх попыток с паузой (сбой скачивания не должен ронять всю сборку).
         run: |
-          vcpkg\vcpkg.exe install libqrencode:x64-windows libpq:x64-windows
+          for %%i in (1 2 3) do (
+            vcpkg\vcpkg.exe install libqrencode:x64-windows libpq:x64-windows && goto :installed
+            echo vcpkg install failed, attempt %%i of 3
+            timeout /t 45 /nobreak > nul
+          )
+          exit /b 1
+          :installed
 
       - name: Setup MSVC environment
         uses: ilammy/msvc-dev-cmd@v1

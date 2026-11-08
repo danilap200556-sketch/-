@@ -67,6 +67,7 @@ private slots:
     void createClicked();
 
 private:
+    void exportXml();
     ChestnyZnak::Settings freshSettings();
     void refreshSummary();
     void appendLog(const QString &line);

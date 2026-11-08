@@ -522,6 +522,27 @@ Row get(int id)
     return {};
 }
 
+QStringList codesByIds(const QList<int> &ids)
+{
+    QStringList out;
+    constexpr int kBatch = 500;
+    for (int from = 0; from < ids.size(); from += kBatch) {
+        const int n = qMin(kBatch, int(ids.size()) - from);
+        QStringList marks;
+        for (int i = 0; i < n; ++i)
+            marks << QStringLiteral("?");
+        QSqlQuery q;
+        q.prepare(QStringLiteral("SELECT code FROM marking_codes WHERE id IN (%1) ORDER BY id").arg(marks.join(QLatin1Char(','))));
+        for (int i = 0; i < n; ++i)
+            q.addBindValue(ids[from + i]);
+        if (!q.exec())
+            continue;
+        while (q.next())
+            out << q.value(0).toString();
+    }
+    return out;
+}
+
 Counts counts()
 {
     Counts c;

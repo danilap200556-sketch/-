@@ -183,6 +183,8 @@ add_executable(inventory_manager
     src/documentdeletedialog.cpp
     src/labelfonts.cpp
     src/cryptosign.cpp
+    src/cabinetxml.cpp
+    src/cabinetxmldialog.cpp
     src/productsync.cpp
     src/productimportdialog.cpp
     src/applog.cpp

@@ -1,5 +1,7 @@
 #include "chestnyznak.h"
 
+#include "cabinetxml.h"
+
 #include "appsettings.h"
 #include "cryptosign.h"
 
@@ -29,6 +31,9 @@ const char kKeyOms[] = "cz_oms_id";
 const char kKeyToken[] = "cz_client_token";
 const char kKeySigner[] = "cz_signer_url";
 const char kKeyTemplate[] = "cz_template_id";
+const char kKeyGroup[] = "cz_product_group";
+const char kKeyRelease[] = "cz_release_method";
+const char kKeyContact[] = "cz_contact_person";
 const char kKeyConnection[] = "cz_oms_connection";
 const char kKeyTrueApi[] = "cz_true_api";
 const char kKeyTokenAt[] = "cz_token_issued_at";
@@ -115,6 +120,12 @@ QString errorText(int status, const QByteArray &body, bool tokenHint = true)
                 parts << v.toString();
                 break;
             }
+        }
+        for (const QJsonValue &f : o.value(QStringLiteral("fieldErrors")).toArray()) {
+            const QJsonObject fe = f.toObject();
+            const QString text = fe.value(QStringLiteral("fieldError")).toString();
+            if (!text.isEmpty())
+                parts << QStringLiteral("%1%2%3").arg(fe.value(QStringLiteral("fieldName")).toString(), fe.value(QStringLiteral("fieldName")).toString().isEmpty() ? QString() : QStringLiteral(": "), text);
         }
         for (const QJsonValue &g : o.value(QStringLiteral("globalErrors")).toArray()) {
             const QJsonObject ge = g.toObject();
@@ -223,6 +234,13 @@ Settings loadSettings()
     s.clientToken = AppSettings::get(QString::fromLatin1(kKeyToken)).trimmed();
     s.signerUrl = AppSettings::get(QString::fromLatin1(kKeySigner)).trimmed();
     s.templateId = AppSettings::get(QString::fromLatin1(kKeyTemplate)).toInt();
+    const QString group = AppSettings::get(QString::fromLatin1(kKeyGroup)).trimmed();
+    if (!group.isEmpty())
+        s.productGroup = group;
+    const QString release = AppSettings::get(QString::fromLatin1(kKeyRelease)).trimmed();
+    if (!release.isEmpty())
+        s.releaseMethodType = release;
+    s.contactPerson = AppSettings::get(QString::fromLatin1(kKeyContact)).trimmed();
     s.omsConnection = AppSettings::get(QString::fromLatin1(kKeyConnection)).trimmed();
     const QString trueApi = AppSettings::get(QString::fromLatin1(kKeyTrueApi)).trimmed();
     if (!trueApi.isEmpty())
@@ -239,6 +257,9 @@ void saveSettings(const Settings &s)
     AppSettings::set(QString::fromLatin1(kKeyToken), s.clientToken.trimmed());
     AppSettings::set(QString::fromLatin1(kKeySigner), s.signerUrl.trimmed());
     AppSettings::set(QString::fromLatin1(kKeyTemplate), QString::number(s.templateId));
+    AppSettings::set(QString::fromLatin1(kKeyGroup), s.productGroup.trimmed());
+    AppSettings::set(QString::fromLatin1(kKeyRelease), s.releaseMethodType.trimmed());
+    AppSettings::set(QString::fromLatin1(kKeyContact), s.contactPerson.trimmed().isEmpty() ? QString(QLatin1String("")) : s.contactPerson.trimmed());
     AppSettings::set(QString::fromLatin1(kKeyConnection), s.omsConnection.trimmed());
     AppSettings::set(QString::fromLatin1(kKeyTrueApi), s.trueApiUrl.trimmed());
     AppSettings::set(QString::fromLatin1(kKeyTokenAt), s.tokenIssuedAt.isValid() ? s.tokenIssuedAt.toString(Qt::ISODate) : QString(QLatin1String("")));
@@ -258,16 +279,24 @@ Reply ping(const Settings &s, const Cancel &cancelled)
 
 Reply createOrder(const Settings &s, const QList<OrderLine> &lines, const Cancel &cancelled)
 {
+    // Тело заказа по документации СУЗ API 3.0 (объект Order): productGroup и products обязательны, способ выпуска в оборот
+    // (releaseMethodType) - в attributes; в каждой позиции обязательны gtin, quantity, serialNumberType, templateId и cisType.
+    const QString group = s.productGroup.trimmed().isEmpty() ? QStringLiteral("shoes") : s.productGroup.trimmed();
     QJsonArray products;
     for (const OrderLine &l : lines) {
         QJsonObject p{{QStringLiteral("gtin"), l.gtin}, {QStringLiteral("quantity"), l.quantity},
                       {QStringLiteral("serialNumberType"), QStringLiteral("OPERATOR")}, {QStringLiteral("cisType"), QStringLiteral("UNIT")}};
-        const int tpl = l.templateId > 0 ? l.templateId : s.templateId;
-        if (tpl > 0)
-            p.insert(QStringLiteral("templateId"), tpl);
+        int tpl = l.templateId > 0 ? l.templateId : s.templateId;
+        if (tpl <= 0)
+            tpl = CabinetXml::defaultTemplateId(group);
+        p.insert(QStringLiteral("templateId"), tpl);
         products << p;
     }
-    const QByteArray body = QJsonDocument(QJsonObject{{QStringLiteral("products"), products}}).toJson(QJsonDocument::Compact);
+    QJsonObject attributes{{QStringLiteral("releaseMethodType"), s.releaseMethodType.trimmed().isEmpty() ? QStringLiteral("PRODUCTION") : s.releaseMethodType.trimmed()}};
+    if (!s.contactPerson.trimmed().isEmpty())
+        attributes.insert(QStringLiteral("contactPerson"), s.contactPerson.trimmed());
+    const QByteArray body = QJsonDocument(QJsonObject{{QStringLiteral("productGroup"), group}, {QStringLiteral("products"), products}, {QStringLiteral("attributes"), attributes}})
+                                .toJson(QJsonDocument::Compact);
     const QUrl url = endpoint(s, QStringLiteral("/order"));
     auto headers = authHeaders(s);
     headers.append(qMakePair(QByteArray("Content-Type"), QByteArray("application/json")));
@@ -432,14 +461,13 @@ bool fetchCodes(const Settings &s, const QString &orderId, const QString &gtin, 
                 QStringList *trace, const std::function<bool(int, int)> &progress)
 {
     codes->clear();
-    QString lastBlock = QStringLiteral("0");
     QSet<QString> seen;
     bool stop = false;
     const Cancel cancelled = [&]() { return stop; };
     while (codes->size() < quantity) {
         const int want = qMin(kCodesPerRequest, quantity - int(codes->size()));
         const QUrl url = endpoint(s, QStringLiteral("/codes"), {{QStringLiteral("orderId"), orderId.trimmed()}, {QStringLiteral("quantity"), QString::number(want)},
-                                                               {QStringLiteral("gtin"), gtin.trimmed()}, {QStringLiteral("lastBlockId"), lastBlock}});
+                                                               {QStringLiteral("gtin"), gtin.trimmed()}});
         const Reply r = finish(send(QStringLiteral("GET"), url, authHeaders(s), {}, cancelled), QStringLiteral("GET"), url, {});
         if (trace)
             *trace << r.trace;
@@ -451,20 +479,17 @@ bool fetchCodes(const Settings &s, const QString &orderId, const QString &gtin, 
         int got = 0;
         for (const QJsonValue &v : r.json.value(QStringLiteral("codes")).toArray()) {
             const QString c = v.toString();
-            if (!c.isEmpty() && !seen.contains(c)) { // сервер, игнорирующий lastBlockId, не должен зациклить загрузку
+            if (!c.isEmpty() && !seen.contains(c)) { // повтор уже полученного кода не должен зациклить загрузку
                 seen.insert(c);
                 *codes << c;
                 ++got;
             }
         }
-        const QString block = r.json.value(QStringLiteral("blockId")).toVariant().toString();
         if (got == 0) {
             if (codes->isEmpty() && error)
                 *error = QStringLiteral("сервер пока не отдал ни одного кода - заказ ещё готовится или все коды уже получены");
             return !codes->isEmpty();
         }
-        if (!block.isEmpty())
-            lastBlock = block;
         if (progress && !progress(int(codes->size()), quantity)) {
             stop = true;
             break;

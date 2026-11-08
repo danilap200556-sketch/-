@@ -1,5 +1,7 @@
 #include "markingtab.h"
 
+#include "cabinetxml.h"
+#include "cabinetxmldialog.h"
 #include "chestnyznak.h"
 #include "cryptosign.h"
 #include "csvimport.h"
@@ -193,15 +195,25 @@ public:
         m_signer->setPlaceholderText(tr("необязательно: внешняя программа-подписант, например http://127.0.0.1:8080/sign"));
         m_template = new QSpinBox(this);
         m_template->setRange(0, 999999);
-        m_template->setSpecialValueText(tr("не указывать"));
+        m_template->setSpecialValueText(tr("по умолчанию для группы (обувь 1, лёгкая промышленность 10)"));
         m_template->setValue(s.templateId);
+        m_group = new QComboBox(this);
+        for (const QString &g : CabinetXml::groups())
+            m_group->addItem(CabinetXml::groupTitle(g), g);
+        m_release = new QComboBox(this);
+        m_contact = new QLineEdit(s.contactPerson, this);
+        m_contact->setMaxLength(128);
+        m_contact->setPlaceholderText(tr("необязательно: контактное лицо в заказе"));
         form->addRow(tr("Адрес СУЗ:"), m_url);
         form->addRow(tr("Идентификатор СУЗ (omsId):"), m_oms);
         form->addRow(tr("Идентификатор соединения:"), m_conn);
         form->addRow(tr("Сертификат УКЭП (этот компьютер):"), certRow);
         form->addRow(tr("clientToken:"), m_token);
         form->addRow(tr("Подписант (необязательно):"), m_signer);
-        form->addRow(tr("Шаблон кода (templateId):"), m_template);
+        form->addRow(tr("Товарная группа:"), m_group);
+        form->addRow(tr("Способ выпуска в оборот:"), m_release);
+        form->addRow(tr("Контактное лицо:"), m_contact);
+        form->addRow(tr("Шаблон КМ (templateId):"), m_template);
         l->addLayout(form);
         m_state = new QLabel(this);
         m_state->setWordWrap(true);
@@ -214,6 +226,11 @@ public:
         l->addWidget(buttons);
         fillCertificates();
         showTokenState();
+        fillReleaseMethods(s.releaseMethodType);
+        const int gi = m_group->findData(s.productGroup);
+        m_group->setCurrentIndex(gi >= 0 ? gi : 0);
+        fillReleaseMethods(s.releaseMethodType);
+        connect(m_group, &QComboBox::currentIndexChanged, this, [this]() { fillReleaseMethods(m_release->currentData().toString()); });
         connect(findCerts, &QPushButton::clicked, this, [this]() { fillCertificates(true); });
         connect(buttons, &QDialogButtonBox::accepted, this, [this]() {
             const QString before = m_url->text().trimmed();
@@ -245,10 +262,23 @@ public:
         s.certThumbprint = m_cert->currentData().toString();
         s.signerUrl = m_signer->text().trimmed();
         s.templateId = m_template->value();
+        s.productGroup = m_group->currentData().toString();
+        s.releaseMethodType = m_release->currentData().toString();
+        s.contactPerson = m_contact->text().trimmed();
         return s;
     }
 
 private:
+    // Способы выпуска в оборот, допустимые для выбранной товарной группы
+    void fillReleaseMethods(const QString &keep)
+    {
+        const QString group = m_group->currentData().toString();
+        m_release->clear();
+        for (const QString &r : CabinetXml::releaseMethods(group))
+            m_release->addItem(QStringLiteral("%1 - %2").arg(r, CabinetXml::releaseMethodTitle(r)), r);
+        const int i = m_release->findData(keep);
+        m_release->setCurrentIndex(i >= 0 ? i : 0);
+    }
     void fillCertificates(bool report = false)
     {
         m_cert->clear();
@@ -310,7 +340,8 @@ private:
     QString m_issuedToken;
     QDateTime m_issuedAt;
     QLineEdit *m_url, *m_oms, *m_conn, *m_token, *m_signer;
-    QComboBox *m_cert;
+    QComboBox *m_cert, *m_group, *m_release;
+    QLineEdit *m_contact;
     QSpinBox *m_template;
     QLabel *m_state;
 };
@@ -352,6 +383,8 @@ MarkingTab::MarkingTab(QWidget *parent)
     auto *fileBtn = new QPushButton(tr("Из файла..."), this);
     auto *orderBtn = new QPushButton(tr("Заказать в СУЗ..."), this);
     auto *printBtn = new QPushButton(tr("Печать на термоэтикетке..."), this);
+    auto *introBtn = new QPushButton(tr("Ввод в оборот (XML)..."), this);
+    introBtn->setToolTip(tr("Сохранить выделенные коды (или все в списке) файлом «Ввод в оборот» для загрузки в личный кабинет «Честного знака»"));
     auto *selNewBtn = new QPushButton(tr("Выделить новые"), this);
     auto *linkBtn = new QPushButton(tr("Привязать к товару..."), this);
     auto *delBtn = new QPushButton(tr("Удалить"), this);
@@ -359,7 +392,7 @@ MarkingTab::MarkingTab(QWidget *parent)
     selNewBtn->setToolTip(tr("Выделить в списке все коды, которые ещё не печатались"));
     linkBtn->setToolTip(tr("Выделенным кодам без товара назначить товар: его штрихкод станет GTIN этих кодов"));
     delBtn->setToolTip(tr("Удалить выделенные коды, которые ещё не печатались (напечатанные могут быть уже наклеены - их не трогаем)"));
-    for (QPushButton *b : {addBtn, fileBtn, orderBtn, printBtn, selNewBtn, linkBtn, delBtn, setBtn})
+    for (QPushButton *b : {addBtn, fileBtn, orderBtn, printBtn, introBtn, selNewBtn, linkBtn, delBtn, setBtn})
         buttons->addWidget(b);
     layout->addLayout(buttons);
 
@@ -388,6 +421,7 @@ MarkingTab::MarkingTab(QWidget *parent)
     connect(fileBtn, &QPushButton::clicked, this, &MarkingTab::addFromFile);
     connect(orderBtn, &QPushButton::clicked, this, &MarkingTab::orderCodes);
     connect(printBtn, &QPushButton::clicked, this, &MarkingTab::print);
+    connect(introBtn, &QPushButton::clicked, this, &MarkingTab::introXml);
     connect(selNewBtn, &QPushButton::clicked, this, &MarkingTab::selectNew);
     connect(linkBtn, &QPushButton::clicked, this, &MarkingTab::linkSelected);
     connect(delBtn, &QPushButton::clicked, this, &MarkingTab::removeSelected);
@@ -577,6 +611,27 @@ void MarkingTab::print()
     dlg.exec();
     reload();
     emit codesChanged();
+}
+
+// Коды идентификации (КИ) выделенных строк (или всех в списке, если ничего не выделено) - файлом «Ввод в оборот» для кабинета.
+void MarkingTab::introXml()
+{
+    QList<int> ids = selectedIds();
+    QString source = tr("Выделенные коды");
+    if (ids.isEmpty()) {
+        for (int r = 0; r < m_table->rowCount(); ++r) {
+            const QTableWidgetItem *item = m_table->item(r, ColStatus);
+            if (item)
+                ids << item->data(Qt::UserRole).toInt();
+        }
+        source = tr("Все коды в списке");
+    }
+    if (ids.isEmpty()) {
+        QMessageBox::information(this, tr("Ввод в оборот"), tr("В списке нет кодов."));
+        return;
+    }
+    CabinetIntroXmlDialog dlg(MarkingCode::codesByIds(ids), source, this);
+    dlg.exec();
 }
 
 void MarkingTab::linkSelected()
