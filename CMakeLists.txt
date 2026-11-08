@@ -182,6 +182,7 @@ add_executable(inventory_manager
     src/cancelmovementsdialog.cpp
     src/documentdeletedialog.cpp
     src/labelfonts.cpp
+    src/cryptosign.cpp
     src/productsync.cpp
     src/productimportdialog.cpp
     src/applog.cpp
@@ -210,6 +211,11 @@ target_link_libraries(inventory_manager PRIVATE
     Qt6::GuiPrivate
     ${QRENCODE_LIBRARIES}
 )
+
+if(WIN32)
+    # КриптоПро CSP через системный CryptoAPI: электронная подпись (УКЭП) для СУЗ и ГИС МТ
+    target_link_libraries(inventory_manager PRIVATE crypt32)
+endif()
 
 if(QPSQL_EMBEDDED_AVAILABLE)
     target_sources(inventory_manager PRIVATE src/thirdparty/qpsql/qsql_psql.cpp)

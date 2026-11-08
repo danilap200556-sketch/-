@@ -1,8 +1,11 @@
 #include "chestnyznak.h"
 
 #include "appsettings.h"
+#include "cryptosign.h"
 
 #include <QEventLoop>
+#include <QJsonObject>
+#include <QSettings>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
@@ -26,6 +29,10 @@ const char kKeyOms[] = "cz_oms_id";
 const char kKeyToken[] = "cz_client_token";
 const char kKeySigner[] = "cz_signer_url";
 const char kKeyTemplate[] = "cz_template_id";
+const char kKeyConnection[] = "cz_oms_connection";
+const char kKeyTrueApi[] = "cz_true_api";
+const char kKeyTokenAt[] = "cz_token_issued_at";
+const char kLocalCert[] = "cz/certThumbprint"; // QSettings этого компьютера
 
 struct Http {
     int status = 0;
@@ -86,13 +93,23 @@ const char kHtmlHint[] = "по этому адресу отвечает веб-�
                          "https://suzgrid.crpt.ru/api/v3 (а не адресом страницы «Управление заказами» личного кабинета, который кончается на /management/orders)";
 
 // Понятное сообщение из ответа с ошибкой.
-QString errorText(int status, const QByteArray &body)
+QString errorText(int status, const QByteArray &body, bool tokenHint = true)
 {
     const QJsonDocument doc = QJsonDocument::fromJson(body);
     QStringList parts;
     if (doc.isObject()) {
         const QJsonObject o = doc.object();
+        // Единая аутентификация (True API): error_message - что случилось, description - подробности; нужны оба.
+        const QString trueApiMessage = o.value(QStringLiteral("error_message")).toString();
+        if (!trueApiMessage.isEmpty()) {
+            parts << trueApiMessage;
+            const QString details = o.value(QStringLiteral("description")).toString();
+            if (!details.isEmpty() && details != trueApiMessage)
+                parts << details;
+        }
         for (const char *key : {"message", "description", "error", "errorMessage", "error_description"}) {
+            if (!parts.isEmpty())
+                break;
             const QJsonValue v = o.value(QLatin1String(key));
             if (v.isString() && !v.toString().isEmpty()) {
                 parts << v.toString();
@@ -113,7 +130,7 @@ QString errorText(int status, const QByteArray &body)
         if (!text.isEmpty())
             parts << text;
     }
-    if (status == 401 || status == 403)
+    if (tokenHint && (status == 401 || status == 403))
         parts << QStringLiteral("проверьте clientToken (он может быть временным - до 10 часов - и устареть: получите новый) и идентификатор СУЗ (omsId)");
     return QStringLiteral("HTTP %1%2").arg(status).arg(parts.isEmpty() ? QString() : QStringLiteral(": ") + parts.join(QStringLiteral("; ")));
 }
@@ -132,7 +149,7 @@ QUrl endpoint(const Settings &s, const QString &path, const QList<QPair<QString,
     return url;
 }
 
-Reply finish(const Http &http, const QString &label, const QUrl &url, const QByteArray &sentBody)
+Reply finish(const Http &http, const QString &label, const QUrl &url, const QByteArray &sentBody, bool tokenHint = true)
 {
     Reply r;
     r.status = http.status;
@@ -158,7 +175,7 @@ Reply finish(const Http &http, const QString &label, const QUrl &url, const QByt
         return r;
     }
     if (http.status >= 400) {
-        r.error = errorText(http.status, http.body);
+        r.error = errorText(http.status, http.body, tokenHint);
         return r;
     }
     // Любой настоящий ответ API - JSON; всё остальное (пустая страница, текст) - не тот адрес или не тот сервер.
@@ -206,6 +223,12 @@ Settings loadSettings()
     s.clientToken = AppSettings::get(QString::fromLatin1(kKeyToken)).trimmed();
     s.signerUrl = AppSettings::get(QString::fromLatin1(kKeySigner)).trimmed();
     s.templateId = AppSettings::get(QString::fromLatin1(kKeyTemplate)).toInt();
+    s.omsConnection = AppSettings::get(QString::fromLatin1(kKeyConnection)).trimmed();
+    const QString trueApi = AppSettings::get(QString::fromLatin1(kKeyTrueApi)).trimmed();
+    if (!trueApi.isEmpty())
+        s.trueApiUrl = trueApi;
+    s.tokenIssuedAt = QDateTime::fromString(AppSettings::get(QString::fromLatin1(kKeyTokenAt)), Qt::ISODate);
+    s.certThumbprint = QSettings().value(QString::fromLatin1(kLocalCert)).toString().trimmed();
     return s;
 }
 
@@ -216,6 +239,10 @@ void saveSettings(const Settings &s)
     AppSettings::set(QString::fromLatin1(kKeyToken), s.clientToken.trimmed());
     AppSettings::set(QString::fromLatin1(kKeySigner), s.signerUrl.trimmed());
     AppSettings::set(QString::fromLatin1(kKeyTemplate), QString::number(s.templateId));
+    AppSettings::set(QString::fromLatin1(kKeyConnection), s.omsConnection.trimmed());
+    AppSettings::set(QString::fromLatin1(kKeyTrueApi), s.trueApiUrl.trimmed());
+    AppSettings::set(QString::fromLatin1(kKeyTokenAt), s.tokenIssuedAt.isValid() ? s.tokenIssuedAt.toString(Qt::ISODate) : QString(QLatin1String("")));
+    QSettings().setValue(QString::fromLatin1(kLocalCert), s.certThumbprint.trimmed());
 }
 
 static QList<QPair<QByteArray, QByteArray>> authHeaders(const Settings &s)
@@ -245,7 +272,17 @@ Reply createOrder(const Settings &s, const QList<OrderLine> &lines, const Cancel
     auto headers = authHeaders(s);
     headers.append(qMakePair(QByteArray("Content-Type"), QByteArray("application/json")));
     Reply signerFail;
-    if (!s.signerUrl.trimmed().isEmpty()) {
+    if (!s.certThumbprint.trimmed().isEmpty() && CryptoSign::available()) {
+        // Подпись КриптоПро с токена на этом компьютере: откреплённая, в заголовок X-Signature (base64).
+        QByteArray signature;
+        QString signError;
+        if (!CryptoSign::sign(body, s.certThumbprint, true, &signature, &signError)) {
+            signerFail.error = QStringLiteral("заказ не подписан: %1").arg(signError);
+            return signerFail;
+        }
+        signerFail.trace << QStringLiteral("подписано сертификатом КриптоПро (%1 байт)").arg(signature.size());
+        headers.append(qMakePair(QByteArray("X-Signature"), signature.toBase64()));
+    } else if (!s.signerUrl.trimmed().isEmpty()) {
         // Подпись тела запроса (УКЭП) делает отдельная программа на компьютере с сертификатом.
         const Http sig = send(QStringLiteral("POST"), QUrl(s.signerUrl.trimmed()), {{"Content-Type", "application/octet-stream"}, {"Accept", "text/plain"}}, body, cancelled);
         signerFail.trace << QStringLiteral("подписант %1 -> %2, %3 байт").arg(s.signerUrl.trimmed(), sig.status ? QStringLiteral("HTTP %1").arg(sig.status) : sig.error).arg(sig.body.size());
@@ -265,6 +302,124 @@ Reply createOrder(const Settings &s, const QList<OrderLine> &lines, const Cancel
     if (!r.ok && (r.status == 400 || r.status == 401 || r.status == 403) && s.signerUrl.trimmed().isEmpty())
         r.error += QStringLiteral(" (заказ подписывается электронной подписью: задайте подписант в настройках или создайте заказ в личном кабинете и скачайте коды по его номеру)");
     return r;
+}
+
+Signer makeSigner(const Settings &s, bool detached)
+{
+    if (!s.certThumbprint.trimmed().isEmpty() && CryptoSign::available()) {
+        const QString thumb = s.certThumbprint;
+        return [thumb, detached](const QByteArray &data, QByteArray *out, QString *error) {
+            QByteArray sig;
+            if (!CryptoSign::sign(data, thumb, detached, &sig, error))
+                return false;
+            *out = sig.toBase64();
+            return true;
+        };
+    }
+    if (!s.signerUrl.trimmed().isEmpty()) {
+        const QString url = s.signerUrl.trimmed();
+        return [url](const QByteArray &data, QByteArray *out, QString *error) {
+            const Http h = send(QStringLiteral("POST"), QUrl(url), {{"Content-Type", "application/octet-stream"}, {"Accept", "text/plain"}}, data, {});
+            const QByteArray sig = h.body.trimmed();
+            if (h.status != 200 || sig.isEmpty()) {
+                if (error)
+                    *error = QStringLiteral("подписант не вернул подпись (%1)").arg(h.status ? QStringLiteral("HTTP %1").arg(h.status) : h.error);
+                return false;
+            }
+            *out = sig;
+            return true;
+        };
+    }
+    return {};
+}
+
+TokenReply obtainToken(const Settings &s, const Signer &sign, const Cancel &cancelled)
+{
+    TokenReply out;
+    if (s.omsConnection.trimmed().isEmpty()) {
+        out.error = QStringLiteral("не указан идентификатор соединения (omsConnection): он в разделе «Устройства» станции управления заказами, столбец «Идентификатор соединения»");
+        return out;
+    }
+    if (!sign) {
+        out.error = QStringLiteral("нечем подписать: выберите сертификат электронной подписи (Windows с КриптоПро) или укажите адрес «подписанта»");
+        return out;
+    }
+    QString base = s.trueApiUrl.trimmed();
+    while (base.endsWith(QLatin1Char('/')))
+        base.chop(1);
+    if (base.isEmpty())
+        base = QStringLiteral("https://markirovka.crpt.ru/api/v3/true-api");
+
+    // 1) случайные данные для подписи
+    const QUrl keyUrl(base + QStringLiteral("/auth/key"));
+    const Reply key = finish(send(QStringLiteral("GET"), keyUrl, {}, {}, cancelled), QStringLiteral("GET"), keyUrl, {}, false);
+    out.trace << key.trace;
+    if (!key.ok) {
+        out.error = QStringLiteral("не получены данные для подписи: %1").arg(key.error);
+        return out;
+    }
+    const QString uuid = key.json.value(QStringLiteral("uuid")).toString();
+    const QString data = key.json.value(QStringLiteral("data")).toString();
+    if (uuid.isEmpty() || data.isEmpty()) {
+        out.error = QStringLiteral("сервер вернул данные для подписи не в ожидаемом виде: %1").arg(QString::fromUtf8(key.body.left(200)));
+        return out;
+    }
+    // 2) подпись (присоединённая: в ней сами данные)
+    QByteArray signature;
+    QString signError;
+    if (!sign(data.toUtf8(), &signature, &signError)) {
+        out.error = signError.isEmpty() ? QStringLiteral("не удалось подписать данные") : signError;
+        return out;
+    }
+    // 3) обмен подписи на токен
+    const QUrl signInUrl(base + QStringLiteral("/auth/simpleSignIn/") + s.omsConnection.trimmed());
+    const QByteArray body = QJsonDocument(QJsonObject{{QStringLiteral("uuid"), uuid}, {QStringLiteral("data"), QString::fromLatin1(signature)}}).toJson(QJsonDocument::Compact);
+    const Reply tok = finish(send(QStringLiteral("POST"), signInUrl, {{"Content-Type", "application/json"}, {"Accept", "application/json"}}, body, cancelled),
+                             QStringLiteral("POST"), signInUrl, body, false);
+    out.trace << tok.trace;
+    if (!tok.ok) {
+        out.error = QStringLiteral("токен не получен: %1").arg(tok.error);
+        return out;
+    }
+    const QString token = tok.json.value(QStringLiteral("token")).toString();
+    if (token.isEmpty()) {
+        const QString detail = tok.json.value(QStringLiteral("error_message")).toString() + QStringLiteral(" ") + tok.json.value(QStringLiteral("description")).toString();
+        out.error = QStringLiteral("в ответе нет токена: %1").arg(detail.simplified().isEmpty() ? QString::fromUtf8(tok.body.left(200)) : detail.simplified());
+        return out;
+    }
+    out.ok = true;
+    out.token = token;
+    return out;
+}
+
+bool tokenNeedsRefresh(const Settings &s)
+{
+    if (s.clientToken.trimmed().isEmpty())
+        return true;
+    if (!s.tokenIssuedAt.isValid())
+        return false; // вписан вручную - срок неизвестен
+    return s.tokenIssuedAt.secsTo(QDateTime::currentDateTimeUtc()) > 9 * 3600 + 30 * 60; // токен живёт 10 часов: обновляем за полчаса до конца
+}
+
+bool ensureFreshToken(Settings *s, QString *note)
+{
+    if (!tokenNeedsRefresh(*s))
+        return true;
+    const Signer sign = makeSigner(*s, false);
+    if (s->omsConnection.trimmed().isEmpty() || !sign)
+        return true; // автоматическое получение не настроено - работаем с тем токеном, что есть
+    const TokenReply r = obtainToken(*s, sign);
+    if (!r.ok) {
+        if (note)
+            *note = QStringLiteral("Токен СУЗ не обновлён: %1").arg(r.error);
+        return false;
+    }
+    s->clientToken = r.token;
+    s->tokenIssuedAt = QDateTime::currentDateTimeUtc();
+    saveSettings(*s);
+    if (note)
+        *note = QStringLiteral("Получен новый токен СУЗ (действует 10 часов).");
+    return true;
 }
 
 Reply orderStatus(const Settings &s, const QString &orderId, const QString &gtin, const Cancel &cancelled)

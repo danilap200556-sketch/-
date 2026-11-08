@@ -137,7 +137,7 @@ MarkingOrderDialog::MarkingOrderDialog(QWidget *parent)
     connect(removeBtn, &QPushButton::clicked, this, &MarkingOrderDialog::removeSelected);
     connect(clearBtn, &QPushButton::clicked, this, &MarkingOrderDialog::clearAll);
     connect(ping, &QPushButton::clicked, this, [this]() {
-        const ChestnyZnak::Settings s = ChestnyZnak::loadSettings();
+        const ChestnyZnak::Settings s = freshSettings();
         if (!s.isConfigured()) {
             appendLog(tr("СУЗ не настроен: кнопка «Настройки СУЗ…» на странице «Честный знак»."));
             return;
@@ -174,6 +174,16 @@ MarkingOrderDialog::MarkingOrderDialog(QWidget *parent)
     restore();
     refreshSummary();
     m_scan->setFocus();
+}
+
+// Настройки СУЗ с актуальным токеном: если токен получен программой и заканчивается, а на этом компьютере есть чем подписать - обновляется сам.
+ChestnyZnak::Settings MarkingOrderDialog::freshSettings()
+{
+    ChestnyZnak::Settings s = ChestnyZnak::loadSettings();
+    QString note;
+    if (!ChestnyZnak::ensureFreshToken(&s, &note) || !note.isEmpty())
+        appendLog(note);
+    return s;
 }
 
 int MarkingOrderDialog::lineCount() const { return m_table->rowCount(); }
@@ -536,7 +546,7 @@ void MarkingOrderDialog::createClicked()
 
 int MarkingOrderDialog::createOrders()
 {
-    const ChestnyZnak::Settings s = ChestnyZnak::loadSettings();
+    const ChestnyZnak::Settings s = freshSettings();
     if (!s.isConfigured()) {
         appendLog(tr("СУЗ не настроен: кнопка «Настройки СУЗ…» на странице «Честный знак»."));
         return 0;
@@ -611,7 +621,7 @@ int MarkingOrderDialog::createOrders()
 
 int MarkingOrderDialog::fetchCodes()
 {
-    const ChestnyZnak::Settings s = ChestnyZnak::loadSettings();
+    const ChestnyZnak::Settings s = freshSettings();
     if (!s.isConfigured()) {
         appendLog(tr("СУЗ не настроен: кнопка «Настройки СУЗ…» на странице «Честный знак»."));
         return 0;
@@ -683,7 +693,7 @@ int MarkingOrderDialog::fetchCodes()
 
 void MarkingOrderDialog::checkStatus()
 {
-    const ChestnyZnak::Settings s = ChestnyZnak::loadSettings();
+    const ChestnyZnak::Settings s = freshSettings();
     if (!s.isConfigured()) {
         appendLog(tr("СУЗ не настроен: кнопка «Настройки СУЗ…» на странице «Честный знак»."));
         return;

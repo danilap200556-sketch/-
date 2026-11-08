@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDateTime>
 #include <QJsonObject>
 #include <QList>
 #include <QString>
@@ -18,9 +19,16 @@ namespace ChestnyZnak {
 struct Settings {
     QString baseUrl = QStringLiteral("https://suzgrid.crpt.ru/api/v3"); // без слеша в конце
     QString omsId;
-    QString clientToken;
+    QString clientToken; // динамический (из единой аутентификации, живёт 10 часов) или статичный
     QString signerUrl;   // необязательно: POST тела запроса -> подпись (base64) в ответе
     int templateId = 0;  // шаблон кода (0 - не указывать)
+
+    // Динамический токен (единая аутентификация, True API). omsConnection - «Идентификатор соединения» устройства в разделе «Устройства» СУЗ.
+    QString omsConnection;
+    QString trueApiUrl = QStringLiteral("https://markirovka.crpt.ru/api/v3/true-api");
+    QDateTime tokenIssuedAt;   // когда программа получила токен (пусто - токен вписан вручную)
+    // Сертификат УКЭП, которым подписывать (отпечаток), хранится ТОЛЬКО на этом компьютере: токен с подписью вставлен в него, а не во все.
+    QString certThumbprint;
     bool isConfigured() const { return !baseUrl.trimmed().isEmpty() && !omsId.trimmed().isEmpty() && !clientToken.trimmed().isEmpty(); }
 };
 
@@ -48,6 +56,27 @@ struct OrderLine {
 };
 
 using Cancel = std::function<bool()>;
+
+// Подпись данных: возвращает подпись (CMS, DER) в base64. Для единой аутентификации - КриптоПро на этом компьютере или внешний «подписант».
+using Signer = std::function<bool(const QByteArray &data, QByteArray *signatureBase64, QString *error)>;
+// Подписант по настройкам: сертификат КриптоПро (если выбран и мы в Windows), иначе внешний «подписант» по адресу из настроек; пустая функция - подписать нечем.
+Signer makeSigner(const Settings &settings, bool detached);
+
+struct TokenReply {
+    bool ok = false;
+    QString token;
+    QString error;
+    QStringList trace;
+};
+// Получение динамического clientToken (инструкция «Получение динамического клиентского токена посредством методов единой аутентификации»):
+//   1) GET <True API>/auth/key -> {uuid, data}; 2) подписать data УКЭП; 3) POST <True API>/auth/simpleSignIn/<omsConnection> {uuid, data: подпись base64}
+//   -> {token}. Токен действует 10 часов; на одно соединение выдаётся один токен (новый отменяет прежний).
+TokenReply obtainToken(const Settings &settings, const Signer &sign, const Cancel &cancelled = {});
+// Токен старше этого срока (или его нет) надо получить заново; у вписанного вручную токена срок неизвестен - не обновляется.
+bool tokenNeedsRefresh(const Settings &settings);
+// Если настроено автоматическое получение (omsConnection и подпись) и токен просрочен/отсутствует - получает новый и сохраняет в настройки.
+// *note - что произошло (для журнала). false - обновить было нужно, но не удалось (причина в *note).
+bool ensureFreshToken(Settings *settings, QString *note = nullptr);
 
 // Проверка связи и настроек.
 Reply ping(const Settings &settings, const Cancel &cancelled = {});

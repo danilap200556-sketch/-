@@ -1,5 +1,7 @@
 #pragma once
 
+#include "chestnyznak.h"
+
 #include <QDialog>
 #include <QList>
 #include <QString>
@@ -65,6 +67,7 @@ private slots:
     void createClicked();
 
 private:
+    ChestnyZnak::Settings freshSettings();
     void refreshSummary();
     void appendLog(const QString &line);
     void save() const;

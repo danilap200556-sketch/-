@@ -1,6 +1,7 @@
 #include "markingtab.h"
 
 #include "chestnyznak.h"
+#include "cryptosign.h"
 #include "csvimport.h"
 #include "flowlayout.h"
 #include "markingorderdialog.h"
@@ -158,48 +159,62 @@ public:
         : QDialog(parent)
     {
         setWindowTitle(tr("СУЗ «Честного знака»: настройки"));
-        resize(640, 360);
+        resize(720, 560);
         auto *l = new QVBoxLayout(this);
-        auto *hint = new QLabel(tr("Данные берутся у «Честного знака» (станция управления заказами, СУЗ API v3): адрес СУЗ и идентификатор СУЗ (omsId) обычно приходят "
-                                   "от оператора вместе с доступом к регистратору эмиссии, clientToken выдаётся отдельно и может быть временным (до 10 часов): "
-                                   "если связь отвечает 401/403 - получите новый токен и вставьте сюда. Всё это хранится в общей базе - вводить на каждом компьютере не нужно.\n"
-                                   "Заказ кодов подписывается электронной подписью. Если на этом компьютере запущена программа-подписант (получает тело запроса "
-                                   "POST-ом и возвращает подпись в base64), укажите её адрес; без неё заказ создают в личном кабинете, а здесь по номеру заказа "
-                                   "скачивают коды. Если связь с СУЗ настроить не получается, коды можно скачать файлом в личном кабинете и добавить кнопкой "
-                                   "«Из файла…» на странице «Честный знак»."), this);
+        auto *hint = new QLabel(tr("Данные берутся у «Честного знака» (станция управления заказами, СУЗ API v3). <b>Идентификатор СУЗ (omsId)</b> и "
+                                   "<b>«Идентификатор соединения»</b> устройства - в разделе «Управление заказами» → «Устройства». <b>clientToken</b> живёт 10 часов "
+                                   "и получается электронной подписью: выберите сертификат (токен с подписью вставлен в этот компьютер, нужен КриптоПро) и нажмите "
+                                   "«Получить токен» - дальше программа сама обновляет его, когда он заканчивается. Токен вписан в общую базу, его видят все компьютеры; "
+                                   "сертификат выбирается на каждом компьютере отдельно. Заказ кодов тоже подписывается этим сертификатом."), this);
         hint->setWordWrap(true);
+        hint->setTextFormat(Qt::RichText);
         l->addWidget(hint);
         auto *urlHint = new QLabel(tr("Адрес СУЗ - это адрес API: <b>https://suzgrid.crpt.ru/api/v3</b>. Адрес страницы «Управление заказами» из личного кабинета "
                                       "(…/management/orders) - это сайт, а не API: программа заменяет его на адрес API сама."), this);
         urlHint->setWordWrap(true);
         urlHint->setTextFormat(Qt::RichText);
         l->addWidget(urlHint);
-        const ChestnyZnak::Settings s = ChestnyZnak::loadSettings();
+        m_loaded = ChestnyZnak::loadSettings();
+        const ChestnyZnak::Settings &s = m_loaded;
         auto *form = new QFormLayout();
         m_url = new QLineEdit(s.baseUrl, this);
         m_oms = new QLineEdit(s.omsId, this);
+        m_conn = new QLineEdit(s.omsConnection, this);
+        m_conn->setPlaceholderText(tr("«Идентификатор соединения» устройства (Управление заказами → Устройства)"));
         m_token = new QLineEdit(s.clientToken, this);
         m_token->setEchoMode(QLineEdit::Password);
+        m_cert = new QComboBox(this);
+        m_cert->setMinimumWidth(380);
+        auto *findCerts = new QPushButton(tr("Найти сертификаты"), this);
+        auto *certRow = new QHBoxLayout();
+        certRow->addWidget(m_cert, 1);
+        certRow->addWidget(findCerts);
         m_signer = new QLineEdit(s.signerUrl, this);
-        m_signer->setPlaceholderText(tr("необязательно, например http://127.0.0.1:8080/sign"));
+        m_signer->setPlaceholderText(tr("необязательно: внешняя программа-подписант, например http://127.0.0.1:8080/sign"));
         m_template = new QSpinBox(this);
         m_template->setRange(0, 999999);
         m_template->setSpecialValueText(tr("не указывать"));
         m_template->setValue(s.templateId);
         form->addRow(tr("Адрес СУЗ:"), m_url);
         form->addRow(tr("Идентификатор СУЗ (omsId):"), m_oms);
+        form->addRow(tr("Идентификатор соединения:"), m_conn);
+        form->addRow(tr("Сертификат УКЭП (этот компьютер):"), certRow);
         form->addRow(tr("clientToken:"), m_token);
-        form->addRow(tr("Подписант:"), m_signer);
+        form->addRow(tr("Подписант (необязательно):"), m_signer);
         form->addRow(tr("Шаблон кода (templateId):"), m_template);
         l->addLayout(form);
         m_state = new QLabel(this);
         m_state->setWordWrap(true);
         l->addWidget(m_state);
         auto *buttons = new QDialogButtonBox(this);
+        auto *getToken = buttons->addButton(tr("Получить токен"), QDialogButtonBox::ActionRole);
         auto *test = buttons->addButton(tr("Проверить связь"), QDialogButtonBox::ActionRole);
         buttons->addButton(tr("Сохранить"), QDialogButtonBox::AcceptRole);
         buttons->addButton(tr("Отмена"), QDialogButtonBox::RejectRole);
         l->addWidget(buttons);
+        fillCertificates();
+        showTokenState();
+        connect(findCerts, &QPushButton::clicked, this, [this]() { fillCertificates(true); });
         connect(buttons, &QDialogButtonBox::accepted, this, [this]() {
             const QString before = m_url->text().trimmed();
             ChestnyZnak::saveSettings(current());
@@ -212,24 +227,90 @@ public:
             const ChestnyZnak::Reply r = ChestnyZnak::ping(current());
             m_state->setText(r.ok ? tr("Связь есть: СУЗ ответил.") : tr("Не получилось: %1").arg(r.error));
         });
+        connect(getToken, &QPushButton::clicked, this, [this]() { obtainToken(); });
         for (QPushButton *b : findChildren<QPushButton *>())
             b->setAutoDefault(false);
     }
     ChestnyZnak::Settings current() const
     {
-        ChestnyZnak::Settings s;
+        ChestnyZnak::Settings s = m_loaded;
         s.baseUrl = ChestnyZnak::normalizeBaseUrl(m_url->text());
         if (s.baseUrl != m_url->text().trimmed())
             m_url->setText(s.baseUrl); // показываем исправленный адрес API
         s.omsId = m_oms->text().trimmed();
+        s.omsConnection = m_conn->text().trimmed();
         s.clientToken = m_token->text().trimmed();
+        // Токен, вписанный вручную, живёт неизвестно сколько: срок отсчитываем только у полученного программой.
+        s.tokenIssuedAt = s.clientToken == m_issuedToken ? m_issuedAt : QDateTime();
+        s.certThumbprint = m_cert->currentData().toString();
         s.signerUrl = m_signer->text().trimmed();
         s.templateId = m_template->value();
         return s;
     }
 
 private:
-    QLineEdit *m_url, *m_oms, *m_token, *m_signer;
+    void fillCertificates(bool report = false)
+    {
+        m_cert->clear();
+        m_cert->addItem(tr("- не использовать (подпись внешним подписантом или без подписи) -"), QString());
+        if (!CryptoSign::available()) {
+            m_cert->setEnabled(false);
+            m_cert->setToolTip(tr("Подпись через КриптоПро доступна только в Windows."));
+            return;
+        }
+        QString err;
+        const QList<CryptoSign::Certificate> certs = CryptoSign::certificates(&err);
+        for (const CryptoSign::Certificate &c : certs)
+            m_cert->addItem(tr("%1 - до %2%3").arg(c.subject, c.validTo.toLocalTime().toString(QStringLiteral("dd.MM.yyyy")), c.expired() ? tr(" (СРОК ИСТЁК)") : QString()), c.thumbprint);
+        const int i = m_cert->findData(m_loaded.certThumbprint);
+        if (i >= 0)
+            m_cert->setCurrentIndex(i);
+        else if (!certs.isEmpty() && m_loaded.certThumbprint.isEmpty() && !certs.first().expired())
+            m_cert->setCurrentIndex(1); // единственный (или самый свежий) действующий сертификат
+        if (certs.isEmpty() && (report || !err.isEmpty()))
+            m_state->setText(tr("Сертификаты не найдены: %1").arg(err));
+        else if (report)
+            m_state->setText(tr("Найдено сертификатов: %1.").arg(certs.size()));
+    }
+    void showTokenState()
+    {
+        const ChestnyZnak::Settings &s = m_loaded;
+        if (s.clientToken.isEmpty())
+            m_state->setText(tr("Токена пока нет: выберите сертификат, укажите идентификатор соединения и нажмите «Получить токен»."));
+        else if (s.tokenIssuedAt.isValid())
+            m_state->setText(tr("Токен получен %1, действует до %2.").arg(s.tokenIssuedAt.toLocalTime().toString(QStringLiteral("dd.MM.yyyy HH:mm")),
+                                                                      s.tokenIssuedAt.addSecs(10 * 3600).toLocalTime().toString(QStringLiteral("dd.MM.yyyy HH:mm"))));
+        m_issuedToken = s.clientToken;
+        m_issuedAt = s.tokenIssuedAt;
+    }
+    void obtainToken()
+    {
+        const ChestnyZnak::Settings s = current();
+        const ChestnyZnak::Signer sign = ChestnyZnak::makeSigner(s, false);
+        m_state->setText(tr("Получаю токен: подпишите запрос (если токен с подписью защищён ПИН-кодом, КриптоПро спросит его)…"));
+        QApplication::processEvents();
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        const ChestnyZnak::TokenReply r = ChestnyZnak::obtainToken(s, sign);
+        QApplication::restoreOverrideCursor();
+        if (!r.ok) {
+            m_state->setText(tr("Токен не получен: %1").arg(r.error));
+            return;
+        }
+        // Прежний токен с этого момента недействителен - сохраняем новый сразу, а не по кнопке «Сохранить».
+        m_token->setText(r.token);
+        m_issuedToken = r.token;
+        m_issuedAt = QDateTime::currentDateTimeUtc();
+        ChestnyZnak::saveSettings(current());
+        m_loaded = ChestnyZnak::loadSettings();
+        m_state->setText(tr("Токен получен и сохранён, действует 10 часов (до %1). Дальше программа обновит его сама.")
+                             .arg(m_issuedAt.addSecs(10 * 3600).toLocalTime().toString(QStringLiteral("dd.MM.yyyy HH:mm"))));
+    }
+
+    ChestnyZnak::Settings m_loaded;
+    QString m_issuedToken;
+    QDateTime m_issuedAt;
+    QLineEdit *m_url, *m_oms, *m_conn, *m_token, *m_signer;
+    QComboBox *m_cert;
     QSpinBox *m_template;
     QLabel *m_state;
 };
