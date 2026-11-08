@@ -31,19 +31,26 @@ jobs:
 
       - name: Bootstrap vcpkg
         shell: cmd
+        # vcpkg.exe скачивается из релизов github.com, который иногда отвечает 504: до пяти попыток с паузой.
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg.git
-          call vcpkg\bootstrap-vcpkg.bat
+          for %%i in (1 2 3 4 5) do (
+            call vcpkg\bootstrap-vcpkg.bat && goto :bootstrapped
+            echo vcpkg bootstrap failed, attempt %%i of 5
+            timeout /t 60 /nobreak > nul
+          )
+          exit /b 1
+          :bootstrapped
 
       - name: Install libqrencode and libpq via vcpkg
         shell: cmd
-        # Зависимости собираются из исходников и качают инструменты (Strawberry Perl) с github.com: он иногда отвечает 504,
-        # поэтому до трёх попыток с паузой (сбой скачивания не должен ронять всю сборку).
+        # Зависимости собираются из исходников и качают инструменты (Strawberry Perl) из релизов github.com: он иногда отвечает 504,
+        # поэтому до пяти попыток с паузой (сбой скачивания не должен ронять всю сборку).
         run: |
-          for %%i in (1 2 3) do (
+          for %%i in (1 2 3 4 5) do (
             vcpkg\vcpkg.exe install libqrencode:x64-windows libpq:x64-windows && goto :installed
-            echo vcpkg install failed, attempt %%i of 3
-            timeout /t 45 /nobreak > nul
+            echo vcpkg install failed, attempt %%i of 5
+            timeout /t 60 /nobreak > nul
           )
           exit /b 1
           :installed
