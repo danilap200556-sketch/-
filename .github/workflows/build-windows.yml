@@ -31,13 +31,18 @@ jobs:
 
       - name: Bootstrap vcpkg
         shell: cmd
-        # vcpkg.exe скачивается из релизов github.com, который иногда отвечает 504: до пяти попыток с паузой.
+        # vcpkg.exe скачивается из релизов github.com, который иногда отвечает 504: три попытки с паузой, а если не вышло -
+        # берём vcpkg.exe, уже установленный на раннере (C:\vcpkg): он чуть старее, но для сборки зависимостей подходит.
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg.git
-          for %%i in (1 2 3 4 5) do (
+          for %%i in (1 2 3) do (
             call vcpkg\bootstrap-vcpkg.bat && goto :bootstrapped
-            echo vcpkg bootstrap failed, attempt %%i of 5
-            ping -n 61 127.0.0.1 > nul
+            echo vcpkg bootstrap failed, attempt %%i of 3
+            ping -n 31 127.0.0.1 > nul
+          )
+          if exist C:\vcpkg\vcpkg.exe (
+            echo Using the vcpkg.exe preinstalled on the runner
+            copy /y C:\vcpkg\vcpkg.exe vcpkg\vcpkg.exe && goto :bootstrapped
           )
           exit /b 1
           :bootstrapped
