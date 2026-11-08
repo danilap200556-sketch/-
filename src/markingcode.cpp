@@ -522,6 +522,15 @@ Row get(int id)
     return {};
 }
 
+int countForOrder(const QString &orderId, const QString &gtin)
+{
+    QSqlQuery q;
+    q.prepare(QStringLiteral("SELECT count(*) FROM marking_codes WHERE order_id = ? AND gtin = ? AND source <> 'registry'"));
+    q.addBindValue(orderId);
+    q.addBindValue(gtin);
+    return q.exec() && q.next() ? q.value(0).toInt() : 0;
+}
+
 QStringList codesByIds(const QList<int> &ids)
 {
     QStringList out;

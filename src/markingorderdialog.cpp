@@ -674,21 +674,30 @@ int MarkingOrderDialog::fetchCodes()
             ++failed;
             continue;
         }
+        // СУЗ выдаёт каждый код один раз: то, что уже скачано в таблицу (в том числе прошлым запуском), заново не просим.
+        int received = qMax(l.received, qMin(l.qty, MarkingCode::countForOrder(order, gtin)));
+        if (received >= l.qty) {
+            m_table->item(r, ColState)->setData(Qt::UserRole, received);
+            setState(r, tr("получено %1 из %2 (коды уже в таблице)").arg(received).arg(l.qty), false);
+            if (l.orderId.isEmpty())
+                m_table->item(r, ColOrder)->setText(order);
+            continue;
+        }
         setState(r, tr("получаю коды…"), false);
         QStringList codes, trace;
         QString err;
-        ChestnyZnak::fetchCodes(s, order, gtin, l.qty, &codes, &err, &trace, [this, r](int got, int total) {
-            setState(r, tr("получено %1 из %2…").arg(got).arg(total), false);
+        ChestnyZnak::fetchCodes(s, order, gtin, l.qty - received, &codes, &err, &trace, [this, r, received, qty = l.qty](int got, int total) {
+            Q_UNUSED(total)
+            setState(r, tr("получено %1 из %2…").arg(received + got).arg(qty), false);
             QApplication::processEvents();
             return !m_stop;
         });
         for (const QString &t : std::as_const(trace))
             appendLog(QStringLiteral("  ") + t);
-        int received = l.received;
         if (!codes.isEmpty()) {
             // Коды привязываются к товару по GTIN (он взят из штрихкода товара); повторно скачанные считаются как «уже были».
             const MarkingCode::AddResult res = MarkingCode::add(codes, QStringLiteral("suz"), order);
-            received = qMin(l.qty, res.added + res.duplicates + l.received);
+            received = qMin(l.qty, received + res.added + res.duplicates);
             addedNow += res.added;
             m_added += res.added;
             fetched += res.added + res.duplicates;

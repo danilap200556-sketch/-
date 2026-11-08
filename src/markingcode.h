@@ -101,6 +101,9 @@ struct Filter {
 };
 QList<Row> list(const Filter &filter = Filter());
 Row get(int id);
+// Сколько кодов этого заказа и GTIN уже в таблице (выгрузка «Реестр кодов» не считается: в ней коды без криптохвоста). СУЗ выдаёт код один раз,
+// поэтому то, что уже скачано, повторно не запрашивают.
+int countForOrder(const QString &orderId, const QString &gtin);
 // Коды (как в базе, с разделителями групп) по номерам строк: пачками по одному запросу, в порядке номеров.
 QStringList codesByIds(const QList<int> &ids);
 struct Counts {
