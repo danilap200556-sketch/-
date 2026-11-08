@@ -37,7 +37,7 @@ jobs:
           for %%i in (1 2 3 4 5) do (
             call vcpkg\bootstrap-vcpkg.bat && goto :bootstrapped
             echo vcpkg bootstrap failed, attempt %%i of 5
-            timeout /t 60 /nobreak > nul
+            ping -n 61 127.0.0.1 > nul
           )
           exit /b 1
           :bootstrapped
@@ -50,7 +50,7 @@ jobs:
           for %%i in (1 2 3 4 5) do (
             vcpkg\vcpkg.exe install libqrencode:x64-windows libpq:x64-windows && goto :installed
             echo vcpkg install failed, attempt %%i of 5
-            timeout /t 60 /nobreak > nul
+            ping -n 61 127.0.0.1 > nul
           )
           exit /b 1
           :installed
