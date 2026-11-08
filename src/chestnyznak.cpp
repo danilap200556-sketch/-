@@ -299,8 +299,8 @@ Reply createOrder(const Settings &s, const QList<OrderLine> &lines, const Cancel
     }
     Reply r = finish(send(QStringLiteral("POST"), url, headers, body, cancelled), QStringLiteral("POST"), url, body);
     r.trace = signerFail.trace + r.trace;
-    if (!r.ok && (r.status == 400 || r.status == 401 || r.status == 403) && s.signerUrl.trimmed().isEmpty())
-        r.error += QStringLiteral(" (заказ подписывается электронной подписью: задайте подписант в настройках или создайте заказ в личном кабинете и скачайте коды по его номеру)");
+    if (!r.ok && (r.status == 400 || r.status == 401 || r.status == 403) && s.signerUrl.trimmed().isEmpty() && s.certThumbprint.trimmed().isEmpty())
+        r.error += QStringLiteral(" (заказ подписывается электронной подписью: выберите сертификат в настройках СУЗ (Windows с КриптоПро), задайте подписант или создайте заказ в личном кабинете и скачайте коды по его номеру)");
     return r;
 }
 
