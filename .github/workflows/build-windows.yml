@@ -42,6 +42,26 @@ jobs:
           exit /b 1
           :bootstrapped
 
+      # Для сборки OpenSSL vcpkg скачивает Strawberry Perl из релизов github.com, и этот файл иногда не отдаётся (504 часами).
+      # На раннере Windows Strawberry Perl уже установлен: кладём его туда, где vcpkg ищет свой, и тогда скачивание не нужно.
+      # Если подготовить не вышло, шаг ничего не ломает: vcpkg скачает Perl сам, как раньше.
+      - name: Prepare Perl for vcpkg (preinstalled Strawberry Perl instead of a download)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $perlRoot = 'C:\Strawberry'
+          if (-not (Test-Path "$perlRoot\perl\bin\perl.exe")) { Write-Host 'No preinstalled Strawberry Perl: vcpkg will download its own'; exit 0 }
+          $hit = Get-ChildItem vcpkg\scripts\cmake -File | Select-String -Pattern 'strawberry-perl-([0-9.]+)-64bit-portable' | Select-Object -First 1
+          if (-not $hit) { Write-Host 'Perl version not found in the vcpkg scripts'; exit 0 }
+          $ver = $hit.Matches[0].Groups[1].Value
+          $dest = Join-Path (Resolve-Path vcpkg).Path "downloads\tools\perl\$ver"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          foreach ($d in 'perl', 'c') {
+            if ((Test-Path "$perlRoot\$d") -and -not (Test-Path "$dest\$d")) { cmd /c mklink /J "$dest\$d" "$perlRoot\$d" }
+          }
+          Write-Host "vcpkg will use Perl $ver from $dest"
+          & "$dest\perl\bin\perl.exe" -v | Select-Object -First 2
+
       - name: Install libqrencode and libpq via vcpkg
         shell: cmd
         # Зависимости собираются из исходников и качают инструменты (Strawberry Perl) из релизов github.com: он иногда отвечает 504,
