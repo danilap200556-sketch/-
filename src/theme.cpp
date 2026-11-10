@@ -1,6 +1,10 @@
 #include "theme.h"
 
 #include <QApplication>
+#include <QStyle>
+#include <QRegularExpression>
+#include <QPushButton>
+#include <QEvent>
 #include <QDir>
 #include <QFile>
 #include <QFont>
@@ -20,48 +24,58 @@ namespace {
 
 Mode g_mode = Mode::Light;
 
-// Галочка и точка для флажков/переключателей рисуются кодом и кладутся в кэш-папку: в таблице
-// стилей картинку можно указать только путём к файлу.
-QString indicatorImage(bool dot)
+// Галочка, точка и стрелка списка рисуются кодом и кладутся в кэш-папку: в таблице стилей картинку можно указать только путём к файлу.
+enum class Indicator { Check, Dot, Chevron };
+QString indicatorImage(Indicator kind, const QColor &color = Qt::white)
 {
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/theme");
     QDir().mkpath(dir);
-    const QString path = dir + (dot ? QStringLiteral("/dot.png") : QStringLiteral("/check.png"));
+    const QString name = kind == Indicator::Dot ? QStringLiteral("dot") : (kind == Indicator::Check ? QStringLiteral("check") : QStringLiteral("chevron"));
+    const QString path = QStringLiteral("%1/%2-%3.png").arg(dir, name, color.name().mid(1));
     if (!QFile::exists(path)) {
         QPixmap pm(36, 36);
         pm.fill(Qt::transparent);
         QPainter p(&pm);
         p.setRenderHint(QPainter::Antialiasing);
-        if (dot) {
+        if (kind == Indicator::Dot) {
             p.setPen(Qt::NoPen);
-            p.setBrush(Qt::white);
+            p.setBrush(color);
             p.drawEllipse(QPointF(18, 18), 5.5, 5.5);
-        } else {
-            p.setPen(QPen(Qt::white, 3.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        } else if (kind == Indicator::Check) {
+            p.setPen(QPen(color, 3.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             p.drawPolyline(QPolygonF({QPointF(9.5, 18.5), QPointF(15.5, 24.5), QPointF(26.5, 11.5)}));
+        } else {
+            p.setPen(QPen(color, 3.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawPolyline(QPolygonF({QPointF(10, 14), QPointF(18, 22), QPointF(26, 14)}));
         }
         p.end();
         pm.save(path, "PNG");
     }
     return path;
 }
+QString rgba(const QColor &c, int alpha)
+{
+    return QStringLiteral("rgba(%1,%2,%3,%4)").arg(c.red()).arg(c.green()).arg(c.blue()).arg(alpha);
+}
 Colors g_colors;
 
 Colors lightColors()
 {
     Colors c;
-    c.bg = "#f3f5fa"; c.surface = "#ffffff"; c.surface2 = "#eef1f8"; c.border = "#e0e5ef"; c.borderStrong = "#c7cfdf";
-    c.text = "#1a2133"; c.muted = "#6b7690"; c.accent = "#4f6bf5"; c.accentHover = "#3d57db"; c.accentText = "#ffffff";
-    c.danger = "#e5484d"; c.ok = "#2e9e6b"; c.selection = "#e4eaff"; c.scroll = "#c5cde0"; c.sidebar = "#111827";
+    c.bg = "#f3f4f8"; c.surface = "#ffffff"; c.surface2 = "#f7f8fb"; c.border = "#e2e5ed"; c.borderStrong = "#c8cedb";
+    c.text = "#0f1626"; c.muted = "#5c6882"; c.accent = "#2457d6"; c.accentHover = "#1b45b4"; c.accentText = "#ffffff";
+    c.danger = "#c4313c"; c.ok = "#1e8559"; c.selection = "#e4ebfb"; c.scroll = "#c3cada"; c.sidebar = "#0f172a";
+    c.warn = "#9c6200"; c.accentSoft = "#e8eefc"; c.okSoft = "#e6f4ed"; c.dangerSoft = "#fceaec"; c.warnSoft = "#fbf0dc";
     return c;
 }
 
 Colors darkColors()
 {
     Colors c;
-    c.bg = "#12151d"; c.surface = "#1b2030"; c.surface2 = "#232a3d"; c.border = "#2b3347"; c.borderStrong = "#3a4560";
-    c.text = "#e8ecf6"; c.muted = "#8f9bb7"; c.accent = "#6b86ff"; c.accentHover = "#8299ff"; c.accentText = "#0e1220";
-    c.danger = "#ff6b70"; c.ok = "#4cc790"; c.selection = "#2b3860"; c.scroll = "#3a4560"; c.sidebar = "#0c0f17";
+    c.bg = "#0e121a"; c.surface = "#151b26"; c.surface2 = "#1a2230"; c.border = "#252e3e"; c.borderStrong = "#364156";
+    c.text = "#e6eaf2"; c.muted = "#8b97ad"; c.accent = "#5b8cff"; c.accentHover = "#7aa2ff"; c.accentText = "#0b1020";
+    c.danger = "#ff7782"; c.ok = "#4cc790"; c.selection = "#22305a"; c.scroll = "#364156"; c.sidebar = "#0a0d14";
+    c.warn = "#f0b04a"; c.accentSoft = "#1d2a4d"; c.okSoft = "#15342a"; c.dangerSoft = "#3a2127"; c.warnSoft = "#3a2f18";
     return c;
 }
 
@@ -73,59 +87,66 @@ QWidget { color: @text@; font-size: 10pt; }
 QMainWindow, QDialog { background: @bg@; }
 QWidget#content, QWidget#page { background: @bg@; }
 QLabel { background: transparent; }
-QLabel#pageTitle { font-size: 17pt; font-weight: 700; }
+QLabel#pageTitle { font-size: 18pt; font-weight: 600; }
 QLabel#muted { color: @muted@; }
-QToolTip { background: @surface@; color: @text@; border: 1px solid @border@; border-radius: 6px; padding: 6px 8px; }
+QToolTip { background: @surface@; color: @text@; border: 1px solid @borderStrong@; border-radius: 5px; padding: 5px 8px; }
 
-QMenuBar { background: @surface@; border-bottom: 1px solid @border@; padding: 3px 8px; }
-QMenuBar::item { background: transparent; padding: 6px 12px; border-radius: 7px; }
+QMenuBar { background: @surface@; border-bottom: 1px solid @border@; padding: 2px 8px; }
+QMenuBar::item { background: transparent; padding: 6px 12px; border-radius: 5px; }
 QMenuBar::item:selected { background: @surface2@; }
-QMenu { background: @surface@; border: 1px solid @border@; border-radius: 10px; padding: 6px; }
-QMenu::item { padding: 8px 28px 8px 14px; border-radius: 7px; }
+QMenu { background: @surface@; border: 1px solid @borderStrong@; border-radius: 8px; padding: 5px; }
+QMenu::item { padding: 7px 26px 7px 12px; border-radius: 5px; }
 QMenu::item:selected { background: @selection@; color: @text@; }
-QMenu::separator { height: 1px; background: @border@; margin: 6px 8px; }
+QMenu::separator { height: 1px; background: @border@; margin: 5px 8px; }
 
-QPushButton { background: @surface@; border: 1px solid @border@; border-radius: 9px; padding: 7px 15px; }
-QPushButton:hover { background: @surface2@; border-color: @borderStrong@; }
+QPushButton { background: @surface@; border: 1px solid @borderStrong@; border-radius: 6px; padding: 5px 14px; min-height: 20px; }
+QPushButton:hover { background: @surface2@; border-color: @muted@; }
 QPushButton:pressed { background: @border@; }
 QPushButton:disabled { color: @muted@; background: @surface2@; border-color: @border@; }
 QPushButton:default, QPushButton[primary="true"] { background: @accent@; border-color: @accent@; color: @accentText@; font-weight: 600; }
 QPushButton:default:hover, QPushButton[primary="true"]:hover { background: @accentHover@; border-color: @accentHover@; }
 QPushButton:default:disabled, QPushButton[primary="true"]:disabled { background: @surface2@; color: @muted@; border-color: @border@; }
-QToolButton { background: transparent; border: none; border-radius: 8px; padding: 5px; }
+QPushButton[danger="true"] { background: @surface@; color: @danger@; border-color: @dangerLine@; }
+QPushButton[danger="true"]:hover { background: @dangerSoft@; border-color: @danger@; }
+QPushButton[danger="true"]:disabled { color: @muted@; background: @surface2@; border-color: @border@; }
+QToolButton { background: transparent; border: none; border-radius: 6px; padding: 5px; }
 QToolButton:hover { background: @surface2@; }
 
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox {
-  background: @surface@; border: 1px solid @border@; border-radius: 9px; padding: 6px 10px;
+  background: @surface@; border: 1px solid @borderStrong@; border-radius: 6px; padding: 5px 9px; min-height: 20px;
   selection-background-color: @accent@; selection-color: @accentText@; }
+QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QDateEdit:hover, QComboBox:hover { border-color: @muted@; }
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QDateEdit:focus, QComboBox:focus, QComboBox:on { border: 1px solid @accent@; }
-QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled { color: @muted@; background: @surface2@; }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled { color: @muted@; background: @surface2@; border-color: @border@; }
 QLineEdit[readOnly="true"] { background: @surface2@; }
-QComboBox { padding-right: 24px; }
-QComboBox::drop-down { border: none; width: 24px; }
-QComboBox QAbstractItemView { background: @surface@; border: 1px solid @border@; border-radius: 8px; padding: 4px;
+QComboBox { padding-right: 28px; }
+QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 26px; border: none; }
+QComboBox::down-arrow { image: url(@chevron@); width: 12px; height: 12px; }
+QComboBox QAbstractItemView { background: @surface@; border: 1px solid @borderStrong@; border-radius: 6px; padding: 3px;
   selection-background-color: @selection@; selection-color: @text@; outline: 0; }
 QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 18px; border: none; background: transparent; }
 
 QCheckBox, QRadioButton { spacing: 8px; background: transparent; }
 QCheckBox::indicator, QRadioButton::indicator { width: 17px; height: 17px; border: 1.5px solid @borderStrong@; background: @surface@; }
-QCheckBox::indicator { border-radius: 5px; }
+QCheckBox::indicator { border-radius: 4px; }
 QRadioButton::indicator { border-radius: 9px; }
 QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: @accent@; }
 QCheckBox::indicator:checked { background: @accent@; border-color: @accent@; image: url(@check@); }
 QRadioButton::indicator:checked { background: @accent@; border-color: @accent@; image: url(@dot@); }
 QCheckBox::indicator:disabled, QRadioButton::indicator:disabled { background: @surface2@; border-color: @border@; }
-QTableView::indicator { width: 17px; height: 17px; border: 1.5px solid @borderStrong@; border-radius: 5px; background: @surface@; }
+QTableView::indicator { width: 17px; height: 17px; border: 1.5px solid @borderStrong@; border-radius: 4px; background: @surface@; }
 QTableView::indicator:checked { background: @accent@; border-color: @accent@; image: url(@check@); }
 
 QTableView, QTableWidget, QListWidget, QTreeWidget, QTreeView {
-  background: @surface@; alternate-background-color: @surface2@; gridline-color: transparent; border: 1px solid @border@; border-radius: 10px;
+  background: @surface@; alternate-background-color: @surface2@; gridline-color: transparent; border: 1px solid @border@; border-radius: 8px;
   selection-background-color: @selection@; selection-color: @text@; outline: 0; }
-QTableView::item, QTableWidget::item { padding: 3px 6px; border: none; }
+QTableView::item, QTableWidget::item { padding: 3px 8px; border: none; }
+QTableView::item:hover, QTableWidget::item:hover { background: @accentSoft@; }
+QTableView::item:selected, QTableWidget::item:selected { background: @selection@; color: @text@; }
 QListWidget::item, QTreeWidget::item { padding: 4px 6px; }
 QHeaderView { background: transparent; }
-QHeaderView::section { background: @surface2@; color: @muted@; border: none; border-bottom: 1px solid @border@; padding: 8px 10px; font-weight: 600; }
-QTableCornerButton::section { background: @surface2@; border: none; }
+QHeaderView::section { background: @surface@; color: @muted@; border: none; border-bottom: 1px solid @borderStrong@; padding: 9px 10px; font-weight: 600; font-size: 9pt; }
+QTableCornerButton::section { background: @surface@; border: none; border-bottom: 1px solid @borderStrong@; }
 
 QScrollBar:vertical { width: 12px; background: transparent; margin: 3px; }
 QScrollBar::handle:vertical { background: @scroll@; border-radius: 4px; min-height: 30px; }
@@ -136,8 +157,8 @@ QScrollBar::handle:horizontal:hover { background: @muted@; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
-QGroupBox { background: @surface@; border: 1px solid @border@; border-radius: 12px; margin-top: 16px; padding: 14px 12px 10px 12px; }
-QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 14px; padding: 0 6px; color: @muted@; font-weight: 600; background: @bg@; border-radius: 4px; }
+QGroupBox { background: @surface@; border: 1px solid @border@; border-radius: 8px; margin-top: 16px; padding: 14px 12px 10px 12px; }
+QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 12px; padding: 0 6px; color: @muted@; font-weight: 600; background: @bg@; border-radius: 4px; }
 
 QTabWidget::pane { border: none; top: -1px; }
 QTabBar::tab { background: transparent; color: @muted@; padding: 9px 16px; border: none; border-bottom: 2px solid transparent; margin-right: 4px; font-weight: 600; }
@@ -145,32 +166,89 @@ QTabBar::tab:hover { color: @text@; }
 QTabBar::tab:selected { color: @accent@; border-bottom: 2px solid @accent@; }
 
 QSplitter::handle { background: transparent; }
-QProgressBar { background: @surface2@; border: none; border-radius: 6px; text-align: center; height: 12px; }
-QProgressBar::chunk { background: @accent@; border-radius: 6px; }
+QProgressBar { background: @surface2@; border: 1px solid @border@; border-radius: 5px; text-align: center; height: 10px; }
+QProgressBar::chunk { background: @accent@; border-radius: 4px; }
 QDialogButtonBox QPushButton { min-width: 84px; }
 QMessageBox { background: @bg@; }
 
+/* Плашки-сообщения: успех / ошибка / предупреждение / сведения. Свойство banner = ok | error | warn | info. */
+QLabel[banner="ok"], QLabel#noticeBanner, QLabel#printStatus { background: @okSoft@; color: @ok@; border: 1px solid @okLine@; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+QLabel[banner="error"], QLabel#printStatus[error="true"] { background: @dangerSoft@; color: @danger@; border: 1px solid @dangerLine@; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+QLabel[banner="warn"] { background: @warnSoft@; color: @warn@; border: 1px solid @warnLine@; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+QLabel[banner="info"] { background: @accentSoft@; color: @accent@; border: 1px solid @accentLine@; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+
+/* Полоса с количеством пар на складах */
+QFrame#statCard { background: @surface@; border: 1px solid @border@; border-radius: 8px; }
+QFrame#statCard[total="true"] { background: @accent@; border-color: @accent@; }
+QLabel#statCaption { color: @muted@; font-size: 8pt; font-weight: 600; }
+QLabel#statValue { font-size: 14pt; font-weight: 700; }
+QFrame#statCard[total="true"] QLabel#statCaption { color: @accentText@; }
+QFrame#statCard[total="true"] QLabel#statValue { color: @accentText@; }
+
 QFrame#sidebarFrame { background: @sidebar@; border: none; }
 QFrame#sidebarFrame QLabel { color: #e9edf7; }
-QFrame#sidebarFrame QLabel#sideMuted { color: #8e9ab5; font-size: 9pt; }
-QFrame#userCard { background: rgba(255,255,255,0.06); border-radius: 12px; }
+QFrame#sidebarFrame QLabel#sideMuted { color: #8591ab; font-size: 9pt; }
+QFrame#userCard { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; }
 QListWidget#sidebar { background: transparent; border: none; outline: 0; padding: 4px 8px; }
-QListWidget#sidebar::item { color: #c5cde0; padding: 10px 12px; margin: 2px 0; border-radius: 10px; }
-QListWidget#sidebar::item:hover { background: rgba(255,255,255,0.07); color: #ffffff; }
-QListWidget#sidebar::item:selected { background: @accent@; color: @accentText@; }
-QFrame#sidebarFrame QToolButton { color: #c5cde0; }
+QListWidget#sidebar::item { color: #b4bfd3; padding: 9px 12px 9px 14px; margin: 1px 0; border-radius: 6px; }
+QListWidget#sidebar::item:hover { background: rgba(255,255,255,0.06); color: #ffffff; }
+QListWidget#sidebar::item:selected { background: rgba(255,255,255,0.10); color: #ffffff; }
+QFrame#sidebarFrame QToolButton { color: #b4bfd3; }
 QFrame#sidebarFrame QToolButton:hover { background: rgba(255,255,255,0.10); }
 )");
     const QPair<QString, QColor> tokens[] = {
-        {"@bg@", c.bg}, {"@surface@", c.surface}, {"@surface2@", c.surface2}, {"@border@", c.border}, {"@borderStrong@", c.borderStrong},
-        {"@text@", c.text}, {"@muted@", c.muted}, {"@accentHover@", c.accentHover}, {"@accentText@", c.accentText}, {"@accent@", c.accent},
-        {"@selection@", c.selection}, {"@scroll@", c.scroll}, {"@sidebar@", c.sidebar}};
+        {"@bg@", c.bg}, {"@surface2@", c.surface2}, {"@surface@", c.surface}, {"@borderStrong@", c.borderStrong}, {"@border@", c.border},
+        {"@text@", c.text}, {"@muted@", c.muted}, {"@accentHover@", c.accentHover}, {"@accentText@", c.accentText},
+        {"@accentSoft@", c.accentSoft}, {"@accent@", c.accent}, {"@selection@", c.selection}, {"@scroll@", c.scroll}, {"@sidebar@", c.sidebar},
+        {"@okSoft@", c.okSoft}, {"@ok@", c.ok}, {"@dangerSoft@", c.dangerSoft}, {"@danger@", c.danger}, {"@warnSoft@", c.warnSoft}, {"@warn@", c.warn}};
+    // Сначала «длинные» метки с цветом-приставкой (@okLine@ и т. п.), иначе @ok@ съест их начало.
+    s.replace(QStringLiteral("@okLine@"), rgba(c.ok, 90));
+    s.replace(QStringLiteral("@dangerLine@"), rgba(c.danger, 100));
+    s.replace(QStringLiteral("@warnLine@"), rgba(c.warn, 100));
+    s.replace(QStringLiteral("@accentLine@"), rgba(c.accent, 90));
     for (const auto &t : tokens)
         s.replace(t.first, t.second.name());
-    s.replace(QStringLiteral("@check@"), indicatorImage(false));
-    s.replace(QStringLiteral("@dot@"), indicatorImage(true));
+    s.replace(QStringLiteral("@check@"), indicatorImage(Indicator::Check));
+    s.replace(QStringLiteral("@dot@"), indicatorImage(Indicator::Dot));
+    s.replace(QStringLiteral("@chevron@"), indicatorImage(Indicator::Chevron, c.muted));
     return s;
 }
+
+
+// Роли кнопок по смыслу подписи: главное действие страницы - заливка акцентом, удаление - красная обводка. Свойства primary / danger,
+// заданные кнопке вручную, не перебиваются.
+class ButtonRoles : public QObject
+{
+public:
+    using QObject::QObject;
+    bool eventFilter(QObject *o, QEvent *e) override
+    {
+        if (e->type() == QEvent::Polish) {
+            if (auto *b = qobject_cast<QPushButton *>(o))
+                assign(b);
+        }
+        return false;
+    }
+
+private:
+    static void assign(QPushButton *b)
+    {
+        if (b->property("roleChecked").toBool())
+            return;
+        b->setProperty("roleChecked", true);
+        if (b->property("primary").isValid() || b->property("danger").isValid())
+            return;
+        const QString t = b->text().remove(QLatin1Char('&')).trimmed();
+        static const QRegularExpression danger(QStringLiteral("^(Удалить|Отменить документ|Очистить)"));
+        static const QRegularExpression primary(QStringLiteral("^(Добавить|Создать|Войти|Применить|Провести|Принять|Сохранить(?! в PDF)|Печать$)"));
+        const char *role = danger.match(t).hasMatch() ? "danger" : (primary.match(t).hasMatch() ? "primary" : nullptr);
+        if (!role)
+            return;
+        b->setProperty(role, true);
+        b->style()->unpolish(b);
+        b->style()->polish(b);
+    }
+};
 
 } // namespace
 
@@ -187,6 +265,11 @@ QString stylesheet(Mode mode) { return css(mode == Mode::Dark ? darkColors() : l
 
 void apply(Mode mode)
 {
+    static ButtonRoles *roles = nullptr;
+    if (!roles) {
+        roles = new ButtonRoles(qApp);
+        qApp->installEventFilter(roles);
+    }
     g_mode = mode;
     g_colors = mode == Mode::Dark ? darkColors() : lightColors();
     QSettings().setValue(QStringLiteral("theme"), mode == Mode::Dark ? QStringLiteral("dark") : QStringLiteral("light"));
@@ -229,8 +312,8 @@ QPixmap logo(int size)
     p.setRenderHint(QPainter::Antialiasing);
     const QRectF r(0, 0, size, size);
     QLinearGradient g(r.topLeft(), r.bottomRight());
-    g.setColorAt(0, QColor("#6d7bff"));
-    g.setColorAt(1, QColor("#9b5cf6"));
+    g.setColorAt(0, QColor("#3d6df2"));
+    g.setColorAt(1, QColor("#1c3fa6"));
     p.setPen(Qt::NoPen);
     p.setBrush(g);
     p.drawRoundedRect(r, size * 0.28, size * 0.28);

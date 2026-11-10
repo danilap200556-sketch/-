@@ -29,6 +29,7 @@ class QLineEdit;
 class QListWidget;
 class QStackedWidget;
 class QToolButton;
+class StockBar;
 class QSystemTrayIcon;
 class MarketAutoSync;
 
@@ -50,7 +51,8 @@ private slots:
 private:
     void refreshAfterProductEdit();
     // Раздел боковой панели: строка в списке + страница справа.
-    void addPage(const QString &title, Theme::Icon icon, QWidget *page);
+    // group - подпись группы разделов в боковой панели: ставится у первого раздела группы.
+    void addPage(const QString &title, Theme::Icon icon, QWidget *page, const QString &group = QString());
     void showPage(QWidget *page);
     void pageChanged(int row);
     // Данные страницы подгружаются при первом показе и потом, только если что-то изменилось (или
@@ -74,6 +76,8 @@ private:
     QListWidget *m_sidebar = nullptr;
     QStackedWidget *m_pages = nullptr;
     QLabel *m_pageTitle = nullptr;
+    StockBar *m_stockBar = nullptr; // «Всего пар» и пары по складам: над каждой страницей
+    QString m_lastGroup;
     QSet<QWidget *> m_dirty;
     QHash<QWidget *, qint64> m_loadedAt;
     QElapsedTimer m_clock;

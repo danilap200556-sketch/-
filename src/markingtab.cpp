@@ -1,6 +1,7 @@
 #include "markingtab.h"
 
 #include "cabinetxml.h"
+#include "theme.h"
 #include "cabinetxmldialog.h"
 #include "chestnyznak.h"
 #include "cryptosign.h"
@@ -474,6 +475,13 @@ void MarkingTab::reload()
         if (ki)
             status->setToolTip(tr("Код идентификации: в нём нет криптохвоста (групп 91 и 92), поэтому Data Matrix для нанесения на товар из него не получится. "
                                   "Такие коды нужны для документов Системы маркировки; печать для них отключена."));
+        // Статус виден сразу по цвету: новый - зелёный, напечатан - спокойный серый, код идентификации - янтарный.
+        status->setForeground(ki ? Theme::colors().warn : (row.status == QLatin1String("printed") ? Theme::colors().muted : Theme::colors().ok));
+        if (!ki && row.status != QLatin1String("printed")) {
+            QFont f = status->font();
+            f.setBold(true);
+            status->setFont(f);
+        }
         status->setData(Qt::UserRole, row.id);
         m_table->setItem(r, ColStatus, status);
         m_table->setItem(r, ColSku, new QTableWidgetItem(row.productId > 0 ? row.sku : tr("- не найден -")));

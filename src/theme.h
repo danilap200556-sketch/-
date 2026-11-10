@@ -15,10 +15,15 @@ enum class Mode { Light, Dark };
 struct Colors {
     QColor bg, surface, surface2, border, borderStrong, text, muted, accent, accentHover, accentText;
     QColor danger, ok, selection, scroll, sidebar;
+    QColor warn;                                          // предупреждение (янтарный)
+    QColor accentSoft, okSoft, dangerSoft, warnSoft;      // мягкие подложки для баннеров и «чипов» статуса
 };
 
 Mode saved();
 Mode current();
+// Роли кнопок: главная (заливка акцентом), опасная (красная) и обычная. Кнопке роль можно задать свойством primary / danger = true;
+// остальным «по смыслу подписи» её назначает сама тема («Добавить», «Сохранить», «Создать», «Печать» - главные; «Удалить» - опасная).
+// Баннер: QLabel со свойством banner = "ok" | "error" | "warn" | "info" рисуется цветной плашкой (после смены свойства нужен unpolish/polish).
 // Применяет тему ко всему приложению (стиль Fusion + палитра + таблица стилей) и запоминает выбор.
 void apply(Mode mode);
 const Colors &colors();

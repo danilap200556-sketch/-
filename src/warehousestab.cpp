@@ -1,5 +1,6 @@
 #include "warehousestab.h"
 #include "formdialog.h"
+#include "stockbar.h"
 
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -14,8 +15,44 @@
 #include <QVBoxLayout>
 
 namespace {
-enum WCol { WColId = 0, WColName, WColAddress };
+// Две колонки справа считаются запросом, а не хранятся: сколько пар лежит на складе и по скольким артикулам (размерам) есть остаток.
+enum WCol { WColId = 0, WColName, WColAddress, WColPairs, WColPositions };
 enum LCol { LColId = 0, LColWarehouseId, LColCode, LColDescription };
+
+class WarehousesModel : public QSqlTableModel
+{
+public:
+    using QSqlTableModel::QSqlTableModel;
+
+    QVariant data(const QModelIndex &idx, int role) const override
+    {
+        if (idx.isValid() && (idx.column() == WColPairs || idx.column() == WColPositions)) {
+            if (role == Qt::TextAlignmentRole)
+                return int(Qt::AlignRight | Qt::AlignVCenter);
+            if (role == Qt::DisplayRole)
+                return StockBar::groupDigits(QSqlTableModel::data(idx, Qt::DisplayRole).toLongLong());
+            if (role == Qt::FontRole && idx.column() == WColPairs) {
+                QFont f;
+                f.setBold(true);
+                return f;
+            }
+        }
+        return QSqlTableModel::data(idx, role);
+    }
+
+protected:
+    QString selectStatement() const override
+    {
+        QString s = QSqlTableModel::selectStatement();
+        const int from = s.indexOf(QLatin1String(" FROM "));
+        if (from > 0)
+            s = s.left(from)
+                + QLatin1String(", (SELECT COALESCE(SUM(quantity), 0)::bigint FROM stock WHERE warehouse_id = \"warehouses\".\"id\") AS \"pairs\""
+                                ", (SELECT COUNT(*)::bigint FROM stock WHERE warehouse_id = \"warehouses\".\"id\" AND quantity > 0) AS \"positions\"")
+                + s.mid(from);
+        return s;
+    }
+};
 }
 
 WarehousesTab::WarehousesTab(QWidget *parent)
@@ -39,7 +76,7 @@ WarehousesTab::WarehousesTab(QWidget *parent)
     m_editWidgets << addWhBtn << editWhBtn << delWhBtn;
     warehouseLayout->addLayout(warehouseToolbar);
 
-    m_warehouseModel = new QSqlTableModel(this);
+    m_warehouseModel = new WarehousesModel(this);
     m_warehouseModel->setEditStrategy(QSqlTableModel::OnManualSubmit);
     m_warehouseModel->setSort(WColName, Qt::AscendingOrder);
 
@@ -107,7 +144,16 @@ void WarehousesTab::refresh()
     m_warehouseModel->select();
     m_warehouseModel->setHeaderData(WColName, Qt::Horizontal, tr("Название"));
     m_warehouseModel->setHeaderData(WColAddress, Qt::Horizontal, tr("Адрес"));
+    m_warehouseModel->setHeaderData(WColPairs, Qt::Horizontal, tr("Пар на складе"));
+    m_warehouseModel->setHeaderData(WColPositions, Qt::Horizontal, tr("Артикулов в наличии"));
     m_warehouseTable->setColumnHidden(WColId, true);
+    // Название и адрес делят свободное место, числа - по содержимому (заголовки «Пар на складе» и «Артикулов в наличии» целиком).
+    QHeaderView *wh = m_warehouseTable->horizontalHeader();
+    wh->setStretchLastSection(false);
+    wh->setSectionResizeMode(WColName, QHeaderView::Stretch);
+    wh->setSectionResizeMode(WColAddress, QHeaderView::Stretch);
+    wh->setSectionResizeMode(WColPairs, QHeaderView::ResizeToContents);
+    wh->setSectionResizeMode(WColPositions, QHeaderView::ResizeToContents);
     refreshLocations();
 }
 

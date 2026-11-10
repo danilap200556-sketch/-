@@ -172,6 +172,7 @@ add_executable(inventory_manager
     src/photoreviewdialog.cpp
     src/thermallabel.cpp
     src/printjob.cpp
+    src/stockbar.cpp
     src/thermalprintdialog.cpp
     src/stocktaketab.cpp
     src/photofetch.cpp

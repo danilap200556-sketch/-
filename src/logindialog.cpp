@@ -32,14 +32,13 @@ QLabel#cardTitle { font-size: 20pt; font-weight: 700; color: white; }
 QLabel#cardHint { color: rgba(214,220,255,0.78); font-size: 10pt; }
 QLabel#fieldLabel { color: rgba(214,220,255,0.78); font-size: 9pt; font-weight: 600; }
 QLabel#error { color: #ff9aa0; font-size: 9.5pt; }
-QFrame#glass { background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.22); border-radius: 22px; }
-QLineEdit { background: rgba(8,12,32,0.38); border: 1px solid rgba(255,255,255,0.20); border-radius: 12px; color: white;
-  padding: 11px 14px; font-size: 11pt; selection-background-color: #7c8cff; selection-color: white; }
-QLineEdit:focus { border: 1px solid #8e9bff; background: rgba(8,12,32,0.52); }
-QPushButton#submit { border: none; border-radius: 12px; padding: 12px; font-size: 11.5pt; font-weight: 700; color: white;
-  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5b73ff, stop:1 #9b5cf6); }
-QPushButton#submit:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6f84ff, stop:1 #ac72ff); }
-QPushButton#submit:pressed { background: #4a5fe0; }
+QFrame#glass { background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.22); border-radius: 14px; }
+QLineEdit { background: rgba(8,12,32,0.42); border: 1px solid rgba(255,255,255,0.20); border-radius: 8px; color: white;
+  padding: 10px 13px; font-size: 11pt; selection-background-color: #5b8cff; selection-color: white; }
+QLineEdit:focus { border: 1px solid #6d9bff; background: rgba(8,12,32,0.55); }
+QPushButton#submit { border: none; border-radius: 8px; padding: 12px; font-size: 11.5pt; font-weight: 600; color: white; background: #2f62e6; }
+QPushButton#submit:hover { background: #3d71f5; }
+QPushButton#submit:pressed { background: #2553c4; }
 QPushButton#link { border: none; background: transparent; color: rgba(214,220,255,0.82); padding: 6px; font-size: 9.5pt; }
 QPushButton#link:hover { color: white; text-decoration: underline; }
 QToolButton#close { border: none; border-radius: 14px; background: rgba(255,255,255,0.08); }
@@ -204,9 +203,9 @@ void LoginDialog::paintEvent(QPaintEvent *)
     clip.addRoundedRect(body, kRadius, kRadius);
     p.setClipPath(clip);
     QLinearGradient bg(body.topLeft(), body.bottomRight());
-    bg.setColorAt(0.0, QColor("#0b1022"));
-    bg.setColorAt(0.55, QColor("#17154a"));
-    bg.setColorAt(1.0, QColor("#2a1458"));
+    bg.setColorAt(0.0, QColor("#090e1a"));
+    bg.setColorAt(0.55, QColor("#0f1a31"));
+    bg.setColorAt(1.0, QColor("#12274a"));
     p.fillRect(body, bg);
 
     auto glow = [&](QPointF c, qreal r, QColor col) {
@@ -218,9 +217,9 @@ void LoginDialog::paintEvent(QPaintEvent *)
         g.setColorAt(1, outer);
         p.fillRect(body, g);
     };
-    glow(body.topLeft() + QPointF(body.width() * 0.18, body.height() * 0.22), 430, QColor(99, 102, 241, 150));
-    glow(body.topLeft() + QPointF(body.width() * 0.86, body.height() * 0.86), 380, QColor(236, 72, 153, 90));
-    glow(body.topLeft() + QPointF(body.width() * 0.60, body.height() * 0.02), 300, QColor(34, 211, 238, 70));
+    glow(body.topLeft() + QPointF(body.width() * 0.18, body.height() * 0.22), 430, QColor(47, 98, 230, 120));
+    glow(body.topLeft() + QPointF(body.width() * 0.86, body.height() * 0.86), 380, QColor(30, 64, 175, 80));
+    glow(body.topLeft() + QPointF(body.width() * 0.60, body.height() * 0.02), 300, QColor(56, 160, 248, 45));
 
     // тонкие круги на фоне
     p.setBrush(Qt::NoBrush);

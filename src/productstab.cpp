@@ -1,4 +1,5 @@
 #include "productstab.h"
+#include "stockbar.h"
 #include "productdialog.h"
 #include "producteditor.h"
 #include "productfinder.h"
@@ -57,10 +58,26 @@ public:
             const QByteArray jpeg = PhotoCache::coverJpeg(id);
             return QStringLiteral("<img src=\"data:image/jpeg;base64,%1\" width=\"320\">").arg(QString::fromLatin1(jpeg.toBase64()));
         }
+        if (idx.isValid() && idx.column() == ColPrice && role == Qt::TextAlignmentRole)
+            return int(Qt::AlignRight | Qt::AlignVCenter);
+        if (idx.isValid() && idx.column() == ColDescription) {
+            if (role == Qt::TextAlignmentRole)
+                return int(Qt::AlignRight | Qt::AlignVCenter);
+            if (role == Qt::DisplayRole)
+                return StockBar::groupDigits(QSqlTableModel::data(idx, Qt::DisplayRole).toLongLong());
+        }
         return QSqlTableModel::data(idx, role);
     }
 
 protected:
+    // Сортировка по «Пар» должна идти по вычисленному числу, а не по настоящему полю описания.
+    QString orderByClause() const override
+    {
+        QString s = QSqlTableModel::orderByClause();
+        s.replace(QLatin1String("\"products\".\"description\""), QLatin1String("\"description\""));
+        return s;
+    }
+
     // Описание и старый путь к фото в списке не показываются (колонки скрыты), а описания бывают длинными:
     // не тянем их с сервера на каждом обновлении списка.
     QString selectStatement() const override
@@ -69,7 +86,9 @@ protected:
         const int from = s.indexOf(QLatin1String(" FROM "));
         if (from > 0) {
             QString head = s.left(from);
-            head.replace(QLatin1String("\"description\""), QLatin1String("NULL AS \"description\""));
+            // Колонка описания в списке не нужна, поэтому её место занимает «Пар»: сколько пар этого артикула на всех складах.
+            head.replace(QLatin1String("\"description\""),
+                         QLatin1String("(SELECT COALESCE(SUM(quantity), 0)::bigint FROM stock WHERE product_id = \"products\".\"id\") AS \"description\""));
             head.replace(QLatin1String("\"photo_path\""), QLatin1String("NULL AS \"photo_path\""));
             s = head + s.mid(from);
         }
@@ -181,11 +200,11 @@ void ProductsTab::refresh()
         m_model->fetchMore();
     m_model->setHeaderData(ColSku, Qt::Horizontal, tr("Артикул"));
     m_model->setHeaderData(ColName, Qt::Horizontal, tr("Название"));
+    m_model->setHeaderData(ColDescription, Qt::Horizontal, tr("Пар"));
     m_model->setHeaderData(ColPrice, Qt::Horizontal, tr("Цена"));
     m_model->setHeaderData(ColCustomCode, Qt::Horizontal, tr("Свой код"));
     m_model->setHeaderData(ColMarketSku, Qt::Horizontal, tr("Артикул на Маркете"));
     m_table->setColumnHidden(ColId, true);
-    m_table->setColumnHidden(ColDescription, true);
     m_table->setColumnHidden(ColPhotoPath, true);
     m_table->setColumnHidden(ColCreatedAt, true);
     // Технические колонки Яндекс Маркета (размеры, вес, ТН ВЭД и т.д.) в списке только мешали: они правятся в карточке товара.
@@ -197,6 +216,7 @@ void ProductsTab::refresh()
     header->setSectionResizeMode(ColName, QHeaderView::Stretch);
     header->setMinimumSectionSize(70);
     m_table->setColumnWidth(ColSku, 230);
+    m_table->setColumnWidth(ColDescription, 90);
     m_table->setColumnWidth(ColPrice, 100);
     m_table->setColumnWidth(ColCustomCode, 150);
     m_table->setColumnWidth(ColMarketSku, 200);

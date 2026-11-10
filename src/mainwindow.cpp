@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "productstab.h"
+#include "stockbar.h"
 #include "warehousestab.h"
 #include "stocktab.h"
 #include "markingtab.h"
@@ -26,6 +27,9 @@
 #include "updatestab.h"
 
 #include <QApplication>
+#include <QStyleOptionViewItem>
+#include <QStyledItemDelegate>
+#include <QPainter>
 #include <QCloseEvent>
 #include <QDesktopServices>
 #include <QFrame>
@@ -49,6 +53,45 @@
 #include <QVBoxLayout>
 #include <QMessageBox>
 #include <QPushButton>
+
+namespace {
+
+// Боковая панель: подпись группы разделов (СКЛАД, МАРКЕТПЛЕЙС...) над первым разделом группы и тонкая полоса акцента у выбранного.
+class SidebarDelegate : public QStyledItemDelegate
+{
+public:
+    static constexpr int kCaptionHeight = 26;
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        const QString caption = index.data(Qt::UserRole + 1).toString();
+        QStyleOptionViewItem opt = option;
+        if (!caption.isEmpty()) {
+            p->save();
+            QFont f = option.font;
+            f.setPointSizeF(7.5);
+            f.setBold(true);
+            f.setLetterSpacing(QFont::AbsoluteSpacing, 1.1);
+            p->setFont(f);
+            p->setPen(QColor("#6f7c99"));
+            p->drawText(QRect(option.rect.left() + 14, option.rect.top() + 6, option.rect.width() - 20, kCaptionHeight - 6), Qt::AlignLeft | Qt::AlignVCenter, caption);
+            p->restore();
+            opt.rect.setTop(opt.rect.top() + kCaptionHeight);
+        }
+        QStyledItemDelegate::paint(p, opt, index);
+        if (option.state & QStyle::State_Selected) {
+            p->save();
+            p->setRenderHint(QPainter::Antialiasing);
+            p->setPen(Qt::NoPen);
+            p->setBrush(Theme::colors().accent);
+            p->drawRoundedRect(QRectF(opt.rect.left() + 1, opt.rect.top() + 9, 3, opt.rect.height() - 18), 1.5, 1.5);
+            p->restore();
+        }
+    }
+};
+
+} // namespace
 
 MainWindow::MainWindow(const QString &username, QWidget *parent)
     : QMainWindow(parent)
@@ -141,6 +184,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     m_sidebar->setFocusPolicy(Qt::NoFocus);
     m_sidebar->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_sidebar->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_sidebar->setItemDelegate(new SidebarDelegate(m_sidebar));
     sideLayout->addWidget(m_sidebar, 1);
 
     auto *userCard = new QFrame(sideFrame);
@@ -187,6 +231,9 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     m_scan->addAction(Theme::icon(Theme::Icon::Search, Theme::colors().muted, 18), QLineEdit::LeadingPosition);
     header->addWidget(m_scan);
     contentLayout->addLayout(header);
+    // Сколько пар лежит на складах: на виду на любой странице.
+    m_stockBar = new StockBar(content);
+    contentLayout->addWidget(m_stockBar);
     connect(m_scan, &QLineEdit::returnPressed, this, &MainWindow::scanEntered);
     // Подсказки по мере ввода (часть артикула, названия, штрихкода): выбранный товар открывается карточкой.
     auto *scanSuggest = new ProductSuggest(m_scan, this);
@@ -218,7 +265,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     m_documentsTab = new DocumentsTab(this);
     m_ordersTab = new OrdersTab(this);
 
-    addPage(tr("Товары"), Theme::Icon::Products, m_productsTab);
+    addPage(tr("Товары"), Theme::Icon::Products, m_productsTab, tr("СКЛАД"));
     addPage(tr("Склады"), Theme::Icon::Warehouses, m_warehousesTab);
     addPage(tr("Остатки и движения"), Theme::Icon::Stock, m_stockTab);
     if (canEdit)
@@ -228,7 +275,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     addPage(canEdit ? tr("Импорт") : tr("Экспорт"), Theme::Icon::Import, m_importTab);
     if (canEdit) {
         // Яндекс Маркет (ключи кабинетов, отправка остатков) и заказы - только для тех, кто может редактировать.
-        addPage(tr("Яндекс Маркет"), Theme::Icon::Market, m_marketTab);
+        addPage(tr("Яндекс Маркет"), Theme::Icon::Market, m_marketTab, tr("МАРКЕТПЛЕЙС"));
         addPage(tr("Карточки Маркета"), Theme::Icon::Cards, m_cardsTab);
         addPage(tr("Заказы Маркета"), Theme::Icon::Orders, m_ordersTab);
         // Свои цены и скидки для сайта магазина (проект web): не зависят от цены склада.
@@ -236,7 +283,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         addPage(tr("Цены сайта"), Theme::Icon::Tag, m_sitePricesTab);
         // Коды маркировки «Честного знака»: только в программе, на сайте этой страницы нет.
         m_markingTab = new MarkingTab(this);
-        addPage(tr("Честный знак"), Theme::Icon::Marking, m_markingTab);
+        addPage(tr("Честный знак"), Theme::Icon::Marking, m_markingTab, tr("МАРКИРОВКА"));
         // Автообновление остатков по расписанию и значок в трее, пока оно включено.
         m_autoSync = new MarketAutoSync(this);
         m_marketTab->setAutoSync(m_autoSync);
@@ -261,12 +308,12 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     });
     if (isAdmin) {
         m_usersTab = new UsersTab(username, this);
-        addPage(tr("Пользователи"), Theme::Icon::Users, m_usersTab);
+        addPage(tr("Пользователи"), Theme::Icon::Users, m_usersTab, tr("СИСТЕМА"));
     }
     // Обновления программы - у всех: новая версия ставится на этот компьютер.
     m_updater = new Updater(this);
     m_updatesTab = new UpdatesTab(m_updater, this);
-    addPage(tr("Обновления"), Theme::Icon::Update, m_updatesTab);
+    addPage(tr("Обновления"), Theme::Icon::Update, m_updatesTab, tr("СИСТЕМА"));
     m_updatesItem = m_sidebar->item(m_sidebar->count() - 1);
     connect(m_updatesTab, &UpdatesTab::installRequested, this, &MainWindow::installUpdate);
     connect(m_updater, &Updater::checkFinished, this, [this](bool ok, const QString &) { updateChecked(ok); });
@@ -326,20 +373,31 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     m_sidebar->setCurrentRow(0);
     // Окно сначала рисуется, и только потом подгружается список товаров.
     QTimer::singleShot(0, this, [this]() { ensureLoaded(m_pages->currentWidget()); });
+    // Остатки правят и с других компьютеров: сводку «пар на складах» перечитываем раз в полминуты.
+    auto *stockTimer = new QTimer(this);
+    stockTimer->setInterval(30000);
+    connect(stockTimer, &QTimer::timeout, m_stockBar, &StockBar::refresh);
+    stockTimer->start();
     setupUpdates();
 }
 
-void MainWindow::addPage(const QString &title, Theme::Icon icon, QWidget *page)
+void MainWindow::addPage(const QString &title, Theme::Icon icon, QWidget *page, const QString &group)
 {
     // Значок бледный, а у выбранного раздела - белый.
     QIcon ic;
-    const QPixmap normal = Theme::icon(icon, QColor("#9aa6c4"), 20).pixmap(QSize(20, 20));
+    const QPixmap normal = Theme::icon(icon, QColor("#8f9bb5"), 20).pixmap(QSize(20, 20));
     const QPixmap selected = Theme::icon(icon, QColor("#ffffff"), 20).pixmap(QSize(20, 20));
     ic.addPixmap(normal, QIcon::Normal, QIcon::Off);
     ic.addPixmap(selected, QIcon::Selected, QIcon::Off);
     ic.addPixmap(selected, QIcon::Active, QIcon::Off);
     auto *item = new QListWidgetItem(ic, title, m_sidebar);
-    item->setSizeHint(QSize(0, 42));
+    // Подпись группы - только у первого раздела группы; её рисует SidebarDelegate над самим разделом.
+    const bool newGroup = !group.isEmpty() && group != m_lastGroup;
+    if (newGroup) {
+        item->setData(Qt::UserRole + 1, group);
+        m_lastGroup = group;
+    }
+    item->setSizeHint(QSize(0, 40 + (newGroup ? SidebarDelegate::kCaptionHeight : 0)));
     m_pages->addWidget(page);
 }
 
@@ -361,6 +419,7 @@ void MainWindow::pageChanged(int row)
         return;
     }
     m_pages->setCurrentIndex(row);
+    QTimer::singleShot(0, m_stockBar, &StockBar::refresh); // после перерисовки страницы: сводка не задерживает переключение
     m_pageTitle->setText(m_sidebar->item(row)->text().remove(QStringLiteral("●")).trimmed()); // без значка «есть обновление»
     ensureLoaded(m_pages->widget(row));
 }
@@ -415,6 +474,8 @@ void MainWindow::ensureLoaded(QWidget *w)
 void MainWindow::markDirty(QWidget *w)
 {
     m_dirty.insert(w);
+    if (m_stockBar)
+        QTimer::singleShot(0, m_stockBar, &StockBar::refresh); // изменилось что-то, что может менять остатки
     if (m_pages->currentWidget() == w)
         ensureLoaded(w);
 }
