@@ -142,6 +142,7 @@ add_executable(inventory_manager
     src/documents.cpp
     src/documentstab.cpp
     src/xlsx.cpp
+    src/xls.cpp
     src/ordertab.cpp
     src/siteprices.cpp
     src/sitepricesdb.cpp

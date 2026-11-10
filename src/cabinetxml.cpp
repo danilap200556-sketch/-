@@ -1,5 +1,8 @@
 #include "cabinetxml.h"
 
+#include "xls.h"
+#include "xlsx.h"
+
 #include <QDir>
 #include <QMap>
 #include <QRandomGenerator>
@@ -241,16 +244,8 @@ QString checkIntro(const QStringList &codes, const IntroOptions &o)
     return {};
 }
 
-QList<QByteArray> introFiles(const QStringList &codes, const IntroOptions &o, QString *error, int *skipped)
+QStringList introCodes(const QStringList &codes, int *skipped)
 {
-    if (skipped)
-        *skipped = 0;
-    const QString problem = checkIntro(codes, o);
-    if (!problem.isEmpty()) {
-        if (error)
-            *error = problem;
-        return {};
-    }
     QStringList kis;
     QSet<QString> seen;
     int bad = 0;
@@ -265,6 +260,112 @@ QList<QByteArray> introFiles(const QStringList &codes, const IntroOptions &o, QS
         seen.insert(ki);
         kis << ki;
     }
+    if (skipped)
+        *skipped = bad;
+    return kis;
+}
+
+QString introCodeWithBrackets(const QString &ki)
+{
+    static const QRegularExpression re(QStringLiteral("^01([0-9]{14})21(.+)$"));
+    const QRegularExpressionMatch m = re.match(ki);
+    return m.hasMatch() ? QStringLiteral("(01)%1(21)%2").arg(m.captured(1), m.captured(2)) : QString();
+}
+
+QString introFormatTitle(IntroFormat format)
+{
+    switch (format) {
+    case IntroFormat::Xls: return QStringLiteral("Excel .xls (как в шаблоне кабинета)");
+    case IntroFormat::Xlsx: return QStringLiteral("Excel .xlsx");
+    case IntroFormat::Xml: return QStringLiteral("XML (vvod_individuals)");
+    }
+    return {};
+}
+
+QString introFormatExtension(IntroFormat format)
+{
+    switch (format) {
+    case IntroFormat::Xls: return QStringLiteral("xls");
+    case IntroFormat::Xlsx: return QStringLiteral("xlsx");
+    case IntroFormat::Xml: break;
+    }
+    return QStringLiteral("xml");
+}
+
+bool writeIntroTables(const QString &directory, const QString &prefix, const QStringList &codes, IntroFormat format, bool brackets,
+                      QStringList *paths, QString *error, int *skipped)
+{
+    if (paths)
+        paths->clear();
+    if (skipped)
+        *skipped = 0;
+    auto fail = [error](const QString &text) {
+        if (error)
+            *error = text;
+        return false;
+    };
+    if (format == IntroFormat::Xml)
+        return fail(QStringLiteral("для XML используйте introFiles"));
+    int bad = 0;
+    QStringList kis = introCodes(codes, &bad);
+    if (skipped)
+        *skipped = bad;
+    if (kis.isEmpty())
+        return fail(codes.isEmpty() ? QStringLiteral("нет ни одного кода") : QStringLiteral("ни один из кодов не похож на код GS1 (01…21…)"));
+    if (brackets) {
+        for (QString &ki : kis)
+            ki = introCodeWithBrackets(ki);
+    }
+    const QString dir = trimmed(directory);
+    if (dir.isEmpty())
+        return fail(QStringLiteral("не выбрана папка для файлов"));
+    if (!QDir().mkpath(dir))
+        return fail(QStringLiteral("не удалось создать папку %1").arg(dir));
+
+    const int fileCount = (int(kis.size()) + kCodesPerIntroFile - 1) / kCodesPerIntroFile;
+    const QString extension = introFormatExtension(format);
+    const QString sheetName = QStringLiteral("Шаблон");
+    for (int i = 0; i < fileCount; ++i) {
+        const QStringList part = kis.mid(i * kCodesPerIntroFile, kCodesPerIntroFile);
+        const QString name = fileCount == 1 ? QStringLiteral("%1.%2").arg(prefix, extension)
+                                            : QStringLiteral("%1-%2.%3").arg(prefix).arg(i + 1).arg(extension);
+        const QString path = QDir(dir).filePath(name);
+        QString problem;
+        bool ok = false;
+        if (format == IntroFormat::Xls) {
+            ok = Xls::writeColumn(path, sheetName, part, &problem);
+        } else {
+            Xlsx::Sheet sheet;
+            sheet.name = sheetName;
+            sheet.header = false;
+            int longest = 0;
+            for (const QString &ki : part) {
+                sheet.rows.append(QStringList{ki});
+                longest = qMax(longest, int(ki.size()));
+            }
+            sheet.columnWidths = {qBound(12, longest + 3, 60)};
+            ok = Xlsx::write(path, {sheet}, &problem);
+        }
+        if (!ok)
+            return fail(QStringLiteral("не удалось записать файл %1: %2").arg(path, problem));
+        if (paths)
+            paths->append(path);
+    }
+    return true;
+}
+
+QList<QByteArray> introFiles(const QStringList &codes, const IntroOptions &o, QString *error, int *skipped)
+{
+    if (skipped)
+        *skipped = 0;
+    const QString problem = checkIntro(codes, o);
+    if (!problem.isEmpty()) {
+        if (error)
+            *error = problem;
+        return {};
+    }
+    int bad = 0;
+    const QStringList kis = introCodes(codes, &bad);
     if (skipped)
         *skipped = bad;
     if (kis.isEmpty()) {
@@ -300,7 +401,8 @@ QList<QByteArray> introFiles(const QStringList &codes, const IntroOptions &o, QS
     return files;
 }
 
-bool writeFiles(const QString &directory, const QString &prefix, const QList<QByteArray> &files, QStringList *paths, QString *error)
+bool writeFiles(const QString &directory, const QString &prefix, const QList<QByteArray> &files, QStringList *paths, QString *error,
+                const QString &extension)
 {
     if (paths)
         paths->clear();
@@ -316,7 +418,7 @@ bool writeFiles(const QString &directory, const QString &prefix, const QList<QBy
         return false;
     }
     for (int i = 0; i < files.size(); ++i) {
-        const QString name = files.size() == 1 ? QStringLiteral("%1.xml").arg(prefix) : QStringLiteral("%1-%2.xml").arg(prefix).arg(i + 1);
+        const QString name = files.size() == 1 ? QStringLiteral("%1.%2").arg(prefix, extension) : QStringLiteral("%1-%2.%3").arg(prefix).arg(i + 1).arg(extension);
         const QString path = QDir(dir).filePath(name);
         QSaveFile f(path);
         if (!f.open(QIODevice::WriteOnly) || f.write(files[i]) != files[i].size() || !f.commit()) {

@@ -46,7 +46,8 @@ private:
     QString m_error;
 };
 
-// «Ввод в оборот (XML)»: файл vvod_individuals (action_id 5.3) со списком кодов идентификации, ИНН участника и датой.
+// «Ввод в оборот»: список кодов идентификации для личного кабинета - Excel по шаблону кабинета (.xls, один столбец) или .xlsx,
+// либо XML vvod_individuals (action_id 5.3) с ИНН участника и датой.
 class CabinetIntroXmlDialog : public QDialog
 {
     Q_OBJECT
@@ -56,20 +57,25 @@ public:
     void setInn(const QString &inn);
     void setDate(const QDate &date);
     void setDirectory(const QString &directory);
+    void setFormat(CabinetXml::IntroFormat format);
+    void setBrackets(bool brackets);
+    CabinetXml::IntroFormat format() const;
     int exportFiles();
     QStringList files() const { return m_files; }
     QString lastError() const { return m_error; }
     QString stateText() const;
 
 private:
-    void refreshSummary();
+    void formatChanged();
     void chooseDirectory();
     void openDirectory();
 
     QStringList m_codes;
     QLineEdit *m_inn = nullptr, *m_dir = nullptr;
     QDateEdit *m_date = nullptr;
-    QLabel *m_summary = nullptr, *m_state = nullptr;
+    QComboBox *m_format = nullptr;
+    QCheckBox *m_brackets = nullptr;
+    QLabel *m_summary = nullptr, *m_state = nullptr, *m_hint = nullptr;
     QPushButton *m_openBtn = nullptr;
     QStringList m_files;
     QString m_error;

@@ -23,6 +23,7 @@ struct Sheet {
     QVector<QStringList> rows;   // первая строка - заголовки (жирным)
     QList<int> numericColumns;   // колонки, которые пишутся числами
     QList<int> columnWidths;     // ширина колонок в символах (необязательно)
+    bool header = true;          // false - обычный список: первая строка без выделения, без закрепления и фильтра
 };
 
 bool write(const QString &path, const QList<Sheet> &sheets, QString *error = nullptr);

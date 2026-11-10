@@ -3,6 +3,7 @@
 #include "appsettings.h"
 
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDateEdit>
 #include <QDateTime>
@@ -24,6 +25,8 @@
 namespace {
 
 const char kDirKey[] = "cz/xmlDir";
+const char kFormatKey[] = "cz/introFormat";
+const char kBracketsKey[] = "cz/introBrackets";
 
 QString defaultDirectory()
 {
@@ -285,24 +288,33 @@ CabinetIntroXmlDialog::CabinetIntroXmlDialog(const QStringList &codes, const QSt
     : QDialog(parent)
     , m_codes(codes)
 {
-    setWindowTitle(tr("XML «Ввод в оборот» для личного кабинета"));
-    resize(640, 420);
+    setWindowTitle(tr("«Ввод в оборот» для личного кабинета"));
+    resize(660, 460);
     auto *l = new QVBoxLayout(this);
-    l->addWidget(wrapped(tr("Файл документа <b>vvod_individuals</b> (action_id 5.3) со списком кодов идентификации (КИ - «01…21…», без криптохвоста). "
-                            "Загрузите его в личном кабинете и подпишите там. Вводите в оборот коды, которые уже нанесены на товар."),
+    l->addWidget(wrapped(tr("Список кодов идентификации (КИ - «01…21…», без криптохвоста) для личного кабинета. Загрузите файл в кабинете и подпишите там. "
+                            "Вводите в оборот коды, которые уже нанесены на товар."),
                          this));
-    l->addWidget(wrapped(tr("Формат повторяет присланный образец документа; XSD-схемы этого документа у нас нет, поэтому сначала загрузите в кабинет файл "
-                            "с одним-двумя кодами: если кабинет ответит ошибкой, пришлите её текст - формат подправим."),
-                         this, true));
     auto *form = new QFormLayout();
+    m_format = new QComboBox(this);
+    for (CabinetXml::IntroFormat f : {CabinetXml::IntroFormat::Xls, CabinetXml::IntroFormat::Xlsx, CabinetXml::IntroFormat::Xml})
+        m_format->addItem(CabinetXml::introFormatTitle(f), int(f));
+    const int savedFormat = QSettings().value(QString::fromLatin1(kFormatKey), int(CabinetXml::IntroFormat::Xls)).toInt();
+    const int formatIndex = m_format->findData(savedFormat);
+    m_format->setCurrentIndex(formatIndex >= 0 ? formatIndex : 0);
+    m_brackets = new QCheckBox(tr("Записывать коды со скобками: (01)…(21)…"), this);
+    m_brackets->setChecked(QSettings().value(QString::fromLatin1(kBracketsKey), false).toBool());
     m_inn = new QLineEdit(AppSettings::get(QStringLiteral("cz_inn")), this);
     m_inn->setPlaceholderText(tr("ИНН участника оборота: 10 или 12 цифр"));
     m_date = new QDateEdit(QDate::currentDate(), this);
     m_date->setCalendarPopup(true);
     m_date->setDisplayFormat(QStringLiteral("dd.MM.yyyy"));
+    form->addRow(tr("Формат файла:"), m_format);
+    form->addRow(QString(), m_brackets);
     form->addRow(tr("ИНН участника:"), m_inn);
     form->addRow(tr("Дата ввода в оборот:"), m_date);
     l->addLayout(form);
+    m_hint = wrapped(QString(), this, true);
+    l->addWidget(m_hint);
 
     auto *dirRow = new QHBoxLayout();
     m_dir = new QLineEdit(defaultDirectory(), this);
@@ -331,26 +343,51 @@ CabinetIntroXmlDialog::CabinetIntroXmlDialog(const QStringList &codes, const QSt
         b->setAutoDefault(false);
 
     // Источник и число кодов
-    QSet<QString> unique;
     int bad = 0;
-    for (const QString &c : m_codes) {
-        const QString ki = CabinetXml::identificationCode(c);
-        if (ki.isEmpty())
-            ++bad;
-        else
-            unique.insert(ki);
-    }
+    const int unique = int(CabinetXml::introCodes(m_codes, &bad).size());
     m_summary->setText(tr("%1: кодов идентификации <b>%2</b> (повторы убраны)%3. Файлов: <b>%4</b> (не больше %5 кодов в файле).")
                            .arg(source.toHtmlEscaped())
-                           .arg(unique.size())
+                           .arg(unique)
                            .arg(bad > 0 ? tr(", не похожих на код GS1 пропущено: %1").arg(bad) : QString())
-                           .arg((unique.size() + CabinetXml::kCodesPerIntroFile - 1) / CabinetXml::kCodesPerIntroFile)
+                           .arg((unique + CabinetXml::kCodesPerIntroFile - 1) / CabinetXml::kCodesPerIntroFile)
                            .arg(CabinetXml::kCodesPerIntroFile));
 
+    connect(m_format, &QComboBox::currentIndexChanged, this, [this]() { formatChanged(); });
     connect(browse, &QPushButton::clicked, this, [this]() { chooseDirectory(); });
     connect(save, &QPushButton::clicked, this, [this]() { exportFiles(); });
     connect(m_openBtn, &QPushButton::clicked, this, [this]() { openDirectory(); });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    formatChanged();
+}
+
+CabinetXml::IntroFormat CabinetIntroXmlDialog::format() const
+{
+    return CabinetXml::IntroFormat(m_format->currentData().toInt());
+}
+
+void CabinetIntroXmlDialog::setFormat(CabinetXml::IntroFormat format)
+{
+    const int index = m_format->findData(int(format));
+    if (index >= 0)
+        m_format->setCurrentIndex(index);
+}
+
+void CabinetIntroXmlDialog::setBrackets(bool brackets) { m_brackets->setChecked(brackets); }
+
+// Для Excel ИНН и дату указывают уже в кабинете при загрузке списка; они нужны только внутри XML.
+void CabinetIntroXmlDialog::formatChanged()
+{
+    const bool xml = format() == CabinetXml::IntroFormat::Xml;
+    m_inn->setEnabled(xml);
+    m_date->setEnabled(xml);
+    m_brackets->setEnabled(!xml);
+    if (xml) {
+        m_hint->setText(tr("Файл документа vvod_individuals (action_id 5.3) с ИНН и датой. Формат повторяет присланный образец; XSD-схемы этого документа у нас нет, "
+                           "поэтому сначала загрузите в кабинет файл с одним-двумя кодами: если кабинет ответит ошибкой, пришлите её текст - формат подправим."));
+    } else {
+        m_hint->setText(tr("Один лист, столбец A, по одному коду в строке, без заголовка - как в шаблоне кабинета. "
+                           "ИНН и дату ввода в оборот укажите в кабинете при загрузке файла. Если кабинет не принимает .xls, сохраните в .xlsx."));
+    }
 }
 
 void CabinetIntroXmlDialog::setInn(const QString &inn) { m_inn->setText(inn); }
@@ -374,22 +411,29 @@ int CabinetIntroXmlDialog::exportFiles()
 {
     m_files.clear();
     m_error.clear();
-    CabinetXml::IntroOptions o;
-    o.inn = m_inn->text().trimmed();
-    o.date = m_date->date();
-    int skipped = 0;
-    const QList<QByteArray> xml = CabinetXml::introFiles(m_codes, o, &m_error, &skipped);
-    if (xml.isEmpty()) {
-        m_state->setText(QStringLiteral("<span style=\"color:#c0392b\">") + tr("Файлы не сохранены: %1.").arg(m_error.toHtmlEscaped()) + QStringLiteral("</span>"));
-        return 0;
-    }
-    if (!CabinetXml::writeFiles(m_dir->text(), QStringLiteral("vvod-v-oborot-%1").arg(stamp()), xml, &m_files, &m_error)) {
+    const CabinetXml::IntroFormat fmt = format();
+    const QString prefix = QStringLiteral("vvod-v-oborot-%1").arg(stamp());
+    auto failed = [this]() {
         m_state->setText(QStringLiteral("<span style=\"color:#c0392b\">") + tr("Файлы не сохранены: %1.").arg(m_error.toHtmlEscaped()) + QStringLiteral("</span>"));
         m_files.clear();
         return 0;
+    };
+    if (fmt == CabinetXml::IntroFormat::Xml) {
+        CabinetXml::IntroOptions o;
+        o.inn = m_inn->text().trimmed();
+        o.date = m_date->date();
+        int skipped = 0;
+        const QList<QByteArray> xml = CabinetXml::introFiles(m_codes, o, &m_error, &skipped);
+        if (xml.isEmpty() || !CabinetXml::writeFiles(m_dir->text(), prefix, xml, &m_files, &m_error))
+            return failed();
+        AppSettings::set(QStringLiteral("cz_inn"), o.inn);
+    } else if (!CabinetXml::writeIntroTables(m_dir->text(), prefix, m_codes, fmt, m_brackets->isChecked(), &m_files, &m_error)) {
+        return failed();
     }
-    AppSettings::set(QStringLiteral("cz_inn"), o.inn);
-    QSettings().setValue(QString::fromLatin1(kDirKey), m_dir->text().trimmed());
+    QSettings settings;
+    settings.setValue(QString::fromLatin1(kDirKey), m_dir->text().trimmed());
+    settings.setValue(QString::fromLatin1(kFormatKey), int(fmt));
+    settings.setValue(QString::fromLatin1(kBracketsKey), m_brackets->isChecked());
     m_state->setText(tr("Сохранено файлов: <b>%1</b> в папку %2. Загрузите их в личном кабинете и подпишите там.").arg(m_files.size()).arg(m_dir->text().toHtmlEscaped()));
     m_openBtn->setEnabled(true);
     return m_files.size();

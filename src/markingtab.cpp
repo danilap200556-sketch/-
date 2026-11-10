@@ -384,7 +384,7 @@ MarkingTab::MarkingTab(QWidget *parent)
     auto *fileBtn = new QPushButton(tr("Из файла..."), this);
     auto *orderBtn = new QPushButton(tr("Заказать в СУЗ..."), this);
     auto *printBtn = new QPushButton(tr("Печать на термоэтикетке..."), this);
-    auto *introBtn = new QPushButton(tr("Ввод в оборот (XML)..."), this);
+    auto *introBtn = new QPushButton(tr("Ввод в оборот (Excel/XML)..."), this);
     introBtn->setToolTip(tr("Сохранить выделенные коды (или все в списке) файлом «Ввод в оборот» для загрузки в личный кабинет «Честного знака»"));
     auto *selNewBtn = new QPushButton(tr("Выделить новые"), this);
     auto *linkBtn = new QPushButton(tr("Привязать к товару..."), this);

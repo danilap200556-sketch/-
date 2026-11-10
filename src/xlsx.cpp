@@ -271,9 +271,10 @@ bool write(const QString &path, const QList<Sheet> &sheets, QString *error)
 
         QString xml = QStringLiteral(
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
-            "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
-            "<sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"1\" topLeftCell=\"A2\" "
-            "activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews>");
+            "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">");
+        xml += sheet.header ? QStringLiteral("<sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"1\" topLeftCell=\"A2\" "
+                                             "activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews>")
+                            : QStringLiteral("<sheetViews><sheetView workbookViewId=\"0\"/></sheetViews>");
         if (!sheet.columnWidths.isEmpty()) {
             xml += QStringLiteral("<cols>");
             for (int c = 0; c < sheet.columnWidths.size(); ++c)
@@ -289,9 +290,9 @@ bool write(const QString &path, const QList<Sheet> &sheets, QString *error)
                 if (cells[c].isEmpty())
                     continue;
                 const QString ref = columnLetters(c) + QString::number(r + 1);
-                const QString style = r == 0 ? QStringLiteral(" s=\"1\"") : QString();
+                const QString style = (r == 0 && sheet.header) ? QStringLiteral(" s=\"1\"") : QString();
                 bool isNumber = false;
-                if (r > 0 && sheet.numericColumns.contains(c))
+                if ((r > 0 || !sheet.header) && sheet.numericColumns.contains(c))
                     cells[c].toDouble(&isNumber);
                 if (isNumber)
                     xml += QStringLiteral("<c r=\"%1\"%2><v>%3</v></c>").arg(ref, style, cells[c]);
@@ -302,7 +303,7 @@ bool write(const QString &path, const QList<Sheet> &sheets, QString *error)
             xml += QStringLiteral("</row>");
         }
         xml += QStringLiteral("</sheetData>");
-        if (sheet.rows.size() > 1 && maxCols > 0)
+        if (sheet.header && sheet.rows.size() > 1 && maxCols > 0)
             xml += QStringLiteral("<autoFilter ref=\"A1:%1%2\"/>").arg(columnLetters(maxCols - 1)).arg(sheet.rows.size());
         xml += QStringLiteral("</worksheet>");
         zip.addFile(QStringLiteral("xl/worksheets/sheet%1.xml").arg(n), xml.toUtf8());
