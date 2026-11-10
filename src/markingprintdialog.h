@@ -31,6 +31,7 @@ public:
     int count() const { return m_rows.size(); }
     int skippedNoTail() const { return m_skippedNoTail; } // коды без криптохвоста, исключённые из печати
     bool printed() const { return m_printed; }
+    int printedCount() const { return m_printedNow; } // сколько кодов отмечено напечатанными этим окном
     ThermalLabel::Settings currentSettings() const;
     // Шаблон и поля (для проверок и настройки без окна): cabinet - «как в кабинете»; поле пусто - берётся из карточки товара.
     void setCabinetTemplate(bool cabinet);
@@ -49,9 +50,15 @@ private slots:
 private:
     ThermalLabel::MarkingLabel labelFor(int row) const;
     bool doPrint(const QString &pdfPath, bool markPrinted, QString *error);
+    // Печать в фоновом потоке с окном прогресса и отменой: окно программы не зависает, пока драйвер принтера принимает задание.
+    void startPrint(const QString &pdfPath, bool markPrinted);
+    void showStatus(const QString &text, bool error);
     int alreadyPrinted() const;
 
     QList<MarkingCode::Row> m_rows;
+    QLabel *m_status = nullptr;
+    bool m_busy = false;
+    int m_printedNow = 0;
     QHash<int, ProductMarketInfo> m_info; // карточки товаров (бренд, страны, вид товара)
     QComboBox *m_template;
     QComboBox *m_font;

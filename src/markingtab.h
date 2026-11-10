@@ -38,6 +38,7 @@ private slots:
 private:
     QList<int> selectedIds() const;
     void reload();
+    void showNotice(const QString &text);
     void showAddResult(const MarkingCode::AddResult &result);
 
     QTableWidget *m_table;
@@ -45,6 +46,7 @@ private:
     QLineEdit *m_search;
     QLineEdit *m_scan;
     QLabel *m_counts;
+    QLabel *m_notice = nullptr; // сообщение без модального окна: «напечатано N этикеток»
     QLabel *m_hint;
     QTimer *m_searchTimer;
 };

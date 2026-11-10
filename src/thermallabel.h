@@ -61,8 +61,12 @@ QImage renderMarking(const MarkingLabel &label, const Settings &s, int dpi = 203
 
 // Печатает count этикеток: страница i рисуется функцией render(i, dpi). Возвращает false и причину в *error, если принтер
 // не принял задание. Если задана переменная окружения INVENTORY_PRINT_PDF, вместо принтера пишется PDF (для проверок).
+// progress(сделано, всего) вызывается перед каждой страницей; false - прервать печать (задание отменяется). Каждый этап
+// (принтер, разрешение, страницы, конец) пишется в журнал inventory_manager.log: если печать зависнет, по нему видно, где.
+// Разрешение выше 600 dpi (бывает у драйверов термопринтеров) понижается до поддерживаемого не выше 600: этикетка в 1200 dpi - это
+// десятки мегабайт на каждые сто штук, а чётче код не становится.
 bool printPages(const Settings &s, int count, const std::function<QImage(int index, int dpi)> &render, QString *error = nullptr,
-                const QString &pdfPath = QString());
+                const QString &pdfPath = QString(), const std::function<bool(int done, int total)> &progress = {});
 
 // Переносит текст по словам в строки шириной не больше maxWidth (в пикселях шрифта fm), не больше maxLines строк;
 // последняя строка при нехватке места заканчивается многоточием.

@@ -398,6 +398,11 @@ MarkingTab::MarkingTab(QWidget *parent)
 
     m_counts = new QLabel(this);
     layout->addWidget(m_counts);
+    m_notice = new QLabel(this);
+    m_notice->setObjectName(QStringLiteral("noticeBanner"));
+    m_notice->setWordWrap(true);
+    m_notice->setVisible(false);
+    layout->addWidget(m_notice);
 
     m_table = new QTableWidget(0, ColCount, this);
     m_table->setHorizontalHeaderLabels({tr("Статус"), tr("Артикул"), tr("Название"), tr("GTIN"), tr("Серийный номер"), tr("Код"), tr("Источник"), tr("Печатей"), tr("Создан")});
@@ -609,8 +614,22 @@ void MarkingTab::print()
     }
     MarkingPrintDialog dlg(ids, this);
     dlg.exec();
+    const int printed = dlg.printedCount();
     reload();
     emit codesChanged();
+    // Без модального окна: после работы драйвера принтера окно сообщения могло оказаться позади программы и блокировать её.
+    if (printed > 0)
+        showNotice(tr("Напечатано этикеток: %1. Коды отмечены напечатанными.").arg(printed));
+}
+
+void MarkingTab::showNotice(const QString &text)
+{
+    m_notice->setText(text);
+    m_notice->setVisible(!text.isEmpty());
+    QTimer::singleShot(20000, m_notice, [this, text]() {
+        if (m_notice->text() == text)
+            m_notice->setVisible(false);
+    });
 }
 
 // Коды идентификации (КИ) выделенных строк (или всех в списке, если ничего не выделено) - файлом «Ввод в оборот» для кабинета.

@@ -1,5 +1,7 @@
 #include "thermallabel.h"
 
+#include "applog.h"
+
 #include "barcode.h"
 #include "datamatrix.h"
 #include "labelfonts.h"
@@ -10,6 +12,7 @@
 #include <QPageLayout>
 #include <QPageSize>
 #include <QPainter>
+#include <QElapsedTimer>
 #include <QPrinter>
 #include <QPrinterInfo>
 #include <QRegularExpression>
@@ -679,15 +682,19 @@ QImage renderMarking(const MarkingLabel &label, const Settings &s, int dpi, bool
     return monochrome ? img.convertToFormat(QImage::Format_Mono, Qt::ThresholdDither | Qt::MonoOnly) : img;
 }
 
-bool printPages(const Settings &s, int count, const std::function<QImage(int, int)> &render, QString *error, const QString &pdfPath)
+bool printPages(const Settings &s, int count, const std::function<QImage(int, int)> &render, QString *error, const QString &pdfPath,
+                const std::function<bool(int, int)> &progress)
 {
     auto fail = [&](const QString &text) {
+        AppLog::write(QStringLiteral("Печать"), QStringLiteral("ошибка: %1").arg(text));
         if (error)
             *error = text;
         return false;
     };
     if (count <= 0)
         return fail(QObject::tr("Нечего печатать"));
+    QElapsedTimer clock;
+    clock.start();
     const QString pdf = !pdfPath.isEmpty() ? pdfPath : qEnvironmentVariable("INVENTORY_PRINT_PDF");
     QPrinter printer(pdf.isEmpty() ? QPrinter::HighResolution : QPrinter::ScreenResolution);
     if (!pdf.isEmpty()) {
@@ -703,7 +710,19 @@ bool printPages(const Settings &s, int count, const std::function<QImage(int, in
         if (!QPrinterInfo::availablePrinterNames().contains(name))
             return fail(QObject::tr("Принтер «%1» не найден в системе.").arg(name));
         printer.setPrinterName(name);
+        // Слишком высокое разрешение драйвера (1200 dpi и больше) раздувает задание в десятки раз: берём поддерживаемое не выше 600.
+        if (printer.resolution() > 600) {
+            int best = 0;
+            for (int r : printer.supportedResolutions())
+                if (r <= 600 && r > best)
+                    best = r;
+            if (best > 0)
+                printer.setResolution(best);
+        }
     }
+    AppLog::write(QStringLiteral("Печать"), QStringLiteral("начало: %1 этикеток, принтер «%2», %3 dpi, бумага %4x%5 мм%6")
+                                                .arg(count).arg(pdf.isEmpty() ? printer.printerName() : QStringLiteral("PDF")).arg(printer.resolution())
+                                                .arg(s.rotate ? s.heightMm : s.widthMm).arg(s.rotate ? s.widthMm : s.heightMm).arg(s.rotate ? QStringLiteral(", повёрнуто") : QString()));
     // Бумага: ширина x длина этикетки. «Повернуть на 90°» меняет их местами и поворачивает рисунок.
     const double pageW = s.rotate ? s.heightMm : s.widthMm;
     const double pageH = s.rotate ? s.widthMm : s.heightMm;
@@ -715,7 +734,13 @@ bool printPages(const Settings &s, int count, const std::function<QImage(int, in
     QPainter painter;
     if (!painter.begin(&printer))
         return fail(QObject::tr("Не удалось начать печать: принтер недоступен или занят."));
+    AppLog::write(QStringLiteral("Печать"), QStringLiteral("принтер принял задание за %1 мс").arg(clock.elapsed()));
     for (int i = 0; i < count; ++i) {
+        if (progress && !progress(i, count)) {
+            printer.abort();
+            painter.end();
+            return fail(QObject::tr("Печать отменена."));
+        }
         QImage img = render(i, dpi);
         if (s.rotate)
             img = img.transformed(QTransform().rotate(90));
@@ -725,7 +750,11 @@ bool printPages(const Settings &s, int count, const std::function<QImage(int, in
         }
         painter.drawImage(QPoint(0, 0), img);
     }
-    painter.end();
+    if (progress)
+        progress(count, count);
+    AppLog::write(QStringLiteral("Печать"), QStringLiteral("страницы нарисованы за %1 мс, закрываю задание").arg(clock.elapsed()));
+    painter.end(); // здесь драйвер может долго принимать задание: поэтому печать идёт в фоновом потоке
+    AppLog::write(QStringLiteral("Печать"), QStringLiteral("готово: %1 этикеток за %2 мс").arg(count).arg(clock.elapsed()));
     return true;
 }
 

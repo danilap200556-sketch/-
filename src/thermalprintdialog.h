@@ -54,6 +54,9 @@ private:
     void reloadCodes();
     void updateSummary();
     bool doPrint(const QString &pdfPath, QString *error);
+    // Печать в фоновом потоке с окном прогресса и отменой: окно программы не зависает, пока драйвер принтера принимает задание.
+    void startPrint(const QString &pdfPath);
+    void showStatus(const QString &text, bool error);
 
     QTableWidget *m_table;
     QDoubleSpinBox *m_width;
@@ -66,6 +69,8 @@ private:
     QComboBox *m_stockWarehouse;
     QLabel *m_preview;
     QLabel *m_summary;
+    QLabel *m_status = nullptr;
+    bool m_busy = false;
     QPushButton *m_printBtn;
     QPushButton *m_ownBtn;
 

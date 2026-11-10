@@ -414,6 +414,12 @@ QByteArray connInfo(const ServerConfig &config)
             conninfo += QLatin1String(" sslnegotiation=postgres");
     }
     conninfo += QLatin1String(" connect_timeout=20");
+    // Соединение живёт часами и подолгу простаивает (например, пока идёт печать). Облачная база или маршрутизатор молча закрывают такое
+    // соединение, и следующий запрос раньше «висел» до таймаута системы (минуты, на Windows - иногда бесконечно для окна программы).
+    // Проверка соединения раз в полминуты и предел ожидания подтверждения обрывают такое зависание за десятки секунд, а не минуты.
+    conninfo += QLatin1String(" keepalives=1 keepalives_idle=30 keepalives_interval=10 keepalives_count=3");
+    if (PQlibVersion() >= 120000)
+        conninfo += QLatin1String(" tcp_user_timeout=30000");
     return conninfo.toUtf8();
 }
 
@@ -518,7 +524,7 @@ bool tryConnectViaQtDriver(const ServerConfig &config, QString *error)
     db.setUserName(config.user);
     db.setPassword(config.password);
     if (config.useSsl)
-        db.setConnectOptions("sslmode=require;sslnegotiation=postgres;connect_timeout=20");
+        db.setConnectOptions("sslmode=require;sslnegotiation=postgres;connect_timeout=20;keepalives=1;keepalives_idle=30;keepalives_interval=10;keepalives_count=3");
 
     if (!db.open()) {
         if (error)
@@ -641,7 +647,7 @@ bool Database::testConnection(const ServerConfig &config, QString *error)
         db.setUserName(config.user);
         db.setPassword(config.password);
         if (config.useSsl)
-            db.setConnectOptions("sslmode=require;sslnegotiation=postgres;connect_timeout=20");
+            db.setConnectOptions("sslmode=require;sslnegotiation=postgres;connect_timeout=20;keepalives=1;keepalives_idle=30;keepalives_interval=10;keepalives_count=3");
         ok = db.open();
         if (!ok && error)
             *error = db.lastError().text();

@@ -1,5 +1,8 @@
 #include "markingprintdialog.h"
 
+#include "applog.h"
+#include "printjob.h"
+
 #include "labelfonts.h"
 #include "productmarket.h"
 
@@ -20,6 +23,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QStyle>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -197,6 +201,11 @@ MarkingPrintDialog::MarkingPrintDialog(const QList<int> &codeIds, QWidget *paren
     bottom->addWidget(printBtn);
     bottom->addWidget(pdfBtn);
     bottom->addWidget(closeBtn);
+    m_status = new QLabel(this);
+    m_status->setObjectName(QStringLiteral("printStatus"));
+    m_status->setWordWrap(true);
+    m_status->setVisible(false);
+    layout->addWidget(m_status);
     layout->addLayout(bottom);
     for (QPushButton *b : findChildren<QPushButton *>())
         b->setAutoDefault(false);
@@ -331,6 +340,59 @@ bool MarkingPrintDialog::printToPdf(const QString &path, bool markPrinted, QStri
     return doPrint(path, markPrinted, error);
 }
 
+void MarkingPrintDialog::showStatus(const QString &text, bool error)
+{
+    if (!m_status)
+        return;
+    m_status->setText(text);
+    m_status->setProperty("error", error);
+    m_status->style()->unpolish(m_status);
+    m_status->style()->polish(m_status);
+    m_status->setVisible(!text.isEmpty());
+}
+
+void MarkingPrintDialog::startPrint(const QString &pdfPath, bool markPrinted)
+{
+    if (m_busy || m_rows.isEmpty())
+        return;
+    const ThermalLabel::Settings s = currentSettings();
+    ThermalLabel::saveSettings(s);
+    // Всё нужное для рисования копируется заранее: фоновый поток не трогает виджеты и базу.
+    auto labels = std::make_shared<QList<ThermalLabel::MarkingLabel>>();
+    labels->reserve(m_rows.size());
+    for (int i = 0; i < m_rows.size(); ++i)
+        labels->append(labelFor(i));
+    QList<int> ids;
+    for (const MarkingCode::Row &r : std::as_const(m_rows))
+        ids << r.id;
+    showStatus(QString(), false);
+    m_busy = true;
+    ThermalLabel::printWithProgress(this, tr("Печать этикеток"), s, int(labels->size()), [labels, s](int index, int dpi) {
+        return ThermalLabel::renderMarking(labels->at(index), s, dpi, true);
+    }, pdfPath, [this, ids, markPrinted, pdfPath](bool ok, const QString &error, bool canceled) {
+        m_busy = false;
+        if (!ok) {
+            showStatus(canceled ? tr("%1 Коды не отмечены напечатанными.").arg(error) : tr("Печать не удалась: %1").arg(error), true);
+            return;
+        }
+        if (markPrinted) {
+            AppLog::write(QStringLiteral("Печать"), QStringLiteral("отмечаю коды напечатанными: %1").arg(ids.size()));
+            QString err;
+            if (!MarkingCode::markPrinted(ids, &err)) {
+                showStatus(tr("Напечатано, но отметить коды не удалось: %1").arg(err), true);
+                return;
+            }
+            AppLog::write(QStringLiteral("Печать"), QStringLiteral("коды отмечены"));
+            m_printed = true;
+            m_printedNow = ids.size();
+        }
+        if (pdfPath.isEmpty())
+            accept(); // сообщение об успехе покажет страница «Честный знак» без модального окна
+        else
+            showStatus(tr("Сохранено: %1").arg(pdfPath), false);
+    });
+}
+
 void MarkingPrintDialog::print()
 {
     if (m_rows.isEmpty())
@@ -341,13 +403,7 @@ void MarkingPrintDialog::print()
                                  tr("%1 из %2 кодов уже печатались. Код маркировки наклеивается на товар один раз - печатайте повторно только если этикетка "
                                     "испорчена. Напечатать?").arg(again).arg(m_rows.size())) != QMessageBox::Yes)
         return;
-    QString err;
-    if (!doPrint(QString(), true, &err)) {
-        QMessageBox::warning(this, tr("Печать"), err);
-        return;
-    }
-    QMessageBox::information(this, tr("Печать"), tr("Отправлено на печать: %1 этикеток. Коды отмечены напечатанными.").arg(m_rows.size()));
-    accept();
+    startPrint(QString(), true);
 }
 
 void MarkingPrintDialog::savePdf()
@@ -355,9 +411,5 @@ void MarkingPrintDialog::savePdf()
     const QString path = QFileDialog::getSaveFileName(this, tr("Сохранить этикетки в PDF"), QStringLiteral("marking-labels.pdf"), tr("PDF (*.pdf)"));
     if (path.isEmpty())
         return;
-    QString err;
-    if (!doPrint(path, false, &err))
-        QMessageBox::warning(this, tr("PDF"), err);
-    else
-        QMessageBox::information(this, tr("PDF"), tr("Сохранено: %1").arg(path));
+    startPrint(path, false);
 }

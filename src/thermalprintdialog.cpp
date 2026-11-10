@@ -1,5 +1,7 @@
 #include "thermalprintdialog.h"
 
+#include "printjob.h"
+
 #include "barcode.h"
 #include "database.h"
 #include "labelfonts.h"
@@ -19,6 +21,7 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QStyle>
 #include <QSqlQuery>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -140,6 +143,11 @@ ThermalPrintDialog::ThermalPrintDialog(const QList<Item> &items, QWidget *parent
     bottom->addWidget(m_printBtn);
     bottom->addWidget(pdfBtn);
     bottom->addWidget(closeBtn);
+    m_status = new QLabel(this);
+    m_status->setObjectName(QStringLiteral("printStatus"));
+    m_status->setWordWrap(true);
+    m_status->setVisible(false);
+    layout->addWidget(m_status);
     layout->addLayout(bottom);
     for (QPushButton *b : findChildren<QPushButton *>())
         b->setAutoDefault(false);
@@ -415,19 +423,68 @@ bool ThermalPrintDialog::doPrint(const QString &pdfPath, QString *error)
     }, error, pdfPath);
 }
 
+void ThermalPrintDialog::showStatus(const QString &text, bool error)
+{
+    if (!m_status)
+        return;
+    m_status->setText(text);
+    m_status->setProperty("error", error);
+    m_status->style()->unpolish(m_status);
+    m_status->style()->polish(m_status);
+    m_status->setVisible(!text.isEmpty());
+}
+
+void ThermalPrintDialog::startPrint(const QString &pdfPath)
+{
+    if (m_busy)
+        return;
+    // Страницы - по копиям каждого товара; одинаковые картинки не рисуем заново.
+    auto order = std::make_shared<QList<int>>();
+    auto labels = std::make_shared<QHash<int, ThermalLabel::Ean13Label>>(); // всё для рисования копируется заранее: фоновый поток не трогает виджеты
+    for (int r = 0; r < m_table->rowCount(); ++r) {
+        if (codeFor(r).isEmpty())
+            continue;
+        const int copies = qobject_cast<QSpinBox *>(m_table->cellWidget(r, ColCopies))->value();
+        if (copies > 0 && !labels->contains(r))
+            labels->insert(r, labelFor(r));
+        for (int i = 0; i < copies; ++i)
+            order->append(r);
+    }
+    const ThermalLabel::Settings s = currentSettings();
+    ThermalLabel::saveSettings(s);
+    const int total = int(order->size());
+    showStatus(QString(), false);
+    m_busy = true;
+    struct Cache {
+        QHash<int, QImage> images;
+        int dpi = 0;
+    };
+    auto cache = std::make_shared<Cache>();
+    ThermalLabel::printWithProgress(this, tr("Печать этикеток"), s, total, [order, labels, s, cache](int index, int dpi) {
+        if (dpi != cache->dpi) {
+            cache->images.clear();
+            cache->dpi = dpi;
+        }
+        const int row = order->at(index);
+        if (!cache->images.contains(row))
+            cache->images.insert(row, ThermalLabel::renderEan13(labels->value(row), s, dpi, true));
+        return cache->images.value(row);
+    }, pdfPath, [this, total, pdfPath](bool ok, const QString &error, bool canceled) {
+        m_busy = false;
+        if (!ok)
+            showStatus(canceled ? error : tr("Печать не удалась: %1").arg(error), true);
+        else if (pdfPath.isEmpty())
+            showStatus(tr("Отправлено на печать: этикеток %1.").arg(total), false);
+        else
+            showStatus(tr("Сохранено: %1 (по странице на каждую этикетку).").arg(pdfPath), false);
+    });
+}
+
 void ThermalPrintDialog::print()
 {
     if (!askAboutMissingCodes())
         return;
-    QString err;
-    setCursor(Qt::WaitCursor);
-    const bool ok = doPrint(QString(), &err);
-    unsetCursor();
-    if (!ok) {
-        QMessageBox::warning(this, tr("Печать"), err);
-        return;
-    }
-    QMessageBox::information(this, tr("Печать"), tr("Отправлено на печать: этикеток %1.").arg(totalLabels()));
+    startPrint(QString());
 }
 
 bool ThermalPrintDialog::printToPdf(const QString &path, QString *error)
@@ -442,9 +499,5 @@ void ThermalPrintDialog::savePdf()
     const QString path = QFileDialog::getSaveFileName(this, tr("Сохранить этикетки в PDF"), QStringLiteral("etiketki.pdf"), tr("PDF-документ (*.pdf)"));
     if (path.isEmpty())
         return;
-    QString err;
-    if (!doPrint(path, &err))
-        QMessageBox::warning(this, tr("PDF"), err);
-    else
-        QMessageBox::information(this, tr("PDF"), tr("Сохранено: %1 (по странице на каждую этикетку).").arg(path));
+    startPrint(path);
 }
