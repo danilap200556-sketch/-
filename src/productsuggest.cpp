@@ -57,7 +57,11 @@ void ProductSuggest::hidePopup()
 void ProductSuggest::searchNow()
 {
     m_timer.stop();
-    if (!m_edit->hasFocus() && !m_edit->isVisible()) {
+    // Список показывается только пока человек печатает в этой строке: строка видна и в фокусе, окно активно и его не перекрывает диалог.
+    // Раньше условие пропускало строку без фокуса, и список «выскакивал» поверх диалога или после его закрытия.
+    const QWidget *window = m_edit->window();
+    const QWidget *modal = QApplication::activeModalWidget();
+    if (!m_edit->isVisible() || !m_edit->hasFocus() || !window->isActiveWindow() || (modal && modal->window() != window)) {
         hidePopup();
         return;
     }
@@ -152,7 +156,8 @@ bool ProductSuggest::eventFilter(QObject *obj, QEvent *event)
             break;
         default: break;
         }
-    } else if (event->type() == QEvent::Move || event->type() == QEvent::WindowDeactivate || event->type() == QEvent::Hide) {
+    } else if (event->type() == QEvent::Move || event->type() == QEvent::WindowDeactivate || event->type() == QEvent::WindowBlocked
+               || event->type() == QEvent::Hide) {
         if (m_list->isVisible())
             hidePopup();
     }

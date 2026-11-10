@@ -1,6 +1,8 @@
 #include "theme.h"
 
 #include <QApplication>
+#include <QDialog>
+#include <QElapsedTimer>
 #include <QStyle>
 #include <QRegularExpression>
 #include <QPushButton>
@@ -250,6 +252,38 @@ private:
     }
 };
 
+// Подсказки (всплывающие окошки) не показываются первые полсекунды после закрытия диалога: курсор остаётся там, где была кнопка
+// «Закрыть», окно под ним оживает, и под курсором тут же вылезала подсказка какого-нибудь элемента.
+class PopupGuard : public QObject
+{
+public:
+    using QObject::QObject;
+    static constexpr int kQuietMs = 600;
+    bool eventFilter(QObject *o, QEvent *e) override
+    {
+        switch (e->type()) {
+        case QEvent::Hide:
+        case QEvent::Close:
+            if (auto *d = qobject_cast<QDialog *>(o); d && d->isWindow()) {
+                m_closed.restart();
+                m_seen = true;
+            }
+            break;
+        case QEvent::ToolTip:
+            if (m_seen && !m_closed.hasExpired(kQuietMs))
+                return true;
+            break;
+        default:
+            break;
+        }
+        return false;
+    }
+
+private:
+    QElapsedTimer m_closed;
+    bool m_seen = false;
+};
+
 } // namespace
 
 Mode saved()
@@ -269,6 +303,7 @@ void apply(Mode mode)
     if (!roles) {
         roles = new ButtonRoles(qApp);
         qApp->installEventFilter(roles);
+        qApp->installEventFilter(new PopupGuard(qApp));
     }
     g_mode = mode;
     g_colors = mode == Mode::Dark ? darkColors() : lightColors();

@@ -419,7 +419,7 @@ void MainWindow::pageChanged(int row)
         return;
     }
     m_pages->setCurrentIndex(row);
-    QTimer::singleShot(0, m_stockBar, &StockBar::refresh); // после перерисовки страницы: сводка не задерживает переключение
+    m_stockBar->scheduleRefresh(); // после перерисовки страницы: сводка не задерживает переключение
     m_pageTitle->setText(m_sidebar->item(row)->text().remove(QStringLiteral("●")).trimmed()); // без значка «есть обновление»
     ensureLoaded(m_pages->widget(row));
 }
@@ -475,7 +475,7 @@ void MainWindow::markDirty(QWidget *w)
 {
     m_dirty.insert(w);
     if (m_stockBar)
-        QTimer::singleShot(0, m_stockBar, &StockBar::refresh); // изменилось что-то, что может менять остатки
+        m_stockBar->scheduleRefresh(); // изменилось что-то, что может менять остатки
     if (m_pages->currentWidget() == w)
         ensureLoaded(w);
 }

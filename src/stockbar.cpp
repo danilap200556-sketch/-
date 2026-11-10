@@ -7,31 +7,14 @@
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QStyle>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace {
 
 constexpr int kMaxCards = 6;     // больше складов в полосе не помещается: остальные - в карточке «Ещё»
 constexpr int kNameChars = 24;
-
-QFrame *makeCard(QWidget *parent, const QString &caption, const QString &value, bool total, const QString &tip)
-{
-    auto *card = new QFrame(parent);
-    card->setObjectName(QStringLiteral("statCard"));
-    card->setProperty("total", total);
-    card->setMinimumWidth(total ? 150 : 128);
-    card->setToolTip(tip);
-    auto *l = new QVBoxLayout(card);
-    l->setContentsMargins(14, 8, 14, 8);
-    l->setSpacing(0);
-    auto *cap = new QLabel(caption, card);
-    cap->setObjectName(QStringLiteral("statCaption"));
-    auto *val = new QLabel(value, card);
-    val->setObjectName(QStringLiteral("statValue"));
-    l->addWidget(cap);
-    l->addWidget(val);
-    return card;
-}
 
 } // namespace
 
@@ -42,7 +25,28 @@ StockBar::StockBar(QWidget *parent)
     m_layout = new QHBoxLayout(this);
     m_layout->setContentsMargins(0, 0, 0, 0);
     m_layout->setSpacing(10);
+    m_layout->addStretch(1);
+    m_refreshTimer = new QTimer(this);
+    m_refreshTimer->setSingleShot(true);
+    m_refreshTimer->setInterval(250);
+    connect(m_refreshTimer, &QTimer::timeout, this, [this]() {
+        if (!m_refreshPending)
+            return;
+        m_refreshPending = false;
+        refresh();
+        m_refreshTimer->start();
+    });
     rebuild();
+}
+
+void StockBar::scheduleRefresh()
+{
+    if (m_refreshTimer->isActive()) {
+        m_refreshPending = true;
+        return;
+    }
+    m_refreshTimer->start();
+    QTimer::singleShot(0, this, &StockBar::refresh);
 }
 
 QString StockBar::pairsText(qint64 count)
@@ -103,30 +107,57 @@ void StockBar::setItems(const QList<Item> &items)
     rebuild();
 }
 
+void StockBar::setCard(int index, const QString &caption, const QString &value, bool total, const QString &tip)
+{
+    if (index >= m_cards.size()) {
+        Card c;
+        c.frame = new QFrame(this);
+        c.frame->setObjectName(QStringLiteral("statCard"));
+        auto *l = new QVBoxLayout(c.frame);
+        l->setContentsMargins(14, 8, 14, 8);
+        l->setSpacing(0);
+        c.caption = new QLabel(c.frame);
+        c.caption->setObjectName(QStringLiteral("statCaption"));
+        c.value = new QLabel(c.frame);
+        c.value->setObjectName(QStringLiteral("statValue"));
+        l->addWidget(c.caption);
+        l->addWidget(c.value);
+        m_layout->insertWidget(index, c.frame);
+        m_cards << c;
+    }
+    Card &c = m_cards[index];
+    if (c.frame->property("total").toBool() != total || !c.frame->property("total").isValid()) {
+        c.frame->setProperty("total", total);
+        c.frame->style()->unpolish(c.frame);
+        c.frame->style()->polish(c.frame);
+    }
+    c.frame->setMinimumWidth(total ? 150 : 128);
+    if (c.caption->text() != caption)
+        c.caption->setText(caption);
+    if (c.value->text() != value)
+        c.value->setText(value);
+    if (c.frame->toolTip() != tip)
+        c.frame->setToolTip(tip);
+}
+
 void StockBar::rebuild()
 {
-    while (QLayoutItem *li = m_layout->takeAt(0)) {
-        if (QWidget *w = li->widget()) {
-            w->setParent(nullptr); // сразу убираем из дерева виджетов, удаляется позже
-            w->deleteLater();
-        }
-        delete li;
-    }
     // Тонкий список для подсказки: каждый склад - число пар и сколько артикулов в наличии.
     QStringList lines;
     for (const Item &it : std::as_const(m_items))
         lines << QObject::tr("%1: %2 (артикулов в наличии: %3)").arg(it.name, pairsText(it.pairs)).arg(it.positions);
     const QString allTip = lines.isEmpty() ? QObject::tr("Складов пока нет") : lines.join(QLatin1Char('\n'));
 
-    m_layout->addWidget(makeCard(this, QObject::tr("ВСЕГО ПАР"), groupDigits(m_total), true, allTip));
+    int index = 0;
+    setCard(index++, QObject::tr("ВСЕГО ПАР"), groupDigits(m_total), true, allTip);
     const int shown = qMin(int(m_items.size()), m_items.size() > kMaxCards ? kMaxCards - 1 : kMaxCards);
     for (int i = 0; i < shown; ++i) {
         const Item &it = m_items.at(i);
         QString name = it.name;
         if (name.size() > kNameChars)
             name = name.left(kNameChars - 1) + QChar(0x2026);
-        m_layout->addWidget(makeCard(this, name, groupDigits(it.pairs), false,
-                                     QObject::tr("%1: %2\nАртикулов в наличии: %3").arg(it.name, pairsText(it.pairs)).arg(it.positions)));
+        setCard(index++, name, groupDigits(it.pairs), false,
+                QObject::tr("%1: %2\nАртикулов в наличии: %3").arg(it.name, pairsText(it.pairs)).arg(it.positions));
     }
     if (m_items.size() > shown) {
         qint64 restPairs = 0;
@@ -135,7 +166,13 @@ void StockBar::rebuild()
             restPairs += m_items[i].pairs;
             restLines << QObject::tr("%1: %2").arg(m_items[i].name, pairsText(m_items[i].pairs));
         }
-        m_layout->addWidget(makeCard(this, QObject::tr("Ещё складов: %1").arg(m_items.size() - shown), groupDigits(restPairs), false, restLines.join(QLatin1Char('\n'))));
+        setCard(index++, QObject::tr("Ещё складов: %1").arg(m_items.size() - shown), groupDigits(restPairs), false, restLines.join(QLatin1Char('\n')));
     }
-    m_layout->addStretch(1);
+    // Лишние карточки (складов стало меньше) убираем из полосы целиком: они остаются её дочерними и никогда не становятся отдельными окнами.
+    while (m_cards.size() > index) {
+        Card c = m_cards.takeLast();
+        m_layout->removeWidget(c.frame);
+        c.frame->hide();
+        c.frame->deleteLater();
+    }
 }
