@@ -25,21 +25,21 @@ constexpr qreal kRadius = 26;
 const char *kStyle = R"(
 QLabel { color: rgba(255,255,255,0.92); background: transparent; }
 QLabel#brandTitle { font-size: 30pt; font-weight: 800; color: white; }
-QLabel#brandText { font-size: 12pt; color: rgba(214,220,255,0.82); }
+QLabel#brandText { font-size: 12pt; color: rgba(214,234,222,0.82); }
 QLabel#chip { color: rgba(255,255,255,0.88); background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.16);
   border-radius: 13px; padding: 5px 12px; font-size: 9.5pt; }
 QLabel#cardTitle { font-size: 20pt; font-weight: 700; color: white; }
-QLabel#cardHint { color: rgba(214,220,255,0.78); font-size: 10pt; }
-QLabel#fieldLabel { color: rgba(214,220,255,0.78); font-size: 9pt; font-weight: 600; }
+QLabel#cardHint { color: rgba(214,234,222,0.78); font-size: 10pt; }
+QLabel#fieldLabel { color: rgba(214,234,222,0.78); font-size: 9pt; font-weight: 600; }
 QLabel#error { color: #ff9aa0; font-size: 9.5pt; }
 QFrame#glass { background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.22); border-radius: 14px; }
-QLineEdit { background: rgba(8,12,32,0.42); border: 1px solid rgba(255,255,255,0.20); border-radius: 8px; color: white;
-  padding: 10px 13px; font-size: 11pt; selection-background-color: #5b8cff; selection-color: white; }
-QLineEdit:focus { border: 1px solid #6d9bff; background: rgba(8,12,32,0.55); }
-QPushButton#submit { border: none; border-radius: 8px; padding: 12px; font-size: 11.5pt; font-weight: 600; color: white; background: #2f62e6; }
-QPushButton#submit:hover { background: #3d71f5; }
-QPushButton#submit:pressed { background: #2553c4; }
-QPushButton#link { border: none; background: transparent; color: rgba(214,220,255,0.82); padding: 6px; font-size: 9.5pt; }
+QLineEdit { background: rgba(4,16,11,0.42); border: 1px solid rgba(255,255,255,0.20); border-radius: 8px; color: white;
+  padding: 10px 13px; font-size: 11pt; selection-background-color: #4fbf8b; selection-color: white; }
+QLineEdit:focus { border: 1px solid #e5b53a; background: rgba(4,16,11,0.55); }
+QPushButton#submit { border: none; border-radius: 8px; padding: 12px; font-size: 11.5pt; font-weight: 700; color: #0f1f18; background: #e5b53a; }
+QPushButton#submit:hover { background: #edc35a; }
+QPushButton#submit:pressed { background: #d4a22c; }
+QPushButton#link { border: none; background: transparent; color: rgba(214,234,222,0.82); padding: 6px; font-size: 9.5pt; }
 QPushButton#link:hover { color: white; text-decoration: underline; }
 QToolButton#close { border: none; border-radius: 14px; background: rgba(255,255,255,0.08); }
 QToolButton#close:hover { background: rgba(255,255,255,0.20); }
@@ -117,11 +117,11 @@ LoginDialog::LoginDialog(QWidget *parent)
     m_password = new QLineEdit(glass);
     m_password->setEchoMode(QLineEdit::Password);
     m_password->setPlaceholderText(tr("Пароль"));
-    auto *eye = m_password->addAction(Theme::icon(Theme::Icon::Eye, QColor(214, 220, 255, 200), 18), QLineEdit::TrailingPosition);
+    auto *eye = m_password->addAction(Theme::icon(Theme::Icon::Eye, QColor(214, 234, 222, 200), 18), QLineEdit::TrailingPosition);
     connect(eye, &QAction::triggered, this, [this, eye]() {
         const bool show = m_password->echoMode() == QLineEdit::Password;
         m_password->setEchoMode(show ? QLineEdit::Normal : QLineEdit::Password);
-        eye->setIcon(Theme::icon(show ? Theme::Icon::EyeOff : Theme::Icon::Eye, QColor(214, 220, 255, 200), 18));
+        eye->setIcon(Theme::icon(show ? Theme::Icon::EyeOff : Theme::Icon::Eye, QColor(214, 234, 222, 200), 18));
     });
     addField(tr("ПАРОЛЬ"), m_password);
     if (m_registerMode) {
@@ -193,7 +193,7 @@ void LoginDialog::paintEvent(QPaintEvent *)
     // мягкая тень вокруг окна
     for (int i = 0; i < 14; ++i) {
         const qreal grow = i * 1.7;
-        QColor c(10, 14, 40, qMax(0, 11 - i));
+        QColor c(4, 16, 11, qMax(0, 11 - i));
         p.setPen(Qt::NoPen);
         p.setBrush(c);
         p.drawRoundedRect(body.adjusted(-grow, -grow + 6, grow, grow + 6), kRadius + grow, kRadius + grow);
@@ -203,9 +203,9 @@ void LoginDialog::paintEvent(QPaintEvent *)
     clip.addRoundedRect(body, kRadius, kRadius);
     p.setClipPath(clip);
     QLinearGradient bg(body.topLeft(), body.bottomRight());
-    bg.setColorAt(0.0, QColor("#090e1a"));
-    bg.setColorAt(0.55, QColor("#0f1a31"));
-    bg.setColorAt(1.0, QColor("#12274a"));
+    bg.setColorAt(0.0, QColor("#06120d"));
+    bg.setColorAt(0.55, QColor("#0b2219"));
+    bg.setColorAt(1.0, QColor("#0f3d2e"));
     p.fillRect(body, bg);
 
     auto glow = [&](QPointF c, qreal r, QColor col) {
@@ -217,9 +217,9 @@ void LoginDialog::paintEvent(QPaintEvent *)
         g.setColorAt(1, outer);
         p.fillRect(body, g);
     };
-    glow(body.topLeft() + QPointF(body.width() * 0.18, body.height() * 0.22), 430, QColor(47, 98, 230, 120));
-    glow(body.topLeft() + QPointF(body.width() * 0.86, body.height() * 0.86), 380, QColor(30, 64, 175, 80));
-    glow(body.topLeft() + QPointF(body.width() * 0.60, body.height() * 0.02), 300, QColor(56, 160, 248, 45));
+    glow(body.topLeft() + QPointF(body.width() * 0.18, body.height() * 0.22), 430, QColor(79, 191, 139, 55));
+    glow(body.topLeft() + QPointF(body.width() * 0.86, body.height() * 0.86), 380, QColor(229, 181, 58, 34));
+    glow(body.topLeft() + QPointF(body.width() * 0.60, body.height() * 0.02), 300, QColor(79, 191, 139, 26));
 
     // тонкие круги на фоне
     p.setBrush(Qt::NoBrush);

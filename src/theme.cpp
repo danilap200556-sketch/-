@@ -10,6 +10,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFont>
+#include <QGraphicsDropShadowEffect>
+#include <QParallelAnimationGroup>
+#include <QPropertyAnimation>
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
@@ -64,20 +67,22 @@ Colors g_colors;
 Colors lightColors()
 {
     Colors c;
-    c.bg = "#f3f4f8"; c.surface = "#ffffff"; c.surface2 = "#f7f8fb"; c.border = "#e2e5ed"; c.borderStrong = "#c8cedb";
-    c.text = "#0f1626"; c.muted = "#5c6882"; c.accent = "#2457d6"; c.accentHover = "#1b45b4"; c.accentText = "#ffffff";
-    c.danger = "#c4313c"; c.ok = "#1e8559"; c.selection = "#e4ebfb"; c.scroll = "#c3cada"; c.sidebar = "#0f172a";
-    c.warn = "#9c6200"; c.accentSoft = "#e8eefc"; c.okSoft = "#e6f4ed"; c.dangerSoft = "#fceaec"; c.warnSoft = "#fbf0dc";
+    c.bg = "#f4f6f3"; c.surface = "#ffffff"; c.surface2 = "#f7f9f6"; c.border = "#e1e6df"; c.borderStrong = "#c8d0c5";
+    c.text = "#0f1f18"; c.muted = "#52615a"; c.accent = "#0f3d2e"; c.accentHover = "#0a2c21"; c.accentText = "#ffffff";
+    c.danger = "#b42318"; c.ok = "#14653f"; c.selection = "#e3efe7"; c.scroll = "#c3ccc0"; c.sidebar = "#0f3d2e";
+    c.warn = "#8a5a00"; c.accentSoft = "#e8f2ec"; c.okSoft = "#e3f4e9"; c.dangerSoft = "#fde4e1"; c.warnSoft = "#fdf3e1";
+    c.accent2 = "#e5b53a"; c.header = "#0f3d2e";
     return c;
 }
 
 Colors darkColors()
 {
     Colors c;
-    c.bg = "#0e121a"; c.surface = "#151b26"; c.surface2 = "#1a2230"; c.border = "#252e3e"; c.borderStrong = "#364156";
-    c.text = "#e6eaf2"; c.muted = "#8b97ad"; c.accent = "#5b8cff"; c.accentHover = "#7aa2ff"; c.accentText = "#0b1020";
-    c.danger = "#ff7782"; c.ok = "#4cc790"; c.selection = "#22305a"; c.scroll = "#364156"; c.sidebar = "#0a0d14";
-    c.warn = "#f0b04a"; c.accentSoft = "#1d2a4d"; c.okSoft = "#15342a"; c.dangerSoft = "#3a2127"; c.warnSoft = "#3a2f18";
+    c.bg = "#0c1310"; c.surface = "#121b17"; c.surface2 = "#17221d"; c.border = "#22302a"; c.borderStrong = "#33443c";
+    c.text = "#e4ece7"; c.muted = "#93a59b"; c.accent = "#4fbf8b"; c.accentHover = "#66cf9d"; c.accentText = "#06140e";
+    c.danger = "#ff7b72"; c.ok = "#4fbf8b"; c.selection = "#1d3329"; c.scroll = "#33443c"; c.sidebar = "#0f2a20";
+    c.warn = "#f0b04a"; c.accentSoft = "#163126"; c.okSoft = "#14302a"; c.dangerSoft = "#3a1d1b"; c.warnSoft = "#33290f";
+    c.accent2 = "#e5b53a"; c.header = "#0f2a20";
     return c;
 }
 
@@ -89,20 +94,20 @@ QWidget { color: @text@; font-size: 10pt; }
 QMainWindow, QDialog { background: @bg@; }
 QWidget#content, QWidget#page { background: @bg@; }
 QLabel { background: transparent; }
-QLabel#pageTitle { font-size: 18pt; font-weight: 600; }
+QLabel#pageTitle { font-size: 19pt; font-weight: 700; }
 QLabel#muted { color: @muted@; }
 QToolTip { background: @surface@; color: @text@; border: 1px solid @borderStrong@; border-radius: 5px; padding: 5px 8px; }
 
 QMenuBar { background: @surface@; border-bottom: 1px solid @border@; padding: 2px 8px; }
 QMenuBar::item { background: transparent; padding: 6px 12px; border-radius: 5px; }
 QMenuBar::item:selected { background: @surface2@; }
-QMenu { background: @surface@; border: 1px solid @borderStrong@; border-radius: 8px; padding: 5px; }
+QMenu { background: @surface@; border: 1px solid @borderStrong@; border-radius: 10px; padding: 5px; }
 QMenu::item { padding: 7px 26px 7px 12px; border-radius: 5px; }
 QMenu::item:selected { background: @selection@; color: @text@; }
 QMenu::separator { height: 1px; background: @border@; margin: 5px 8px; }
 
-QPushButton { background: @surface@; border: 1px solid @borderStrong@; border-radius: 6px; padding: 5px 14px; min-height: 20px; }
-QPushButton:hover { background: @surface2@; border-color: @muted@; }
+QPushButton { background: @surface@; border: 1px solid @borderStrong@; border-radius: 8px; padding: 6px 16px; min-height: 22px; }
+QPushButton:hover { background: @surface2@; border-color: @hoverLine@; }
 QPushButton:pressed { background: @border@; }
 QPushButton:disabled { color: @muted@; background: @surface2@; border-color: @border@; }
 QPushButton:default, QPushButton[primary="true"] { background: @accent@; border-color: @accent@; color: @accentText@; font-weight: 600; }
@@ -111,11 +116,11 @@ QPushButton:default:disabled, QPushButton[primary="true"]:disabled { background:
 QPushButton[danger="true"] { background: @surface@; color: @danger@; border-color: @dangerLine@; }
 QPushButton[danger="true"]:hover { background: @dangerSoft@; border-color: @danger@; }
 QPushButton[danger="true"]:disabled { color: @muted@; background: @surface2@; border-color: @border@; }
-QToolButton { background: transparent; border: none; border-radius: 6px; padding: 5px; }
+QToolButton { background: transparent; border: none; border-radius: 8px; padding: 5px; }
 QToolButton:hover { background: @surface2@; }
 
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox {
-  background: @surface@; border: 1px solid @borderStrong@; border-radius: 6px; padding: 5px 9px; min-height: 20px;
+  background: @surface@; border: 1px solid @borderStrong@; border-radius: 8px; padding: 6px 10px; min-height: 22px;
   selection-background-color: @accent@; selection-color: @accentText@; }
 QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QDateEdit:hover, QComboBox:hover { border-color: @muted@; }
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QDateEdit:focus, QComboBox:focus, QComboBox:on { border: 1px solid @accent@; }
@@ -124,7 +129,7 @@ QLineEdit[readOnly="true"] { background: @surface2@; }
 QComboBox { padding-right: 28px; }
 QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 26px; border: none; }
 QComboBox::down-arrow { image: url(@chevron@); width: 12px; height: 12px; }
-QComboBox QAbstractItemView { background: @surface@; border: 1px solid @borderStrong@; border-radius: 6px; padding: 3px;
+QComboBox QAbstractItemView { background: @surface@; border: 1px solid @borderStrong@; border-radius: 8px; padding: 3px;
   selection-background-color: @selection@; selection-color: @text@; outline: 0; }
 QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 18px; border: none; background: transparent; }
 
@@ -140,15 +145,15 @@ QTableView::indicator { width: 17px; height: 17px; border: 1.5px solid @borderSt
 QTableView::indicator:checked { background: @accent@; border-color: @accent@; image: url(@check@); }
 
 QTableView, QTableWidget, QListWidget, QTreeWidget, QTreeView {
-  background: @surface@; alternate-background-color: @surface2@; gridline-color: transparent; border: 1px solid @border@; border-radius: 8px;
+  background: @surface@; alternate-background-color: @surface2@; gridline-color: transparent; border: 1px solid @border@; border-radius: 10px;
   selection-background-color: @selection@; selection-color: @text@; outline: 0; }
 QTableView::item, QTableWidget::item { padding: 3px 8px; border: none; }
 QTableView::item:hover, QTableWidget::item:hover { background: @accentSoft@; }
 QTableView::item:selected, QTableWidget::item:selected { background: @selection@; color: @text@; }
 QListWidget::item, QTreeWidget::item { padding: 4px 6px; }
 QHeaderView { background: transparent; }
-QHeaderView::section { background: @surface@; color: @muted@; border: none; border-bottom: 1px solid @borderStrong@; padding: 9px 10px; font-weight: 600; font-size: 9pt; }
-QTableCornerButton::section { background: @surface@; border: none; border-bottom: 1px solid @borderStrong@; }
+QHeaderView::section { background: @surface2@; color: @muted@; border: none; border-bottom: 1px solid @border@; padding: 9px 10px; font-weight: 600; font-size: 9pt; }
+QTableCornerButton::section { background: @surface2@; border: none; border-bottom: 1px solid @border@; }
 
 QScrollBar:vertical { width: 12px; background: transparent; margin: 3px; }
 QScrollBar::handle:vertical { background: @scroll@; border-radius: 4px; min-height: 30px; }
@@ -159,7 +164,7 @@ QScrollBar::handle:horizontal:hover { background: @muted@; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
-QGroupBox { background: @surface@; border: 1px solid @border@; border-radius: 8px; margin-top: 16px; padding: 14px 12px 10px 12px; }
+QGroupBox { background: @surface@; border: 1px solid @border@; border-radius: 10px; margin-top: 16px; padding: 14px 12px 10px 12px; }
 QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 12px; padding: 0 6px; color: @muted@; font-weight: 600; background: @bg@; border-radius: 4px; }
 
 QTabWidget::pane { border: none; top: -1px; }
@@ -174,40 +179,49 @@ QDialogButtonBox QPushButton { min-width: 84px; }
 QMessageBox { background: @bg@; }
 
 /* Плашки-сообщения: успех / ошибка / предупреждение / сведения. Свойство banner = ok | error | warn | info. */
-QLabel[banner="ok"], QLabel#noticeBanner, QLabel#printStatus { background: @okSoft@; color: @ok@; border: 1px solid @okLine@; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
-QLabel[banner="error"], QLabel#printStatus[error="true"] { background: @dangerSoft@; color: @danger@; border: 1px solid @dangerLine@; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
-QLabel[banner="warn"] { background: @warnSoft@; color: @warn@; border: 1px solid @warnLine@; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
-QLabel[banner="info"] { background: @accentSoft@; color: @accent@; border: 1px solid @accentLine@; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+QLabel[banner="ok"], QLabel#noticeBanner, QLabel#printStatus { background: @okSoft@; color: @ok@; border: 1px solid @okLine@; border-radius: 8px; padding: 8px 12px; font-weight: 600; }
+QLabel[banner="error"], QLabel#printStatus[error="true"] { background: @dangerSoft@; color: @danger@; border: 1px solid @dangerLine@; border-radius: 8px; padding: 8px 12px; font-weight: 600; }
+QLabel[banner="warn"] { background: @warnSoft@; color: @warn@; border: 1px solid @warnLine@; border-radius: 8px; padding: 8px 12px; font-weight: 600; }
+QLabel[banner="info"] { background: @accentSoft@; color: @accent@; border: 1px solid @accentLine@; border-radius: 8px; padding: 8px 12px; font-weight: 600; }
 
 /* Полоса с количеством пар на складах */
-QFrame#statCard { background: @surface@; border: 1px solid @border@; border-radius: 8px; }
+QFrame#statCard { background: @surface@; border: 1px solid @border@; border-radius: 10px; }
 QFrame#statCard[total="true"] { background: @accent@; border-color: @accent@; }
 QLabel#statCaption { color: @muted@; font-size: 8pt; font-weight: 600; }
 QLabel#statValue { font-size: 14pt; font-weight: 700; }
 QFrame#statCard[total="true"] QLabel#statCaption { color: @accentText@; }
 QFrame#statCard[total="true"] QLabel#statValue { color: @accentText@; }
 
-QFrame#sidebarFrame { background: @sidebar@; border: none; }
-QFrame#sidebarFrame QLabel { color: #e9edf7; }
-QFrame#sidebarFrame QLabel#sideMuted { color: #8591ab; font-size: 9pt; }
-QFrame#userCard { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; }
-QListWidget#sidebar { background: transparent; border: none; outline: 0; padding: 4px 8px; }
-QListWidget#sidebar::item { color: #b4bfd3; padding: 9px 12px 9px 14px; margin: 1px 0; border-radius: 6px; }
-QListWidget#sidebar::item:hover { background: rgba(255,255,255,0.06); color: #ffffff; }
-QListWidget#sidebar::item:selected { background: rgba(255,255,255,0.10); color: #ffffff; }
-QFrame#sidebarFrame QToolButton { color: #b4bfd3; }
-QFrame#sidebarFrame QToolButton:hover { background: rgba(255,255,255,0.10); }
+/* Верхняя полоса: логотип, группы разделов, строка сканера, пользователь. Цвет полосы - @header@ (тёмно-зелёный). */
+QFrame#appHeader { background: @header@; border: none; }
+QFrame#appHeader QLabel { color: #ffffff; background: transparent; }
+QFrame#appHeader QLabel#headerMuted { color: #cfe0d6; font-size: 9pt; }
+QPushButton#navGroup { background: transparent; color: #ffffff; border: none; border-radius: 8px; padding: 8px 14px; min-height: 22px; font-weight: 500; }
+QPushButton#navGroup:hover { background: rgba(255,255,255,0.12); }
+QPushButton#navGroup:checked { background: rgba(255,255,255,0.17); font-weight: 700; }
+QFrame#appHeader QLineEdit { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.26); border-radius: 8px; color: #ffffff;
+  selection-background-color: #ffffff; selection-color: @header@; }
+QFrame#appHeader QLineEdit:hover { border-color: rgba(255,255,255,0.45); }
+QFrame#appHeader QLineEdit:focus { border-color: rgba(255,255,255,0.70); background: rgba(255,255,255,0.12); }
+QFrame#appHeader QToolButton { color: #ffffff; border-radius: 8px; }
+QFrame#appHeader QToolButton:hover { background: rgba(255,255,255,0.12); }
+/* Полоса вкладок раздела: подчёркивание выбранной рисует сама полоса (TabStrip) и плавно переносит его. */
+QFrame#tabStripFrame { background: @surface@; border: none; border-bottom: 1px solid @border@; }
+QPushButton#navTab { background: transparent; border: none; border-radius: 0; color: @muted@; padding: 14px 14px; min-height: 22px; font-weight: 500; }
+QPushButton#navTab:hover { color: @text@; background: @bg@; }
+QPushButton#navTab:checked { color: @text@; font-weight: 700; }
 )");
     const QPair<QString, QColor> tokens[] = {
         {"@bg@", c.bg}, {"@surface2@", c.surface2}, {"@surface@", c.surface}, {"@borderStrong@", c.borderStrong}, {"@border@", c.border},
         {"@text@", c.text}, {"@muted@", c.muted}, {"@accentHover@", c.accentHover}, {"@accentText@", c.accentText},
-        {"@accentSoft@", c.accentSoft}, {"@accent@", c.accent}, {"@selection@", c.selection}, {"@scroll@", c.scroll}, {"@sidebar@", c.sidebar},
+        {"@accentSoft@", c.accentSoft}, {"@accent@", c.accent}, {"@selection@", c.selection}, {"@scroll@", c.scroll}, {"@sidebar@", c.sidebar}, {"@header@", c.header},
         {"@okSoft@", c.okSoft}, {"@ok@", c.ok}, {"@dangerSoft@", c.dangerSoft}, {"@danger@", c.danger}, {"@warnSoft@", c.warnSoft}, {"@warn@", c.warn}};
     // Сначала «длинные» метки с цветом-приставкой (@okLine@ и т. п.), иначе @ok@ съест их начало.
     s.replace(QStringLiteral("@okLine@"), rgba(c.ok, 90));
     s.replace(QStringLiteral("@dangerLine@"), rgba(c.danger, 100));
     s.replace(QStringLiteral("@warnLine@"), rgba(c.warn, 100));
     s.replace(QStringLiteral("@accentLine@"), rgba(c.accent, 90));
+    s.replace(QStringLiteral("@hoverLine@"), rgba(c.muted, 150));
     for (const auto &t : tokens)
         s.replace(t.first, t.second.name());
     s.replace(QStringLiteral("@check@"), indicatorImage(Indicator::Check));
@@ -252,6 +266,141 @@ private:
     }
 };
 
+// Мягкая тень у кнопок (QPushButton): в покое - едва заметная, при наведении - глубже, при нажатии - почти прижата к фону.
+// Тень рисует QGraphicsDropShadowEffect; её смена плавная (140 мс), если анимации не выключены в меню «Вид».
+// Без тени: плоские кнопки, кнопки верхнего меню и вкладок (navGroup / navTab), кнопки окна входа и кнопки со свойством noShadow.
+class ButtonShadow : public QObject
+{
+public:
+    using QObject::QObject;
+    bool eventFilter(QObject *o, QEvent *e) override
+    {
+        const QEvent::Type t = e->type();
+        if (t != QEvent::Polish && t != QEvent::Enter && t != QEvent::Leave && t != QEvent::MouseButtonPress &&
+            t != QEvent::MouseButtonRelease && t != QEvent::EnabledChange)
+            return false;
+        auto *b = qobject_cast<QPushButton *>(o);
+        if (!b)
+            return false;
+        switch (t) {
+        case QEvent::Polish:
+            attach(b);
+            break;
+        case QEvent::Enter:
+            if (auto *fx = effectOf(b))
+                animate(b, fx, State::Hover);
+            break;
+        case QEvent::Leave:
+            if (auto *fx = effectOf(b))
+                animate(b, fx, State::Rest);
+            break;
+        case QEvent::MouseButtonPress:
+            if (auto *fx = effectOf(b))
+                animate(b, fx, State::Pressed);
+            break;
+        case QEvent::MouseButtonRelease:
+            if (auto *fx = effectOf(b))
+                animate(b, fx, b->underMouse() ? State::Hover : State::Rest);
+            break;
+        case QEvent::EnabledChange:
+            if (auto *fx = effectOf(b))
+                fx->setEnabled(b->isEnabled());
+            break;
+        default:
+            break;
+        }
+        return false;
+    }
+
+private:
+    enum class State { Rest, Hover, Pressed };
+
+    static bool skip(const QPushButton *b)
+    {
+        static const QStringList names = {QStringLiteral("navGroup"), QStringLiteral("navTab"), QStringLiteral("submit"), QStringLiteral("link")};
+        return b->isFlat() || names.contains(b->objectName()) || b->property("noShadow").toBool() || b->window()->windowFlags().testFlag(Qt::FramelessWindowHint);
+    }
+    static QGraphicsDropShadowEffect *effectOf(QPushButton *b) { return qobject_cast<QGraphicsDropShadowEffect *>(b->graphicsEffect()); }
+    static bool primary(const QPushButton *b) { return b->property("primary").toBool() || b->isDefault(); }
+
+    // Цвет тени: у главной кнопки плотнее; в тёмной теме тень чёрная и гуще.
+    static QColor shadowColor(const QPushButton *b, State st)
+    {
+        const bool dark = current() == Mode::Dark;
+        int a = dark ? 110 : (primary(b) ? 70 : 34);
+        if (st == State::Hover)
+            a = dark ? 150 : (primary(b) ? 105 : 58);
+        else if (st == State::Pressed)
+            a = dark ? 90 : (primary(b) ? 60 : 30);
+        return dark ? QColor(0, 0, 0, a) : QColor(15, 31, 24, a);
+    }
+
+    static void attach(QPushButton *b)
+    {
+        if (skip(b)) {
+            if (effectOf(b) && b->property("shadowAttached").toBool())
+                b->setGraphicsEffect(nullptr);
+            return;
+        }
+        if (b->graphicsEffect() && !effectOf(b))
+            return; // у кнопки своя графическая обработка - не трогаем
+        QGraphicsDropShadowEffect *fx = effectOf(b);
+        if (!fx) {
+            fx = new QGraphicsDropShadowEffect(b);
+            b->setGraphicsEffect(fx);
+            b->setProperty("shadowAttached", true);
+        }
+        fx->setEnabled(b->isEnabled());
+        set(fx, b, b->underMouse() ? State::Hover : State::Rest); // тема могла смениться: цвет пересчитывается при каждом polish
+    }
+
+    static void target(State st, qreal &blur, qreal &dy)
+    {
+        blur = st == State::Hover ? 16 : (st == State::Pressed ? 3 : 6);
+        dy = st == State::Hover ? 4 : 1;
+    }
+
+    static void set(QGraphicsDropShadowEffect *fx, const QPushButton *b, State st)
+    {
+        qreal blur, dy;
+        target(st, blur, dy);
+        fx->setBlurRadius(blur);
+        fx->setOffset(0, dy);
+        fx->setColor(shadowColor(b, st));
+    }
+
+    static void animate(QPushButton *b, QGraphicsDropShadowEffect *fx, State st)
+    {
+        if (!b->isEnabled())
+            return;
+        auto *old = fx->findChild<QParallelAnimationGroup *>(QStringLiteral("shadowAnim"));
+        if (old) {
+            old->stop();
+            old->deleteLater();
+        }
+        if (!animations()) {
+            set(fx, b, st);
+            return;
+        }
+        qreal blur, dy;
+        target(st, blur, dy);
+        const int ms = st == State::Pressed ? 70 : 140;
+        auto *group = new QParallelAnimationGroup(fx);
+        group->setObjectName(QStringLiteral("shadowAnim"));
+        auto add = [&](const QByteArray &prop, const QVariant &to) {
+            auto *a = new QPropertyAnimation(fx, prop, group);
+            a->setDuration(ms);
+            a->setEasingCurve(QEasingCurve::OutCubic);
+            a->setEndValue(to);
+            group->addAnimation(a);
+        };
+        add("blurRadius", blur);
+        add("yOffset", dy);
+        add("color", shadowColor(b, st));
+        group->start(QAbstractAnimation::DeleteWhenStopped);
+    }
+};
+
 // Подсказки (всплывающие окошки) не показываются первые полсекунды после закрытия диалога: курсор остаётся там, где была кнопка
 // «Закрыть», окно под ним оживает, и под курсором тут же вылезала подсказка какого-нибудь элемента.
 class PopupGuard : public QObject
@@ -293,6 +442,10 @@ Mode saved()
 
 Mode current() { return g_mode; }
 
+bool animations() { return QSettings().value(QStringLiteral("animations"), true).toBool(); }
+
+void setAnimations(bool on) { QSettings().setValue(QStringLiteral("animations"), on); }
+
 const Colors &colors() { return g_colors; }
 
 QString stylesheet(Mode mode) { return css(mode == Mode::Dark ? darkColors() : lightColors()); }
@@ -303,6 +456,7 @@ void apply(Mode mode)
     if (!roles) {
         roles = new ButtonRoles(qApp);
         qApp->installEventFilter(roles);
+        qApp->installEventFilter(new ButtonShadow(qApp));
         qApp->installEventFilter(new PopupGuard(qApp));
     }
     g_mode = mode;
@@ -346,15 +500,12 @@ QPixmap logo(int size)
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
     const QRectF r(0, 0, size, size);
-    QLinearGradient g(r.topLeft(), r.bottomRight());
-    g.setColorAt(0, QColor("#3d6df2"));
-    g.setColorAt(1, QColor("#1c3fa6"));
     p.setPen(Qt::NoPen);
-    p.setBrush(g);
-    p.drawRoundedRect(r, size * 0.28, size * 0.28);
+    p.setBrush(QColor("#e5b53a"));
+    p.drawRoundedRect(r, size * 0.24, size * 0.24);
     // коробка
     const qreal u = size / 24.0;
-    QPen pen(QColor(255, 255, 255, 240), 1.7 * u, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    QPen pen(QColor("#0f1f18"), 1.8 * u, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
     p.setPen(pen);
     p.setBrush(Qt::NoBrush);
     QPainterPath box;

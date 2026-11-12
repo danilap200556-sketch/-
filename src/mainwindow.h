@@ -22,14 +22,13 @@ class SitePricesTab;
 class UsersTab;
 class UpdatesTab;
 class Updater;
-class QListWidgetItem;
 class QTimer;
 class QLabel;
 class QLineEdit;
-class QListWidget;
 class QStackedWidget;
 class QToolButton;
 class StockBar;
+class TopNav;
 class QSystemTrayIcon;
 class MarketAutoSync;
 
@@ -50,8 +49,8 @@ private slots:
 
 private:
     void refreshAfterProductEdit();
-    // Раздел боковой панели: строка в списке + страница справа.
-    // group - подпись группы разделов в боковой панели: ставится у первого раздела группы.
+    // Раздел: вкладка в верхнем меню + страница под ним.
+    // group - группа разделов в верхней полосе (СКЛАД, МАРКЕТПЛЕЙС...): ставится у первого раздела группы.
     void addPage(const QString &title, Theme::Icon icon, QWidget *page, const QString &group = QString());
     void showPage(QWidget *page);
     void pageChanged(int row);
@@ -73,11 +72,11 @@ private:
     void installUpdate();
     void showUpdateResult();
 
-    QListWidget *m_sidebar = nullptr;
+    TopNav *m_nav = nullptr;          // верхнее меню: группы разделов и вкладки
+    QWidget *m_content = nullptr;     // заголовок, полоса остатков и страница: эту область проявляет переход
     QStackedWidget *m_pages = nullptr;
     QLabel *m_pageTitle = nullptr;
     StockBar *m_stockBar = nullptr; // «Всего пар» и пары по складам: над каждой страницей
-    QString m_lastGroup;
     QSet<QWidget *> m_dirty;
     QHash<QWidget *, qint64> m_loadedAt;
     QElapsedTimer m_clock;
@@ -103,7 +102,7 @@ private:
     UsersTab *m_usersTab = nullptr;
     Updater *m_updater = nullptr;
     UpdatesTab *m_updatesTab = nullptr;
-    QListWidgetItem *m_updatesItem = nullptr;
+    int m_updatesIndex = -1;
     QTimer *m_updateTimer = nullptr;
     bool m_autoChecking = false;
     int m_offeredBuild = 0;

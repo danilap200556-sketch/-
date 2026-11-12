@@ -25,11 +25,11 @@
 #include "appversion.h"
 #include "updater.h"
 #include "updatestab.h"
+#include "topnav.h"
+#include "pagetransition.h"
 
+#include <QAction>
 #include <QApplication>
-#include <QStyleOptionViewItem>
-#include <QStyledItemDelegate>
-#include <QPainter>
 #include <QCloseEvent>
 #include <QDesktopServices>
 #include <QFrame>
@@ -38,7 +38,6 @@
 #include <QDebug>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
 #include <QSettings>
@@ -53,45 +52,6 @@
 #include <QVBoxLayout>
 #include <QMessageBox>
 #include <QPushButton>
-
-namespace {
-
-// Боковая панель: подпись группы разделов (СКЛАД, МАРКЕТПЛЕЙС...) над первым разделом группы и тонкая полоса акцента у выбранного.
-class SidebarDelegate : public QStyledItemDelegate
-{
-public:
-    static constexpr int kCaptionHeight = 26;
-    using QStyledItemDelegate::QStyledItemDelegate;
-
-    void paint(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index) const override
-    {
-        const QString caption = index.data(Qt::UserRole + 1).toString();
-        QStyleOptionViewItem opt = option;
-        if (!caption.isEmpty()) {
-            p->save();
-            QFont f = option.font;
-            f.setPointSizeF(7.5);
-            f.setBold(true);
-            f.setLetterSpacing(QFont::AbsoluteSpacing, 1.1);
-            p->setFont(f);
-            p->setPen(QColor("#6f7c99"));
-            p->drawText(QRect(option.rect.left() + 14, option.rect.top() + 6, option.rect.width() - 20, kCaptionHeight - 6), Qt::AlignLeft | Qt::AlignVCenter, caption);
-            p->restore();
-            opt.rect.setTop(opt.rect.top() + kCaptionHeight);
-        }
-        QStyledItemDelegate::paint(p, opt, index);
-        if (option.state & QStyle::State_Selected) {
-            p->save();
-            p->setRenderHint(QPainter::Antialiasing);
-            p->setPen(Qt::NoPen);
-            p->setBrush(Theme::colors().accent);
-            p->drawRoundedRect(QRectF(opt.rect.left() + 1, opt.rect.top() + 9, 3, opt.rect.height() - 18), 1.5, 1.5);
-            p->restore();
-        }
-    }
-};
-
-} // namespace
 
 MainWindow::MainWindow(const QString &username, QWidget *parent)
     : QMainWindow(parent)
@@ -140,99 +100,66 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
 
     auto *viewMenu = menuBar()->addMenu(tr("Вид"));
     viewMenu->addAction(tr("Светлая / тёмная тема"), QKeySequence(Qt::CTRL | Qt::Key_T), this, &MainWindow::toggleTheme);
+    // Переходы между страницами, линия у вкладок и тени кнопок при наведении: кому мешает движение - выключает.
+    auto *animAction = viewMenu->addAction(tr("Анимации интерфейса"));
+    animAction->setCheckable(true);
+    animAction->setChecked(Theme::animations());
+    connect(animAction, &QAction::toggled, this, [](bool on) { Theme::setAnimations(on); });
 
-    // Каркас окна: слева тёмная боковая панель с разделами, справа заголовок раздела со строкой
-    // сканера и сама страница.
+    // Каркас окна: сверху тёмно-зелёная полоса с группами разделов, строкой сканера и пользователем, под ней вкладки
+    // раздела; ниже - заголовок страницы, полоса «пар на складах» и сама страница.
     auto *central = new QWidget(this);
-    auto *rootLayout = new QHBoxLayout(central);
+    auto *rootLayout = new QVBoxLayout(central);
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
 
-    auto *sideFrame = new QFrame(central);
-    sideFrame->setObjectName("sidebarFrame");
-    sideFrame->setFixedWidth(236);
-    auto *sideLayout = new QVBoxLayout(sideFrame);
-    sideLayout->setContentsMargins(10, 18, 10, 12);
-    sideLayout->setSpacing(4);
+    m_nav = new TopNav(central);
+    rootLayout->addWidget(m_nav);
 
-    auto *brand = new QHBoxLayout();
-    brand->setContentsMargins(8, 0, 8, 0);
-    brand->setSpacing(10);
-    auto *logo = new QLabel(sideFrame);
-    logo->setPixmap(Theme::logo(36));
-    logo->setFixedSize(36, 36);
-    brand->addWidget(logo);
-    auto *brandText = new QVBoxLayout();
-    brandText->setSpacing(0);
-    auto *brandTitle = new QLabel(tr("Склад"), sideFrame);
-    QFont bf = brandTitle->font();
-    bf.setPointSizeF(13);
-    bf.setBold(true);
-    brandTitle->setFont(bf);
-    auto *brandSub = new QLabel(tr("учёт и Маркет"), sideFrame);
-    brandSub->setObjectName("sideMuted");
-    brandText->addWidget(brandTitle);
-    brandText->addWidget(brandSub);
-    brand->addLayout(brandText);
-    brand->addStretch(1);
-    sideLayout->addLayout(brand);
-    sideLayout->addSpacing(14);
+    // Строка сканера: штрихкод (или артикул) -> карточка товара, где можно сразу поправить всё, что не так.
+    m_scan = new QLineEdit(m_nav->header());
+    m_scan->setPlaceholderText(tr("Сканер / поиск товара (Ctrl+F)"));
+    m_scan->setClearButtonEnabled(true);
+    m_scan->setMinimumWidth(300);
+    m_scan->setMaximumWidth(440);
+    m_scan->addAction(Theme::icon(Theme::Icon::Search, QColor("#cfe0d6"), 18), QLineEdit::LeadingPosition);
+    QPalette scanPalette = m_scan->palette();
+    scanPalette.setColor(QPalette::PlaceholderText, QColor("#cfe0d6"));
+    m_scan->setPalette(scanPalette);
+    m_nav->headerTrailing()->addWidget(m_scan, 1);
 
-    m_sidebar = new QListWidget(sideFrame);
-    m_sidebar->setObjectName("sidebar");
-    m_sidebar->setIconSize(QSize(20, 20));
-    m_sidebar->setFocusPolicy(Qt::NoFocus);
-    m_sidebar->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_sidebar->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_sidebar->setItemDelegate(new SidebarDelegate(m_sidebar));
-    sideLayout->addWidget(m_sidebar, 1);
-
-    auto *userCard = new QFrame(sideFrame);
-    userCard->setObjectName("userCard");
-    auto *userLayout = new QHBoxLayout(userCard);
-    userLayout->setContentsMargins(12, 8, 8, 8);
-    userLayout->setSpacing(6);
-    auto *userText = new QVBoxLayout();
-    userText->setSpacing(0);
-    auto *userName = new QLabel(username, userCard);
+    auto *userBox = new QVBoxLayout();
+    userBox->setSpacing(0);
+    auto *userName = new QLabel(username, m_nav->header());
     QFont uf = userName->font();
     uf.setBold(true);
     userName->setFont(uf);
-    auto *userRole = new QLabel(isAdmin ? tr("Администратор") : (canEdit ? tr("Сотрудник") : tr("Только просмотр")), userCard);
-    userRole->setObjectName("sideMuted");
-    userText->addWidget(userName);
-    userText->addWidget(userRole);
-    userLayout->addLayout(userText, 1);
-    m_themeButton = new QToolButton(userCard);
+    auto *userRole = new QLabel(isAdmin ? tr("Администратор") : (canEdit ? tr("Сотрудник") : tr("Только просмотр")), m_nav->header());
+    userRole->setObjectName("headerMuted");
+    userBox->addWidget(userName);
+    userBox->addWidget(userRole);
+    m_nav->headerTrailing()->addSpacing(6);
+    m_nav->headerTrailing()->addLayout(userBox);
+    m_themeButton = new QToolButton(m_nav->header());
     m_themeButton->setAutoRaise(true);
     m_themeButton->setCursor(Qt::PointingHandCursor);
     m_themeButton->setIconSize(QSize(20, 20));
+    m_themeButton->setFixedSize(38, 38);
     m_themeButton->setToolTip(tr("Светлая / тёмная тема (Ctrl+T)"));
     connect(m_themeButton, &QToolButton::clicked, this, &MainWindow::toggleTheme);
-    userLayout->addWidget(m_themeButton);
-    sideLayout->addWidget(userCard);
-    rootLayout->addWidget(sideFrame);
+    m_nav->headerTrailing()->addWidget(m_themeButton);
 
-    auto *content = new QWidget(central);
-    auto *contentLayout = new QVBoxLayout(content);
-    contentLayout->setContentsMargins(22, 16, 22, 16);
+    m_content = new QWidget(central);
+    m_content->setObjectName("content");
+    auto *contentLayout = new QVBoxLayout(m_content);
+    contentLayout->setContentsMargins(24, 18, 24, 16);
     contentLayout->setSpacing(12);
 
-    auto *header = new QHBoxLayout();
-    m_pageTitle = new QLabel(content);
+    m_pageTitle = new QLabel(m_content);
     m_pageTitle->setObjectName("pageTitle");
-    header->addWidget(m_pageTitle);
-    header->addStretch(1);
-    // Строка сканера: штрихкод (или артикул) -> карточка товара, где можно сразу поправить всё, что не так.
-    m_scan = new QLineEdit(content);
-    m_scan->setPlaceholderText(tr("Сканер / поиск товара (Ctrl+F): штрихкод или артикул"));
-    m_scan->setClearButtonEnabled(true);
-    m_scan->setMinimumWidth(380);
-    m_scan->addAction(Theme::icon(Theme::Icon::Search, Theme::colors().muted, 18), QLineEdit::LeadingPosition);
-    header->addWidget(m_scan);
-    contentLayout->addLayout(header);
+    contentLayout->addWidget(m_pageTitle);
     // Сколько пар лежит на складах: на виду на любой странице.
-    m_stockBar = new StockBar(content);
+    m_stockBar = new StockBar(m_content);
     contentLayout->addWidget(m_stockBar);
     connect(m_scan, &QLineEdit::returnPressed, this, &MainWindow::scanEntered);
     // Подсказки по мере ввода (часть артикула, названия, штрихкода): выбранный товар открывается карточкой.
@@ -248,9 +175,9 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         m_scan->selectAll();
     });
 
-    m_pages = new QStackedWidget(content);
+    m_pages = new QStackedWidget(m_content);
     contentLayout->addWidget(m_pages, 1);
-    rootLayout->addWidget(content, 1);
+    rootLayout->addWidget(m_content, 1);
     setCentralWidget(central);
     updateThemeButton();
 
@@ -314,7 +241,7 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     m_updater = new Updater(this);
     m_updatesTab = new UpdatesTab(m_updater, this);
     addPage(tr("Обновления"), Theme::Icon::Update, m_updatesTab, tr("СИСТЕМА"));
-    m_updatesItem = m_sidebar->item(m_sidebar->count() - 1);
+    m_updatesIndex = m_nav->count() - 1;
     connect(m_updatesTab, &UpdatesTab::installRequested, this, &MainWindow::installUpdate);
     connect(m_updater, &Updater::checkFinished, this, [this](bool ok, const QString &) { updateChecked(ok); });
 
@@ -369,8 +296,8 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     });
 
     m_clock.start();
-    connect(m_sidebar, &QListWidget::currentRowChanged, this, &MainWindow::pageChanged);
-    m_sidebar->setCurrentRow(0);
+    connect(m_nav, &TopNav::currentChanged, this, &MainWindow::pageChanged);
+    m_nav->setCurrentIndex(0);
     // Окно сначала рисуется, и только потом подгружается список товаров.
     QTimer::singleShot(0, this, [this]() { ensureLoaded(m_pages->currentWidget()); });
     // Остатки правят и с других компьютеров: сводку «пар на складах» перечитываем раз в полминуты.
@@ -383,21 +310,8 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
 
 void MainWindow::addPage(const QString &title, Theme::Icon icon, QWidget *page, const QString &group)
 {
-    // Значок бледный, а у выбранного раздела - белый.
-    QIcon ic;
-    const QPixmap normal = Theme::icon(icon, QColor("#8f9bb5"), 20).pixmap(QSize(20, 20));
-    const QPixmap selected = Theme::icon(icon, QColor("#ffffff"), 20).pixmap(QSize(20, 20));
-    ic.addPixmap(normal, QIcon::Normal, QIcon::Off);
-    ic.addPixmap(selected, QIcon::Selected, QIcon::Off);
-    ic.addPixmap(selected, QIcon::Active, QIcon::Off);
-    auto *item = new QListWidgetItem(ic, title, m_sidebar);
-    // Подпись группы - только у первого раздела группы; её рисует SidebarDelegate над самим разделом.
-    const bool newGroup = !group.isEmpty() && group != m_lastGroup;
-    if (newGroup) {
-        item->setData(Qt::UserRole + 1, group);
-        m_lastGroup = group;
-    }
-    item->setSizeHint(QSize(0, 40 + (newGroup ? SidebarDelegate::kCaptionHeight : 0)));
+    Q_UNUSED(icon) // во вкладках верхнего меню значков нет: строже и читается быстрее
+    m_nav->addPage(title, group);
     m_pages->addWidget(page);
 }
 
@@ -405,7 +319,7 @@ void MainWindow::showPage(QWidget *page)
 {
     const int i = m_pages->indexOf(page);
     if (i >= 0)
-        m_sidebar->setCurrentRow(i);
+        m_nav->setCurrentIndex(i);
 }
 
 void MainWindow::pageChanged(int row)
@@ -414,14 +328,16 @@ void MainWindow::pageChanged(int row)
         return;
     // Уходим со страницы карточек Маркета - сохраняем то, что в ней правили.
     if (m_pages->currentWidget() == m_cardsTab && m_pages->widget(row) != m_cardsTab && !m_cardsTab->saveIfDirty()) {
-        const QSignalBlocker block(m_sidebar);
-        m_sidebar->setCurrentRow(m_pages->currentIndex());
+        const QSignalBlocker block(m_nav);
+        m_nav->setCurrentIndex(m_pages->currentIndex());
         return;
     }
     m_pages->setCurrentIndex(row);
     m_stockBar->scheduleRefresh(); // после перерисовки страницы: сводка не задерживает переключение
-    m_pageTitle->setText(m_sidebar->item(row)->text().remove(QStringLiteral("●")).trimmed()); // без значка «есть обновление»
+    m_pageTitle->setText(m_nav->title(row));
     ensureLoaded(m_pages->widget(row));
+    // Страница уже с данными: проявляем её плавно (снимок поверх, ~0,26 с). При запуске окна ещё не видно - без анимации.
+    PageTransition::play(m_content);
 }
 
 void MainWindow::refreshPage(QWidget *w)
@@ -490,7 +406,7 @@ void MainWindow::updateThemeButton()
 {
     // Показываем, на какую тему переключит нажатие.
     const bool dark = Theme::current() == Theme::Mode::Dark;
-    m_themeButton->setIcon(Theme::icon(dark ? Theme::Icon::Sun : Theme::Icon::Moon, QColor("#c5cde0"), 20));
+    m_themeButton->setIcon(Theme::icon(dark ? Theme::Icon::Sun : Theme::Icon::Moon, QColor("#ffffff"), 20));
 }
 
 void MainWindow::setupTray()
@@ -550,7 +466,7 @@ void MainWindow::updateChecked(bool ok)
     const bool automatic = m_autoChecking;
     m_autoChecking = false;
     const bool available = ok && m_updater->updateAvailable();
-    m_updatesItem->setText(available ? tr("Обновления  ●") : tr("Обновления"));
+    m_nav->setBadge(m_updatesIndex, available);
     if (!available)
         return;
     statusBar()->showMessage(tr("Доступна новая версия программы (сборка %1) - раздел «Обновления».").arg(m_updater->latest().build), 20000);

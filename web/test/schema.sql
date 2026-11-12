@@ -90,6 +90,9 @@ CREATE TABLE IF NOT EXISTS marking_codes (
 CREATE INDEX IF NOT EXISTS marking_codes_product_idx ON marking_codes (product_id);
 CREATE INDEX IF NOT EXISTS marking_codes_gtin_idx ON marking_codes (gtin);
 CREATE INDEX IF NOT EXISTS marking_codes_status_idx ON marking_codes (status);
+CREATE INDEX IF NOT EXISTS marking_codes_status_id_idx ON marking_codes (status, id DESC);
+CREATE INDEX IF NOT EXISTS marking_codes_unlinked_idx ON marking_codes (id DESC) WHERE product_id IS NULL;
+CREATE INDEX IF NOT EXISTS marking_codes_order_idx ON marking_codes (order_id, gtin) WHERE order_id <> '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS read_only BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS product_photos (
             id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

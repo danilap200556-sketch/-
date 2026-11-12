@@ -174,6 +174,8 @@ add_executable(inventory_manager
     src/thermallabel.cpp
     src/printjob.cpp
     src/stockbar.cpp
+    src/topnav.cpp
+    src/pagetransition.cpp
     src/thermalprintdialog.cpp
     src/stocktaketab.cpp
     src/photofetch.cpp
