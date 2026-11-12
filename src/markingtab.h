@@ -7,7 +7,8 @@
 class QComboBox;
 class QLabel;
 class QLineEdit;
-class QTableWidget;
+class MarkingModel;
+class QTableView;
 class QTimer;
 
 // Страница «Честный знак»: коды маркировки (КМ) в общей базе - добавить (вставкой, из файла, сканером или заказом в СУЗ),
@@ -41,7 +42,8 @@ private:
     void showNotice(const QString &text);
     void showAddResult(const MarkingCode::AddResult &result);
 
-    QTableWidget *m_table;
+    QTableView *m_table;
+    MarkingModel *m_model;
     QComboBox *m_status;
     QLineEdit *m_search;
     QLineEdit *m_scan;

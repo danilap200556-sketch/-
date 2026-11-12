@@ -100,15 +100,19 @@ struct Filter {
     int limit = 2000;
 };
 QList<Row> list(const Filter &filter = Filter());
+struct Counts {
+    int total = 0, fresh = 0, printed = 0, unlinked = 0;
+};
+// Список и счётчики одним запросом (на удалённой базе это один круг вместо двух).
+QList<Row> listWithCounts(const Filter &filter, Counts *counts);
 Row get(int id);
+// Строки по номерам одним запросом, в порядке номеров (несуществующие пропускаются).
+QList<Row> getMany(const QList<int> &ids);
 // Сколько кодов этого заказа и GTIN уже в таблице (выгрузка «Реестр кодов» не считается: в ней коды без криптохвоста). СУЗ выдаёт код один раз,
 // поэтому то, что уже скачано, повторно не запрашивают.
 int countForOrder(const QString &orderId, const QString &gtin);
 // Коды (как в базе, с разделителями групп) по номерам строк: пачками по одному запросу, в порядке номеров.
 QStringList codesByIds(const QList<int> &ids);
-struct Counts {
-    int total = 0, fresh = 0, printed = 0, unlinked = 0;
-};
 Counts counts();
 
 bool markPrinted(const QList<int> &ids, QString *error = nullptr);

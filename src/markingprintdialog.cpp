@@ -66,8 +66,9 @@ MarkingPrintDialog::MarkingPrintDialog(const QList<int> &codeIds, QWidget *paren
     setWindowTitle(tr("Печать кодов маркировки на термоэтикетках"));
     resize(1000, 680);
     int noTail = 0;
-    for (int id : codeIds) {
-        const MarkingCode::Row r = MarkingCode::get(id);
+    // Все строки одним запросом (раньше - по запросу на каждый код, и на удалённой базе окно печати открывалось минутами).
+    const QList<MarkingCode::Row> loaded = MarkingCode::getMany(codeIds);
+    for (const MarkingCode::Row &r : loaded) {
         if (r.id <= 0)
             continue;
         // Код без криптохвоста (код идентификации) напечатать нельзя: такой Data Matrix Система маркировки не примет.

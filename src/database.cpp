@@ -164,6 +164,10 @@ const QStringList &schemaDdl()
         "CREATE INDEX IF NOT EXISTS marking_codes_product_idx ON marking_codes (product_id)",
         "CREATE INDEX IF NOT EXISTS marking_codes_gtin_idx ON marking_codes (gtin)",
         "CREATE INDEX IF NOT EXISTS marking_codes_status_idx ON marking_codes (status)",
+        // Список кодов идёт «новые сверху» (ORDER BY id DESC LIMIT ...): эти индексы дают первые строки без просмотра всей таблицы.
+        "CREATE INDEX IF NOT EXISTS marking_codes_status_id_idx ON marking_codes (status, id DESC)",
+        "CREATE INDEX IF NOT EXISTS marking_codes_unlinked_idx ON marking_codes (id DESC) WHERE product_id IS NULL",
+        "CREATE INDEX IF NOT EXISTS marking_codes_order_idx ON marking_codes (order_id, gtin) WHERE order_id <> ''",
         // --- Роль "только просмотр": пользователь видит данные, но ничего не меняет.
         // Администратор всегда может редактировать (read_only для него не действует).
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS read_only BOOLEAN NOT NULL DEFAULT FALSE",

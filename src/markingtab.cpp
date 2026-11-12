@@ -12,6 +12,7 @@
 #include "xlsx.h"
 
 #include <QApplication>
+#include <algorithm>
 #include <QComboBox>
 #include <QCompleter>
 #include <QDialogButtonBox>
@@ -27,7 +28,9 @@
 #include <QPushButton>
 #include <QSpinBox>
 #include <QSqlQuery>
-#include <QTableWidget>
+#include <QAbstractTableModel>
+#include <QItemSelection>
+#include <QTableView>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -349,6 +352,116 @@ private:
 
 } // namespace
 
+// ---------------------------------------------------------------- таблица кодов
+
+// Модель вместо QTableWidget: ячейки не создаются заранее (их тысячи), текст и цвета считаются только для видимых строк, а перезагрузка списка -
+// это один сброс модели. С QTableWidget на 2000 строках каждая перезагрузка (после каждого скана!) создавала ~18 000 объектов и пересчитывала
+// ширину столбцов «по содержимому» на каждую ячейку.
+class MarkingModel : public QAbstractTableModel
+{
+public:
+    explicit MarkingModel(QObject *parent) : QAbstractTableModel(parent)
+    {
+        m_headers = {tr("Статус"), tr("Артикул"), tr("Название"), tr("GTIN"), tr("Серийный номер"), tr("Код"), tr("Источник"), tr("Печатей"), tr("Создан")};
+        m_new = tr("новый");
+        m_printed = tr("напечатан");
+        m_kiNew = tr("КИ, без криптохвоста");
+        m_kiPrinted = tr("нанесён (КИ)");
+        m_kiTip = tr("Код идентификации: в нём нет криптохвоста (групп 91 и 92), поэтому Data Matrix для нанесения на товар из него не получится. "
+                     "Такие коды нужны для документов Системы маркировки; печать для них отключена.");
+        m_notFound = tr("- не найден -");
+        m_boldFont.setBold(true);
+    }
+
+    void setRows(QList<MarkingCode::Row> rows)
+    {
+        beginResetModel();
+        m_rows = std::move(rows);
+        m_noTail.resize(m_rows.size());
+        for (int i = 0; i < m_rows.size(); ++i)
+            m_noTail[i] = !MarkingCode::hasCryptoTail(m_rows[i].code);
+        endResetModel();
+    }
+    const MarkingCode::Row &row(int r) const { return m_rows.at(r); }
+    // Новый код, который можно печатать (у кода идентификации криптохвоста нет - его не печатают).
+    bool isNewPrintable(int r) const { return m_rows.at(r).status != QLatin1String("printed") && !m_noTail.at(r); }
+
+    int rowCount(const QModelIndex &parent = QModelIndex()) const override { return parent.isValid() ? 0 : int(m_rows.size()); }
+    int columnCount(const QModelIndex &parent = QModelIndex()) const override { return parent.isValid() ? 0 : ColCount; }
+    QVariant headerData(int section, Qt::Orientation orientation, int role) const override
+    {
+        if (orientation == Qt::Horizontal && role == Qt::DisplayRole && section >= 0 && section < m_headers.size())
+            return m_headers.at(section);
+        return {};
+    }
+    QVariant data(const QModelIndex &index, int role) const override
+    {
+        if (!index.isValid() || index.row() >= m_rows.size())
+            return {};
+        const MarkingCode::Row &r = m_rows.at(index.row());
+        const bool ki = m_noTail.at(index.row());
+        const bool printed = r.status == QLatin1String("printed");
+        if (role == Qt::UserRole)
+            return r.id;
+        switch (index.column()) {
+        case ColStatus:
+            if (role == Qt::DisplayRole)
+                return printed ? (ki ? m_kiPrinted : m_printed) : (ki ? m_kiNew : m_new);
+            // Статус виден сразу по цвету: новый - зелёный, напечатан - спокойный серый, код идентификации - янтарный.
+            if (role == Qt::ForegroundRole)
+                return ki ? Theme::colors().warn : (printed ? Theme::colors().muted : Theme::colors().ok);
+            if (role == Qt::FontRole && !ki && !printed)
+                return m_boldFont;
+            if (role == Qt::ToolTipRole && ki)
+                return m_kiTip;
+            break;
+        case ColSku:
+            if (role == Qt::DisplayRole)
+                return r.productId > 0 ? r.sku : m_notFound;
+            break;
+        case ColName:
+            if (role == Qt::DisplayRole)
+                return r.name;
+            break;
+        case ColGtin:
+            if (role == Qt::DisplayRole)
+                return r.gtin;
+            break;
+        case ColSerial:
+            if (role == Qt::DisplayRole)
+                return r.serial;
+            break;
+        case ColCode:
+            if (role == Qt::DisplayRole)
+                return MarkingCode::shortText(r.code);
+            if (role == Qt::ToolTipRole)
+                return QString(r.code).replace(MarkingCode::kGs, QStringLiteral("␝"));
+            break;
+        case ColSource:
+            if (role == Qt::DisplayRole)
+                return r.source == QLatin1String("suz") ? tr("СУЗ %1").arg(r.orderId)
+                                                        : (r.source == QLatin1String("scan") ? tr("сканер") : (r.source == QLatin1String("registry") ? tr("реестр ЧЗ") : tr("импорт")));
+            break;
+        case ColPrints:
+            if (role == Qt::DisplayRole)
+                return r.printCount;
+            break;
+        case ColCreated:
+            if (role == Qt::DisplayRole)
+                return r.createdAt.toLocalTime().toString(QStringLiteral("dd.MM.yyyy HH:mm"));
+            break;
+        }
+        return {};
+    }
+
+private:
+    QList<MarkingCode::Row> m_rows;
+    QList<bool> m_noTail;
+    QStringList m_headers;
+    QString m_new, m_printed, m_kiNew, m_kiPrinted, m_kiTip, m_notFound;
+    QFont m_boldFont;
+};
+
 // ---------------------------------------------------------------- страница
 
 MarkingTab::MarkingTab(QWidget *parent)
@@ -405,14 +518,19 @@ MarkingTab::MarkingTab(QWidget *parent)
     m_notice->setVisible(false);
     layout->addWidget(m_notice);
 
-    m_table = new QTableWidget(0, ColCount, this);
-    m_table->setHorizontalHeaderLabels({tr("Статус"), tr("Артикул"), tr("Название"), tr("GTIN"), tr("Серийный номер"), tr("Код"), tr("Источник"), tr("Печатей"), tr("Создан")});
+    m_model = new MarkingModel(this);
+    m_table = new QTableView(this);
+    m_table->setModel(m_model);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->verticalHeader()->setVisible(false);
     m_table->setAlternatingRowColors(true);
+    m_table->setWordWrap(false);
+    m_table->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_table->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     QHeaderView *h = m_table->horizontalHeader();
+    h->setResizeContentsPrecision(40);   // ширина «по содержимому» считается по первым строкам, а не по всем двум тысячам
     h->setSectionResizeMode(ColName, QHeaderView::Stretch);
     h->setSectionResizeMode(ColCode, QHeaderView::Stretch);
     for (int c : {ColStatus, ColSku, ColGtin, ColSerial, ColSource, ColPrints, ColCreated})
@@ -447,11 +565,10 @@ QList<int> MarkingTab::selectedIds() const
 {
     QList<int> ids;
     const QModelIndexList rows = m_table->selectionModel()->selectedRows();
-    for (const QModelIndex &i : rows) {
-        const QTableWidgetItem *item = m_table->item(i.row(), ColStatus);
-        if (item)
-            ids << item->data(Qt::UserRole).toInt();
-    }
+    ids.reserve(rows.size());
+    for (const QModelIndex &i : rows)
+        ids << m_model->row(i.row()).id;
+    std::sort(ids.begin(), ids.end());   // в порядке номеров, а не выделения
     return ids;
 }
 
@@ -464,40 +581,13 @@ void MarkingTab::reload()
     else
         f.status = st;
     f.text = m_search->text();
-    const QList<MarkingCode::Row> rows = MarkingCode::list(f);
-    m_table->setSortingEnabled(false);
-    m_table->setRowCount(int(rows.size()));
-    for (int r = 0; r < rows.size(); ++r) {
-        const MarkingCode::Row &row = rows[r];
-        // Код без криптохвоста - код идентификации (КИ): им подают сведения в Систему маркировки, напечатать из него нельзя.
-        const bool ki = !MarkingCode::hasCryptoTail(row.code);
-        auto *status = new QTableWidgetItem(row.status == QLatin1String("printed") ? (ki ? tr("нанесён (КИ)") : tr("напечатан")) : (ki ? tr("КИ, без криптохвоста") : tr("новый")));
-        if (ki)
-            status->setToolTip(tr("Код идентификации: в нём нет криптохвоста (групп 91 и 92), поэтому Data Matrix для нанесения на товар из него не получится. "
-                                  "Такие коды нужны для документов Системы маркировки; печать для них отключена."));
-        // Статус виден сразу по цвету: новый - зелёный, напечатан - спокойный серый, код идентификации - янтарный.
-        status->setForeground(ki ? Theme::colors().warn : (row.status == QLatin1String("printed") ? Theme::colors().muted : Theme::colors().ok));
-        if (!ki && row.status != QLatin1String("printed")) {
-            QFont f = status->font();
-            f.setBold(true);
-            status->setFont(f);
-        }
-        status->setData(Qt::UserRole, row.id);
-        m_table->setItem(r, ColStatus, status);
-        m_table->setItem(r, ColSku, new QTableWidgetItem(row.productId > 0 ? row.sku : tr("- не найден -")));
-        m_table->setItem(r, ColName, new QTableWidgetItem(row.name));
-        m_table->setItem(r, ColGtin, new QTableWidgetItem(row.gtin));
-        m_table->setItem(r, ColSerial, new QTableWidgetItem(row.serial));
-        auto *code = new QTableWidgetItem(MarkingCode::shortText(row.code));
-        code->setToolTip(QString(row.code).replace(MarkingCode::kGs, QStringLiteral("␝")));
-        m_table->setItem(r, ColCode, code);
-        m_table->setItem(r, ColSource, new QTableWidgetItem(row.source == QLatin1String("suz") ? tr("СУЗ %1").arg(row.orderId) : (row.source == QLatin1String("scan") ? tr("сканер") : (row.source == QLatin1String("registry") ? tr("реестр ЧЗ") : tr("импорт")))));
-        m_table->setItem(r, ColPrints, new QTableWidgetItem(QString::number(row.printCount)));
-        m_table->setItem(r, ColCreated, new QTableWidgetItem(row.createdAt.toLocalTime().toString(QStringLiteral("dd.MM.yyyy HH:mm"))));
-    }
-    const MarkingCode::Counts c = MarkingCode::counts();
+    f.limit = 5000;   // таблица на модели держит тысячи строк без задержек (на QTableWidget было 2000)
+    MarkingCode::Counts c;
+    QList<MarkingCode::Row> rows = MarkingCode::listWithCounts(f, &c);   // список и счётчики - один запрос
+    const int shown = int(rows.size());
+    m_model->setRows(std::move(rows));
     m_counts->setText(tr("Кодов: %1 · новых: %2 · напечатано: %3 · без товара: %4%5").arg(c.total).arg(c.fresh).arg(c.printed).arg(c.unlinked)
-                          .arg(rows.size() >= f.limit ? tr(" · показаны первые %1").arg(f.limit) : QString()));
+                          .arg(shown >= f.limit ? tr(" · показаны первые %1").arg(f.limit) : QString()));
 }
 
 void MarkingTab::showAddResult(const MarkingCode::AddResult &r)
@@ -606,11 +696,21 @@ void MarkingTab::settings()
 
 void MarkingTab::selectNew()
 {
-    m_table->clearSelection();
-    const QItemSelectionModel::SelectionFlags flags = QItemSelectionModel::Select | QItemSelectionModel::Rows;
-    for (int r = 0; r < m_table->rowCount(); ++r)
-        if (m_table->item(r, ColStatus)->text() == tr("новый"))
-            m_table->selectionModel()->select(m_table->model()->index(r, 0), flags);
+    // Одним выделением на всё: диапазоны подряд идущих новых кодов (а не по сигналу на каждую строку).
+    QItemSelection selection;
+    const int n = m_model->rowCount();
+    for (int r = 0; r < n;) {
+        if (!m_model->isNewPrintable(r)) {
+            ++r;
+            continue;
+        }
+        int end = r;
+        while (end + 1 < n && m_model->isNewPrintable(end + 1))
+            ++end;
+        selection.select(m_model->index(r, 0), m_model->index(end, ColCount - 1));
+        r = end + 1;
+    }
+    m_table->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
 }
 
 void MarkingTab::print()
@@ -646,11 +746,10 @@ void MarkingTab::introXml()
     QList<int> ids = selectedIds();
     QString source = tr("Выделенные коды");
     if (ids.isEmpty()) {
-        for (int r = 0; r < m_table->rowCount(); ++r) {
-            const QTableWidgetItem *item = m_table->item(r, ColStatus);
-            if (item)
-                ids << item->data(Qt::UserRole).toInt();
-        }
+        const int n = m_model->rowCount();
+        ids.reserve(n);
+        for (int r = 0; r < n; ++r)
+            ids << m_model->row(r).id;
         source = tr("Все коды в списке");
     }
     if (ids.isEmpty()) {
@@ -663,10 +762,10 @@ void MarkingTab::introXml()
 
 void MarkingTab::linkSelected()
 {
-    const QList<int> ids = selectedIds();
     QStringList gtins;
-    for (int id : ids) {
-        const MarkingCode::Row r = MarkingCode::get(id);
+    const QModelIndexList selected = m_table->selectionModel()->selectedRows();
+    for (const QModelIndex &i : selected) {
+        const MarkingCode::Row &r = m_model->row(i.row());   // уже загружены: в базу ходить не нужно
         if (r.productId == 0 && !gtins.contains(r.gtin))
             gtins << r.gtin;
     }
