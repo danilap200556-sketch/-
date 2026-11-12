@@ -300,7 +300,7 @@ QStringList splitText(const QString &text)
 int productIdForGtin(const QString &gtin)
 {
     // GTIN-14, а если он начинается с нуля - то же без одного нуля (EAN-13) и без двух (UPC-A): всё одним запросом, самый длинный штрихкод первым.
-    const QVariant none(QMetaType(QMetaType::QString));
+    const QVariant none = QVariant(QMetaType::fromType<QString>());   // NULL нужного типа (запись без «=» MSVC принимает за объявление функции)
     const bool shortened = gtin.size() == 14 && gtin.startsWith(QLatin1Char('0'));
     QSqlQuery q;
     q.prepare(QStringLiteral("SELECT product_id FROM product_barcodes WHERE barcode = ANY(ARRAY[?::text, ?::text, ?::text]) ORDER BY length(barcode) DESC LIMIT 1"));
