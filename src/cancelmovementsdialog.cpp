@@ -36,6 +36,7 @@ CancelMovementsDialog::CancelMovementsDialog(const QList<int> &movementIds, QWid
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->horizontalHeader()->setSectionResizeMode(ColSku, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setResizeContentsPrecision(40); // журнал может быть длинным: ширина по первым строкам
     m_table->horizontalHeader()->setSectionResizeMode(ColWarehouse, QHeaderView::ResizeToContents);
     m_table->horizontalHeader()->setSectionResizeMode(ColType, QHeaderView::ResizeToContents);
     layout->addWidget(m_table, 1);

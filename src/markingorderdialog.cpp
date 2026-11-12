@@ -85,6 +85,7 @@ MarkingOrderDialog::MarkingOrderDialog(QWidget *parent)
     m_table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     m_table->verticalHeader()->setVisible(false);
     QHeaderView *h = m_table->horizontalHeader();
+    h->setResizeContentsPrecision(40); // заказ на сотни артикулов: ширина по первым строкам
     h->setSectionResizeMode(ColName, QHeaderView::Stretch);
     for (int c : {ColSku, ColGtin, ColQty, ColOrder})
         h->setSectionResizeMode(c, QHeaderView::ResizeToContents);

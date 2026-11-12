@@ -95,6 +95,7 @@ BatchDialog::BatchDialog(Kind kind, QWidget *parent)
     m_table->setIconSize(QSize(PhotoCache::kIconSize, PhotoCache::kIconSize));
     m_table->verticalHeader()->setDefaultSectionSize(PhotoCache::kIconSize + 6);
     m_table->horizontalHeader()->setSectionResizeMode(ColName, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setResizeContentsPrecision(40); // ширина «по содержимому» - по первым строкам, а не по всем (списки в сотни позиций)
     m_table->horizontalHeader()->setSectionResizeMode(ColSku, QHeaderView::ResizeToContents);
     m_table->horizontalHeader()->setSectionResizeMode(ColCurrent, QHeaderView::ResizeToContents);
     layout->addWidget(m_table, 1);

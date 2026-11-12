@@ -116,6 +116,7 @@ ThermalPrintDialog::ThermalPrintDialog(const QList<Item> &items, QWidget *parent
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->verticalHeader()->setVisible(false);
     m_table->horizontalHeader()->setSectionResizeMode(ColName, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setResizeContentsPrecision(40); // тысячи этикеток: ширина по первым строкам
     m_table->horizontalHeader()->setSectionResizeMode(ColCode, QHeaderView::ResizeToContents);
     middle->addWidget(m_table, 3);
 
