@@ -6,6 +6,7 @@
 #include <QList>
 #include <QString>
 
+class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
@@ -23,7 +24,8 @@ class MarkingOrderDialog : public QDialog
 {
     Q_OBJECT
 public:
-    explicit MarkingOrderDialog(QWidget *parent = nullptr);
+    // ownerId / warehouseId - с какого ИП и склада начать (0 - не задано; склад сам подставляет своего ИП).
+    explicit MarkingOrderDialog(QWidget *parent = nullptr, int ownerId = 0, int warehouseId = 0);
 
     // Позиций (кодов товара GTIN) в одном заказе СУЗ: так задано в кабинете для заказа файлом (не больше 10 для всех групп, кроме лекарств);
     // длиннее список - несколько заказов подряд. Предел самого API не проверялся, поэтому берётся тот же.
@@ -50,8 +52,14 @@ public:
     int addText(const QString &text);
     // false - у товара нет подходящего штрихкода (позиция всё равно добавлена, с пометкой, GTIN можно вписать вручную).
     bool addProduct(int productId, int qty);
-    // Товары, у которых остаток больше, чем свободных (не напечатанных) кодов: заказать недостающее. Возвращает число добавленных позиций.
+    // Товары, у которых остаток больше, чем свободных (не напечатанных) кодов выбранного ИП: заказать недостающее. Остаток берётся со склада,
+    // выбранного в окне; «все склады» при выбранном ИП - это все склады этого ИП. Возвращает число добавленных позиций.
     int addByStock();
+    int ownerId() const { return m_owner; }
+    int warehouseId() const;
+    // Выбор ИП и склада; ask - спросить, если список позиций не пуст (он очищается: у каждого ИП свой список заказов).
+    bool setOwner(int ownerId, bool ask = false);
+    void setWarehouse(int warehouseId);
     void setOrderNumber(const QString &orderId);
 
     // Действия кнопок без вопросов (для проверок). createOrders - сколько заказов создано; fetchCodes - сколько НОВЫХ кодов добавлено.
@@ -68,6 +76,7 @@ private slots:
 
 private:
     void exportXml();
+    QString pendingKey() const;
     ChestnyZnak::Settings freshSettings();
     void refreshSummary();
     void appendLog(const QString &line);
@@ -78,6 +87,9 @@ private:
     int rowOf(int productId) const;
     int addProducts(const QList<QPair<int, int>> &items);
 
+    QComboBox *m_ownerCombo = nullptr;
+    QComboBox *m_warehouseCombo = nullptr;
+    int m_owner = 0;
     QLineEdit *m_scan = nullptr;
     QLineEdit *m_order = nullptr;
     QTableWidget *m_table = nullptr;

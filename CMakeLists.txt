@@ -160,6 +160,10 @@ add_executable(inventory_manager
     src/chestnyznak.cpp
     src/datamatrix.cpp
     src/markingcode.cpp
+    src/markingowner.cpp
+    src/ordermarking.cpp
+    src/ordermarkingdialog.cpp
+    src/markingownersdialog.cpp
     src/markingprintdialog.cpp
     src/markingorderdialog.cpp
     src/markingtab.cpp

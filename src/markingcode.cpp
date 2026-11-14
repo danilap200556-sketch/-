@@ -112,6 +112,16 @@ QString pgIntArray(const QList<int> &v)
     return out;
 }
 
+// Условие по ИП для счётчиков (число вставляется в текст запроса - это не пользовательская строка).
+QString ownerCondition(int ownerId)
+{
+    if (ownerId == 0)
+        return QStringLiteral(" WHERE owner_id IS NULL");
+    if (ownerId > 0)
+        return QStringLiteral(" WHERE owner_id = %1").arg(ownerId);
+    return QString();
+}
+
 QString likeEscape(const QString &term)
 {
     QString t = term;
@@ -332,7 +342,7 @@ bool linkGtin(const QString &gtin, int productId, QString *error)
     return true;
 }
 
-AddResult add(const QStringList &rawCodes, const QString &source, const QString &orderId, int forceProductId, const QString &status)
+AddResult add(const QStringList &rawCodes, const QString &source, const QString &orderId, int forceProductId, const QString &status, int ownerId)
 {
     AddResult res;
     struct Item {
@@ -398,16 +408,17 @@ AddResult add(const QStringList &rawCodes, const QString &source, const QString 
         // уходит на четверть меньше. Товар у всех кодов один, если он задан явно, иначе его ищет база по GTIN.
         QSqlQuery q;
         q.prepare(QStringLiteral(
-            "INSERT INTO marking_codes (code, gtin, serial, product_id, source, order_id, status) "
+            "INSERT INTO marking_codes (code, gtin, serial, product_id, source, order_id, status, owner_id) "
             "SELECT u.code, g.gtin, split_part(substr(u.code, 19), chr(29), 1), COALESCE(?::int, (SELECT b.product_id FROM product_barcodes b WHERE b.barcode = ANY(ARRAY["
             "g.gtin, CASE WHEN g.gtin LIKE '0%' THEN substr(g.gtin, 2) END, CASE WHEN g.gtin LIKE '00%' THEN substr(g.gtin, 3) END]) "
-            "ORDER BY length(b.barcode) DESC LIMIT 1)), ?::text, ?::text, ?::text "
+            "ORDER BY length(b.barcode) DESC LIMIT 1)), ?::text, ?::text, ?::text, ?::int "
             "FROM unnest(?::text[]) AS u(code) CROSS JOIN LATERAL (SELECT substr(u.code, 3, 14) AS gtin) g "
             "ON CONFLICT (code) DO NOTHING RETURNING gtin, product_id"));
         q.addBindValue(forceProductId > 0 ? QVariant(forceProductId) : nullInt());
         q.addBindValue(sourceValue);
         q.addBindValue(orderValue);
         q.addBindValue(statusValue);
+        q.addBindValue(ownerId > 0 ? QVariant(ownerId) : nullInt());
         q.addBindValue(pgTextArray(codes));
         if (!q.exec()) {
             if (res.problems.size() < kMaxProblems)
@@ -498,7 +509,7 @@ bool readRegistryCsv(const QString &path, QList<RegistryRow> *rows, QString *err
     return true;
 }
 
-AddResult addRegistry(const QList<RegistryRow> &rows)
+AddResult addRegistry(const QList<RegistryRow> &rows, int ownerId)
 {
     // Коды одного заказа и статуса - одной группой (так у кода остаётся номер заказа).
     QMap<QString, QStringList> groups; // «статус|заказ» -> коды
@@ -507,7 +518,7 @@ AddResult addRegistry(const QList<RegistryRow> &rows)
     AddResult total;
     for (auto it = groups.cbegin(); it != groups.cend(); ++it) {
         const QStringList key = it.key().split(QLatin1Char('|'));
-        const AddResult part = add(it.value(), QStringLiteral("registry"), key.value(1), 0, key.value(0));
+        const AddResult part = add(it.value(), QStringLiteral("registry"), key.value(1), 0, key.value(0), ownerId);
         total.added += part.added;
         total.duplicates += part.duplicates;
         total.invalid += part.invalid;
@@ -552,11 +563,15 @@ Row rowFrom(QSqlQuery &q)
     r.orderId = q.value(10).toString();
     r.createdAt = q.value(11).toDateTime();
     r.printedAt = q.value(12).toDateTime();
+    r.ownerId = q.value(13).toInt();
+    r.ownerName = q.value(14).toString();
     return r;
 }
 
-const char kSelect[] = "SELECT m.id, m.code, m.gtin, m.serial, m.product_id, COALESCE(p.sku, ''), COALESCE(p.name, ''), m.status, m.print_count, "
-                       "m.source, m.order_id, m.created_at, m.printed_at FROM marking_codes m LEFT JOIN products p ON p.id = m.product_id ";
+const char kSelectColumns[] = "SELECT m.id, m.code, m.gtin, m.serial, m.product_id, COALESCE(p.sku, ''), COALESCE(p.name, ''), m.status, m.print_count, "
+                                "m.source, m.order_id, m.created_at, m.printed_at, COALESCE(m.owner_id, 0), COALESCE(o.name, '')";
+const char kSelectFrom[] = " FROM marking_codes m LEFT JOIN products p ON p.id = m.product_id LEFT JOIN marking_owners o ON o.id = m.owner_id ";
+const QString kSelect = QString::fromLatin1(kSelectColumns) + QString::fromLatin1(kSelectFrom);
 
 } // namespace
 
@@ -576,6 +591,12 @@ void listWhere(const Filter &f, QStringList *where, QVariantList *binds)
         *where << QStringLiteral("m.product_id = ?");
         *binds << f.productId;
     }
+    if (f.ownerId == 0) {
+        *where << QStringLiteral("m.owner_id IS NULL");
+    } else if (f.ownerId > 0) {
+        *where << QStringLiteral("m.owner_id = ?");
+        *binds << f.ownerId;
+    }
     const QString term = f.text.trimmed();
     if (!term.isEmpty()) {
         const Parsed whole = term.size() >= 20 ? parse(term) : Parsed();
@@ -590,8 +611,11 @@ void listWhere(const Filter &f, QStringList *where, QVariantList *binds)
     }
 }
 
-const char kCountsJoin[] = "CROSS JOIN (SELECT count(*) AS total, count(*) FILTER (WHERE status = 'new') AS fresh, count(*) FILTER (WHERE status = 'printed') AS printed, "
-                           "count(*) FILTER (WHERE product_id IS NULL) AS unlinked FROM marking_codes) c ";
+QString countsJoin(int ownerId)
+{
+    return QStringLiteral("CROSS JOIN (SELECT count(*) AS total, count(*) FILTER (WHERE status = 'new') AS fresh, count(*) FILTER (WHERE status = 'printed') AS printed, "
+                          "count(*) FILTER (WHERE product_id IS NULL) AS unlinked FROM marking_codes%1) c ").arg(ownerCondition(ownerId));
+}
 
 } // namespace
 
@@ -601,7 +625,7 @@ QList<Row> list(const Filter &f)
     QVariantList binds;
     listWhere(f, &where, &binds);
     QSqlQuery q;
-    q.prepare(QString::fromLatin1(kSelect) + (where.isEmpty() ? QString() : QStringLiteral("WHERE ") + where.join(QStringLiteral(" AND ")))
+    q.prepare(kSelect + (where.isEmpty() ? QString() : QStringLiteral("WHERE ") + where.join(QStringLiteral(" AND ")))
               + QStringLiteral(" ORDER BY m.id DESC LIMIT %1").arg(qBound(1, f.limit, 100000)));
     for (const QVariant &b : std::as_const(binds))
         q.addBindValue(b);
@@ -618,10 +642,8 @@ QList<Row> listWithCounts(const Filter &f, Counts *counts)
     QVariantList binds;
     listWhere(f, &where, &binds);
     // Список и счётчики одним запросом: на удалённой базе каждый запрос - это ожидание ответа (десятки миллисекунд).
-    QString sql = QString::fromLatin1(kSelect);
-    sql.replace(QLatin1String("FROM marking_codes m LEFT JOIN products p ON p.id = m.product_id "),
-                QLatin1String("FROM marking_codes m LEFT JOIN products p ON p.id = m.product_id ") + QString::fromLatin1(kCountsJoin));
-    sql.replace(QLatin1String("m.source, m.order_id, m.created_at, m.printed_at FROM"), QLatin1String("m.source, m.order_id, m.created_at, m.printed_at, c.total, c.fresh, c.printed, c.unlinked FROM"));
+    const QString sql = QString::fromLatin1(kSelectColumns) + QStringLiteral(", c.total, c.fresh, c.printed, c.unlinked") + QString::fromLatin1(kSelectFrom)
+                        + countsJoin(f.ownerId);
     QSqlQuery q;
     q.prepare(sql + (where.isEmpty() ? QString() : QStringLiteral("WHERE ") + where.join(QStringLiteral(" AND ")))
               + QStringLiteral(" ORDER BY m.id DESC LIMIT %1").arg(qBound(1, f.limit, 100000)));
@@ -633,16 +655,16 @@ QList<Row> listWithCounts(const Filter &f, Counts *counts)
         while (q.next()) {
             out << rowFrom(q);
             if (!haveCounts && counts) {
-                counts->total = q.value(13).toInt();
-                counts->fresh = q.value(14).toInt();
-                counts->printed = q.value(15).toInt();
-                counts->unlinked = q.value(16).toInt();
+                counts->total = q.value(15).toInt();
+                counts->fresh = q.value(16).toInt();
+                counts->printed = q.value(17).toInt();
+                counts->unlinked = q.value(18).toInt();
                 haveCounts = true;
             }
         }
     }
     if (counts && !haveCounts)   // ничего не нашлось - счётчиков в ответе нет
-        *counts = MarkingCode::counts();
+        *counts = MarkingCode::counts(f.ownerId);
     return out;
 }
 
@@ -652,7 +674,7 @@ QList<Row> getMany(const QList<int> &ids)
     if (ids.isEmpty())
         return out;
     QSqlQuery q;
-    q.prepare(QString::fromLatin1(kSelect) + QStringLiteral("WHERE m.id = ANY(?::int[])"));
+    q.prepare(kSelect + QStringLiteral("WHERE m.id = ANY(?::int[])"));
     q.addBindValue(pgIntArray(ids));
     QHash<int, Row> byId;
     if (q.exec())
@@ -672,7 +694,7 @@ QList<Row> getMany(const QList<int> &ids)
 Row get(int id)
 {
     QSqlQuery q;
-    q.prepare(QString::fromLatin1(kSelect) + QStringLiteral("WHERE m.id = ?"));
+    q.prepare(kSelect + QStringLiteral("WHERE m.id = ?"));
     q.addBindValue(id);
     if (q.exec() && q.next())
         return rowFrom(q);
@@ -704,11 +726,12 @@ QStringList codesByIds(const QList<int> &ids)
     return out;
 }
 
-Counts counts()
+
+Counts counts(int ownerId)
 {
     Counts c;
     QSqlQuery q(QStringLiteral("SELECT count(*), count(*) FILTER (WHERE status = 'new'), count(*) FILTER (WHERE status = 'printed'), "
-                               "count(*) FILTER (WHERE product_id IS NULL) FROM marking_codes"));
+                               "count(*) FILTER (WHERE product_id IS NULL) FROM marking_codes") + ownerCondition(ownerId));
     if (q.next()) {
         c.total = q.value(0).toInt();
         c.fresh = q.value(1).toInt();
@@ -731,6 +754,102 @@ bool markPrinted(const QList<int> &ids, QString *error)
         return false;
     }
     return true;
+}
+
+int assignOwner(const QList<int> &ids, int ownerId)
+{
+    if (ids.isEmpty())
+        return 0;
+    QSqlQuery q;
+    q.prepare(QStringLiteral("UPDATE marking_codes SET owner_id = ?::int WHERE id = ANY(?::int[]) AND owner_id IS DISTINCT FROM ?::int"));
+    const QVariant owner = ownerId > 0 ? QVariant(ownerId) : nullInt();
+    q.addBindValue(owner);
+    q.addBindValue(pgIntArray(ids));
+    q.addBindValue(owner);
+    return q.exec() ? q.numRowsAffected() : 0;
+}
+
+QHash<int, int> freeCountsByProduct(int ownerId)
+{
+    // «Свободный» - новый и с криптохвостом (в нём есть GS): код идентификации без хвоста напечатать нельзя.
+    QHash<int, int> out;
+    QSqlQuery q;
+    q.prepare(QStringLiteral("SELECT product_id, count(*) FROM marking_codes WHERE status = 'new' AND product_id IS NOT NULL AND strpos(code, chr(29)) > 0 "
+                             "AND owner_id IS NOT DISTINCT FROM ?::int GROUP BY product_id"));
+    q.addBindValue(ownerId > 0 ? QVariant(ownerId) : nullInt());
+    if (q.exec())
+        while (q.next())
+            out.insert(q.value(0).toInt(), q.value(1).toInt());
+    return out;
+}
+
+QHash<QString, QList<int>> pickFree(const QList<PickNeed> &needs)
+{
+    QHash<QString, QList<int>> out;
+    // Потребности одной пары «товар - ИП» складываются: коды берутся по одному запросу на всё.
+    QHash<QString, PickNeed> merged;
+    for (const PickNeed &n : needs) {
+        if (n.productId <= 0 || n.qty <= 0)
+            continue;
+        PickNeed &m = merged[pickKey(n.productId, n.ownerId)];
+        m.productId = n.productId;
+        m.ownerId = n.ownerId > 0 ? n.ownerId : 0;
+        m.qty += n.qty;
+    }
+    if (merged.isEmpty())
+        return out;
+    QStringList pids, oids, qtys;
+    for (const PickNeed &m : std::as_const(merged)) {
+        pids << QString::number(m.productId);
+        oids << (m.ownerId > 0 ? QString::number(m.ownerId) : QStringLiteral("NULL"));
+        qtys << QString::number(m.qty);
+    }
+    QSqlQuery q;
+    q.prepare(QStringLiteral(
+        "WITH n AS (SELECT * FROM unnest(?::int[], ?::int[], ?::int[]) AS t(pid, oid, qty)), "
+        "c AS (SELECT m.id, m.product_id, m.owner_id, row_number() OVER (PARTITION BY m.product_id, m.owner_id ORDER BY m.id) AS rn "
+        "      FROM marking_codes m JOIN n ON n.pid = m.product_id AND n.oid IS NOT DISTINCT FROM m.owner_id "
+        "      WHERE m.status = 'new' AND strpos(m.code, chr(29)) > 0) "
+        "SELECT c.id, c.product_id, COALESCE(c.owner_id, 0) FROM c JOIN n ON n.pid = c.product_id AND n.oid IS NOT DISTINCT FROM c.owner_id "
+        "WHERE c.rn <= n.qty ORDER BY c.product_id, c.id"));
+    q.addBindValue(QStringLiteral("{") + pids.join(QLatin1Char(',')) + QStringLiteral("}"));
+    q.addBindValue(QStringLiteral("{") + oids.join(QLatin1Char(',')) + QStringLiteral("}"));
+    q.addBindValue(QStringLiteral("{") + qtys.join(QLatin1Char(',')) + QStringLiteral("}"));
+    if (q.exec())
+        while (q.next())
+            out[pickKey(q.value(1).toInt(), q.value(2).toInt())] << q.value(0).toInt();
+    return out;
+}
+
+QList<SaleCode> codesForSales(const QStringList &refs)
+{
+    QList<SaleCode> out;
+    if (refs.isEmpty())
+        return out;
+    QSqlQuery q;
+    q.prepare(QStringLiteral("SELECT id, COALESCE(product_id, 0), sale_ref FROM marking_codes WHERE sale_ref = ANY(?::text[]) ORDER BY id"));
+    q.addBindValue(pgTextArray(refs));
+    if (q.exec())
+        while (q.next())
+            out.append({q.value(0).toInt(), q.value(1).toInt(), q.value(2).toString()});
+    return out;
+}
+
+int assignSales(const QHash<QString, QList<int>> &idsByRef)
+{
+    QStringList ids, refs;
+    for (auto it = idsByRef.cbegin(); it != idsByRef.cend(); ++it)
+        for (int id : it.value()) {
+            ids << QString::number(id);
+            refs << it.key();
+        }
+    if (ids.isEmpty())
+        return 0;
+    QSqlQuery q;
+    q.prepare(QStringLiteral("UPDATE marking_codes m SET sale_ref = t.ref FROM unnest(?::int[], ?::text[]) AS t(id, ref) WHERE m.id = t.id"));
+    q.addBindValue(QStringLiteral("{") + ids.join(QLatin1Char(',')) + QStringLiteral("}"));
+    q.addBindValue(pgTextArray(refs));
+    return q.exec() ? q.numRowsAffected() : 0;
 }
 
 int remove(const QList<int> &ids, bool onlyNew)

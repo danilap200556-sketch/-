@@ -224,14 +224,23 @@ QString normalizeBaseUrl(const QString &input)
     return out;
 }
 
-Settings loadSettings()
+namespace {
+// Ключ настройки ИП: у общих настроек (0) ключ прежний, у ИП - с суффиксом номера.
+QString ownerKey(const char *base, int ownerId)
+{
+    return ownerId > 0 ? QStringLiteral("%1_o%2").arg(QString::fromLatin1(base)).arg(ownerId) : QString::fromLatin1(base);
+}
+} // namespace
+
+Settings loadSettings(int ownerId)
 {
     Settings s;
+    s.ownerId = ownerId > 0 ? ownerId : 0;
     const QString url = AppSettings::get(QString::fromLatin1(kKeyUrl));
     if (!url.trimmed().isEmpty())
         s.baseUrl = normalizeBaseUrl(url);
-    s.omsId = AppSettings::get(QString::fromLatin1(kKeyOms)).trimmed();
-    s.clientToken = AppSettings::get(QString::fromLatin1(kKeyToken)).trimmed();
+    s.omsId = AppSettings::get(ownerKey(kKeyOms, s.ownerId)).trimmed();
+    s.clientToken = AppSettings::get(ownerKey(kKeyToken, s.ownerId)).trimmed();
     s.signerUrl = AppSettings::get(QString::fromLatin1(kKeySigner)).trimmed();
     s.templateId = AppSettings::get(QString::fromLatin1(kKeyTemplate)).toInt();
     const QString group = AppSettings::get(QString::fromLatin1(kKeyGroup)).trimmed();
@@ -241,29 +250,30 @@ Settings loadSettings()
     if (!release.isEmpty())
         s.releaseMethodType = release;
     s.contactPerson = AppSettings::get(QString::fromLatin1(kKeyContact)).trimmed();
-    s.omsConnection = AppSettings::get(QString::fromLatin1(kKeyConnection)).trimmed();
+    s.omsConnection = AppSettings::get(ownerKey(kKeyConnection, s.ownerId)).trimmed();
     const QString trueApi = AppSettings::get(QString::fromLatin1(kKeyTrueApi)).trimmed();
     if (!trueApi.isEmpty())
         s.trueApiUrl = trueApi;
-    s.tokenIssuedAt = QDateTime::fromString(AppSettings::get(QString::fromLatin1(kKeyTokenAt)), Qt::ISODate);
-    s.certThumbprint = QSettings().value(QString::fromLatin1(kLocalCert)).toString().trimmed();
+    s.tokenIssuedAt = QDateTime::fromString(AppSettings::get(ownerKey(kKeyTokenAt, s.ownerId)), Qt::ISODate);
+    s.certThumbprint = QSettings().value(ownerKey(kLocalCert, s.ownerId)).toString().trimmed();
     return s;
 }
 
 void saveSettings(const Settings &s)
 {
+    const int o = s.ownerId > 0 ? s.ownerId : 0;
     AppSettings::set(QString::fromLatin1(kKeyUrl), normalizeBaseUrl(s.baseUrl));
-    AppSettings::set(QString::fromLatin1(kKeyOms), s.omsId.trimmed());
-    AppSettings::set(QString::fromLatin1(kKeyToken), s.clientToken.trimmed());
+    AppSettings::set(ownerKey(kKeyOms, o), s.omsId.trimmed());
+    AppSettings::set(ownerKey(kKeyToken, o), s.clientToken.trimmed());
     AppSettings::set(QString::fromLatin1(kKeySigner), s.signerUrl.trimmed());
     AppSettings::set(QString::fromLatin1(kKeyTemplate), QString::number(s.templateId));
     AppSettings::set(QString::fromLatin1(kKeyGroup), s.productGroup.trimmed());
     AppSettings::set(QString::fromLatin1(kKeyRelease), s.releaseMethodType.trimmed());
     AppSettings::set(QString::fromLatin1(kKeyContact), s.contactPerson.trimmed().isEmpty() ? QString(QLatin1String("")) : s.contactPerson.trimmed());
-    AppSettings::set(QString::fromLatin1(kKeyConnection), s.omsConnection.trimmed());
+    AppSettings::set(ownerKey(kKeyConnection, o), s.omsConnection.trimmed());
     AppSettings::set(QString::fromLatin1(kKeyTrueApi), s.trueApiUrl.trimmed());
-    AppSettings::set(QString::fromLatin1(kKeyTokenAt), s.tokenIssuedAt.isValid() ? s.tokenIssuedAt.toString(Qt::ISODate) : QString(QLatin1String("")));
-    QSettings().setValue(QString::fromLatin1(kLocalCert), s.certThumbprint.trimmed());
+    AppSettings::set(ownerKey(kKeyTokenAt, o), s.tokenIssuedAt.isValid() ? s.tokenIssuedAt.toString(Qt::ISODate) : QString(QLatin1String("")));
+    QSettings().setValue(ownerKey(kLocalCert, o), s.certThumbprint.trimmed());
 }
 
 static QList<QPair<QByteArray, QByteArray>> authHeaders(const Settings &s)

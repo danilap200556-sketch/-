@@ -189,6 +189,28 @@ QString jsonText(const QJsonArray &a)
 
 } // namespace
 
+QHash<QString, int> productsForKeys(const QStringList &keys, QStringList *ambiguous)
+{
+    QStringList norm;
+    for (const QString &k : keys) {
+        const QString n = normKey(k);
+        if (!n.isEmpty() && !norm.contains(n))
+            norm << n;
+    }
+    QHash<QString, int> out;
+    const QHash<QString, QList<Candidate>> found = resolveKeys(norm);
+    for (auto it = found.cbegin(); it != found.cend(); ++it) {
+        QSet<int> ids;
+        for (const Candidate &c : it.value())
+            ids.insert(c.id);
+        if (ids.size() == 1)
+            out.insert(it.key(), *ids.constBegin());
+        else if (ambiguous)
+            *ambiguous << it.key();
+    }
+    return out;
+}
+
 int siteWarehouse()
 {
     return AppSettings::get(QString::fromLatin1(kSiteWarehouseKey)).toInt();

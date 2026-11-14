@@ -1,6 +1,7 @@
 #pragma once
 
 #include "marketapi.h"
+#include "ordermarking.h"
 
 #include <QWidget>
 
@@ -34,6 +35,7 @@ private slots:
     void exportExcel();
     void downloadLabels();
     void writeOffOrders();
+    void printMarking();
     void applyFilter();
     void editProductOfRow(int row);
 
@@ -46,6 +48,7 @@ private:
     };
 
     QList<const LoadedOrder *> selectedOrders() const;
+    QList<OrderMarking::OrderInput> markingInputs(const QList<const LoadedOrder *> &orders) const;
     bool orderVisible(int orderIndex) const;
     QHash<QString, QString> loadLocations() const;
     void log(const QString &text);
@@ -58,6 +61,7 @@ private:
     QComboBox *m_accountCombo;
     QComboBox *m_statusCombo;
     QComboBox *m_formatCombo;
+    QCheckBox *m_markingAfterLabels;
     QLineEdit *m_search;
     QTimer *m_searchTimer;
     QCheckBox *m_dateOn;

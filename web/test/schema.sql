@@ -93,6 +93,19 @@ CREATE INDEX IF NOT EXISTS marking_codes_status_idx ON marking_codes (status);
 CREATE INDEX IF NOT EXISTS marking_codes_status_id_idx ON marking_codes (status, id DESC);
 CREATE INDEX IF NOT EXISTS marking_codes_unlinked_idx ON marking_codes (id DESC) WHERE product_id IS NULL;
 CREATE INDEX IF NOT EXISTS marking_codes_order_idx ON marking_codes (order_id, gtin) WHERE order_id <> '';
+CREATE TABLE IF NOT EXISTS marking_owners (
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            inn TEXT NOT NULL DEFAULT ''
+        );
+CREATE TABLE IF NOT EXISTS marking_warehouse_owner (
+            warehouse_id INTEGER PRIMARY KEY REFERENCES warehouses(id) ON DELETE CASCADE,
+            owner_id INTEGER NOT NULL REFERENCES marking_owners(id) ON DELETE CASCADE
+        );
+ALTER TABLE marking_codes ADD COLUMN IF NOT EXISTS owner_id INTEGER REFERENCES marking_owners(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS marking_codes_owner_idx ON marking_codes (owner_id, status, id DESC);
+ALTER TABLE marking_codes ADD COLUMN IF NOT EXISTS sale_ref TEXT;
+CREATE INDEX IF NOT EXISTS marking_codes_sale_idx ON marking_codes (sale_ref) WHERE sale_ref IS NOT NULL;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS read_only BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS product_photos (
             id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

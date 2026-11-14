@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDateTime>
+#include <QHash>
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -52,8 +53,9 @@ struct AddResult {
 };
 // Добавляет коды (строки в любом виде, см. parse). forceProductId > 0 - все коды привязываются к этому товару, а его штрихкод
 // становится GTIN кодов (если он свободен). source: «import», «scan», «suz». orderId - заказ в СУЗ.
+// ownerId - ИП, на которого записываются коды (0 - без ИП).
 AddResult add(const QStringList &rawCodes, const QString &source, const QString &orderId = QString(), int forceProductId = 0,
-              const QString &status = QStringLiteral("new"));
+              const QString &status = QStringLiteral("new"), int ownerId = 0);
 
 // Есть ли у кода криптохвост (группа 91 / 92 или 93 после GS). Без него это КОД ИДЕНТИФИКАЦИИ (КИ): им подают сведения в Систему маркировки
 // (ввод в оборот, вывод из оборота), но Data Matrix для нанесения на товар из него не получится - такой код печатать нельзя.
@@ -75,7 +77,7 @@ struct RegistryRow {
 // реестр (rows заполнены); false - это не реестр (*error пуст) или файл не прочитался (*error - причина).
 bool readRegistryCsv(const QString &path, QList<RegistryRow> *rows, QString *error = nullptr);
 // Добавляет строки реестра: источник «registry», статус по статусу кода в системе (EMITTED - новый, остальное: нанесён, в обороте... - напечатан).
-AddResult addRegistry(const QList<RegistryRow> &rows);
+AddResult addRegistry(const QList<RegistryRow> &rows, int ownerId = 0);
 // Достаёт коды из текста: по одному в строке, либо вставленные вплотную; пустые строки и заголовки пропускаются.
 QStringList splitText(const QString &text);
 
@@ -91,12 +93,15 @@ struct Row {
     int printCount = 0;
     QString source, orderId;
     QDateTime createdAt, printedAt;
+    int ownerId = 0;         // ИП, на которого числится код; 0 - без ИП
+    QString ownerName;
 };
 struct Filter {
     QString status;          // пусто - все; new, printed
     bool onlyUnlinked = false;
     QString text;            // артикул, название, GTIN или часть кода
     int productId = 0;
+    int ownerId = -1;        // -1 - любой ИП, 0 - только без ИП, больше 0 - коды этого ИП
     int limit = 2000;
 };
 QList<Row> list(const Filter &filter = Filter());
@@ -113,9 +118,33 @@ QList<Row> getMany(const QList<int> &ids);
 int countForOrder(const QString &orderId, const QString &gtin);
 // Коды (как в базе, с разделителями групп) по номерам строк: пачками по одному запросу, в порядке номеров.
 QStringList codesByIds(const QList<int> &ids);
-Counts counts();
+// ownerId: -1 - по всем кодам, 0 - только без ИП, больше 0 - коды этого ИП.
+Counts counts(int ownerId = -1);
 
 bool markPrinted(const QList<int> &ids, QString *error = nullptr);
+// Записывает выделенные коды на ИП (0 - снять ИП). Возвращает, у скольких кодов ИП изменился.
+int assignOwner(const QList<int> &ids, int ownerId);
+
+// Сколько свободных (новых и пригодных для печати, то есть с криптохвостом) кодов есть у ИП по каждому товару: товар -> число.
+// ownerId 0 - свободные коды без ИП.
+QHash<int, int> freeCountsByProduct(int ownerId);
+// Подбирает коды для печати: для каждой пары «товар - ИП» нужное число самых старых свободных кодов этого ИП. Ключ - «товар|ИП».
+struct PickNeed {
+    int productId = 0;
+    int ownerId = 0;
+    int qty = 0;
+};
+QHash<QString, QList<int>> pickFree(const QList<PickNeed> &needs);
+// Выданные под заказы коды: «заказ -> коды» (ref вида «market:<кабинет>:<номер>»). Выдан - значит напечатан под этот заказ.
+struct SaleCode {
+    int id = 0;
+    int productId = 0;
+    QString ref;
+};
+QList<SaleCode> codesForSales(const QStringList &refs);
+// Записывает, под какие заказы выданы коды (ids по ref).
+int assignSales(const QHash<QString, QList<int>> &idsByRef);
+inline QString pickKey(int productId, int ownerId) { return QString::number(productId) + QLatin1Char('|') + QString::number(ownerId); }
 // Удаляет коды. onlyNew - только ещё не печатавшиеся (напечатанные могут быть уже наклеены на товар). Возвращает число удалённых.
 int remove(const QList<int> &ids, bool onlyNew = true);
 

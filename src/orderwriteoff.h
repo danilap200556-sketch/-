@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QHash>
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -63,6 +64,10 @@ struct Planned {
     int docId = 0;           // номер документа списания, если уже списан
     bool actionable() const { return action == Action::WriteOff || action == Action::Return; }
 };
+
+// Товары по ключам из заказов Маркета (артикул на Маркете, а если его нет - артикул; затем просто артикул и штрихкод): ключ -> id товара.
+// Ключ, под который подходит несколько товаров, в результат не попадает, а перечисляется в *ambiguous. Регистр и пробелы по краям не важны.
+QHash<QString, int> productsForKeys(const QStringList &keys, QStringList *ambiguous = nullptr);
 
 // Склад списания заказов кабинета (0 - не выбран; выбирается в настройках кабинета) и заказов сайта (общая настройка).
 int siteWarehouse();

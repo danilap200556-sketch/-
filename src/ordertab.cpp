@@ -1,4 +1,5 @@
 #include "ordertab.h"
+#include "ordermarkingdialog.h"
 
 #include "orderwriteoff.h"
 #include "orderwriteoffdialog.h"
@@ -168,6 +169,13 @@ OrdersTab::OrdersTab(QWidget *parent)
     actionRow->addWidget(m_formatCombo);
     auto *labelsBtn = new QPushButton(tr("Скачать ярлыки (PDF)..."), this);
     actionRow->addWidget(labelsBtn);
+    m_markingAfterLabels = new QCheckBox(tr("и ЧЗ на пары"), this);
+    m_markingAfterLabels->setToolTip(tr("После сохранения ярлыков сразу открыть печать кодов «Честного знака» на пары этих заказов"));
+    actionRow->addWidget(m_markingAfterLabels);
+    auto *markingBtn = new QPushButton(tr("ЧЗ на эти пары..."), this);
+    markingBtn->setToolTip(tr("Подобрать по коду «Честного знака» на каждую пару в выбранных заказах (код того ИП, чей склад списания у кабинета) и напечатать "
+                              "на термоэтикетках. Сначала покажет, чего не хватает."));
+    actionRow->addWidget(markingBtn);
     actionRow->addSpacing(20);
     auto *writeOffBtn = new QPushButton(tr("Списать со склада..."), this);
     writeOffBtn->setToolTip(tr("Списать пару за каждый заказ (и вернуть отменённые) с выбранного в настройках кабинета склада; заказы сайта - тоже. "
@@ -230,6 +238,7 @@ OrdersTab::OrdersTab(QWidget *parent)
     connect(loadBtn, &QPushButton::clicked, this, &OrdersTab::loadOrders);
     connect(excelBtn, &QPushButton::clicked, this, &OrdersTab::exportExcel);
     connect(labelsBtn, &QPushButton::clicked, this, &OrdersTab::downloadLabels);
+    connect(markingBtn, &QPushButton::clicked, this, &OrdersTab::printMarking);
     connect(writeOffBtn, &QPushButton::clicked, this, &OrdersTab::writeOffOrders);
 
 }
@@ -601,6 +610,40 @@ void OrdersTab::downloadLabels()
         QMessageBox::warning(this, tr("Ярлыки"), text);
     else
         QMessageBox::information(this, tr("Ярлыки"), text);
+    if (!saved.isEmpty() && m_markingAfterLabels->isChecked())
+        printMarking();   // «докинуть» в печать коды ЧЗ на те же пары
+}
+
+// Заказы в нейтральный вид для подбора кодов: кабинет определяет ИП (по складу списания кабинета).
+QList<OrderMarking::OrderInput> OrdersTab::markingInputs(const QList<const LoadedOrder *> &orders) const
+{
+    QList<OrderMarking::OrderInput> out;
+    for (const LoadedOrder *lo : orders) {
+        OrderMarking::OrderInput in;
+        for (const MarketAccount &a : m_accounts)
+            if (a.campaignId == lo->order.campaignId && a.apiKey == lo->apiKey) {
+                in.accountId = a.id;
+                break;
+            }
+        in.accountName = lo->accountName;
+        in.orderNumber = QString::number(lo->order.id);
+        in.status = lo->order.status;
+        for (const MarketOrderItem &it : lo->order.items)
+            in.items.append({it.offerId, it.name, it.count});
+        out.append(in);
+    }
+    return out;
+}
+
+void OrdersTab::printMarking()
+{
+    const QList<const LoadedOrder *> orders = selectedOrders();
+    if (orders.isEmpty()) {
+        QMessageBox::information(this, tr("ЧЗ на пары"), tr("Нет заказов: сначала загрузите список (кнопка «Загрузить»)."));
+        return;
+    }
+    OrderMarkingDialog dlg(markingInputs(orders), this);
+    dlg.exec();
 }
 
 bool OrdersTab::orderVisible(int orderIndex) const

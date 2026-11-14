@@ -168,6 +168,23 @@ const QStringList &schemaDdl()
         "CREATE INDEX IF NOT EXISTS marking_codes_status_id_idx ON marking_codes (status, id DESC)",
         "CREATE INDEX IF NOT EXISTS marking_codes_unlinked_idx ON marking_codes (id DESC) WHERE product_id IS NULL",
         "CREATE INDEX IF NOT EXISTS marking_codes_order_idx ON marking_codes (order_id, gtin) WHERE order_id <> ''",
+        // ИП (юридические лица), на которых числятся коды маркировки: у каждого свой кабинет «Честного знака», свои коды и свои настройки СУЗ.
+        // Склад принадлежит одному ИП (чьи там товары, см. marking_warehouse_owner), коды хранятся по ИП. Пустое значение (NULL) - «без ИП»: так лежат прежние коды.
+        R"(CREATE TABLE IF NOT EXISTS marking_owners (
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            inn TEXT NOT NULL DEFAULT ''
+        ))",
+        // Какому ИП принадлежит склад - отдельной таблицей, а не столбцом склада: таблицу складов читают и сайт, и прежние версии программы.
+        R"(CREATE TABLE IF NOT EXISTS marking_warehouse_owner (
+            warehouse_id INTEGER PRIMARY KEY REFERENCES warehouses(id) ON DELETE CASCADE,
+            owner_id INTEGER NOT NULL REFERENCES marking_owners(id) ON DELETE CASCADE
+        ))",
+        "ALTER TABLE marking_codes ADD COLUMN IF NOT EXISTS owner_id INTEGER REFERENCES marking_owners(id) ON DELETE SET NULL",
+        "CREATE INDEX IF NOT EXISTS marking_codes_owner_idx ON marking_codes (owner_id, status, id DESC)",
+        // Под какой заказ выдан код («market:<кабинет>:<номер заказа>»): печать ЧЗ к заказам Маркета не берёт новый код повторно для того же заказа.
+        "ALTER TABLE marking_codes ADD COLUMN IF NOT EXISTS sale_ref TEXT",
+        "CREATE INDEX IF NOT EXISTS marking_codes_sale_idx ON marking_codes (sale_ref) WHERE sale_ref IS NOT NULL",
         // --- Роль "только просмотр": пользователь видит данные, но ничего не меняет.
         // Администратор всегда может редактировать (read_only для него не действует).
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS read_only BOOLEAN NOT NULL DEFAULT FALSE",
