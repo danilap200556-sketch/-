@@ -98,12 +98,15 @@ CREATE TABLE IF NOT EXISTS marking_owners (
             name TEXT NOT NULL UNIQUE,
             inn TEXT NOT NULL DEFAULT ''
         );
-CREATE TABLE IF NOT EXISTS marking_warehouse_owner (
-            warehouse_id INTEGER PRIMARY KEY REFERENCES warehouses(id) ON DELETE CASCADE,
+DROP TABLE IF EXISTS marking_warehouse_owner;
+CREATE TABLE IF NOT EXISTS marking_account_owner (
+            account_id INTEGER PRIMARY KEY REFERENCES market_accounts(id) ON DELETE CASCADE,
             owner_id INTEGER NOT NULL REFERENCES marking_owners(id) ON DELETE CASCADE
         );
 ALTER TABLE marking_codes ADD COLUMN IF NOT EXISTS owner_id INTEGER REFERENCES marking_owners(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS marking_codes_owner_idx ON marking_codes (owner_id, status, id DESC);
+ALTER TABLE marking_codes ADD COLUMN IF NOT EXISTS warehouse_id INTEGER REFERENCES warehouses(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS marking_codes_warehouse_idx ON marking_codes (warehouse_id, owner_id, status, id DESC);
 ALTER TABLE marking_codes ADD COLUMN IF NOT EXISTS sale_ref TEXT;
 CREATE INDEX IF NOT EXISTS marking_codes_sale_idx ON marking_codes (sale_ref) WHERE sale_ref IS NOT NULL;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS read_only BOOLEAN NOT NULL DEFAULT FALSE;

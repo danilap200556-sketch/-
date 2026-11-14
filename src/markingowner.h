@@ -5,7 +5,7 @@
 #include <QString>
 
 // ИП (юридические лица), на которых числятся коды маркировки «Честного знака». У каждого ИП свой кабинет, свои коды и свои настройки СУЗ
-// (см. ChestnyZnak::loadSettings(ownerId)). Склад принадлежит одному ИП: товары на нём - этого ИП, и коды под них нужны от него же.
+// (см. ChestnyZnak::loadSettings(ownerId)). Склады к ИП не привязаны: код хранится и с ИП, и (отдельно) со складом, под остаток которого заказан.
 // Идентификатор 0 везде означает «без ИП» (так лежат коды, добавленные до появления ИП).
 namespace MarkingOwner {
 
@@ -28,10 +28,9 @@ bool update(int id, const QString &name, const QString &inn, QString *error = nu
 // Удаляет ИП: его коды и склады остаются, но уже без ИП.
 bool remove(int id, QString *error = nullptr);
 
-// Склад -> ИП (0 - не задан).
-int warehouseOwner(int warehouseId);
-QHash<int, int> warehouseOwners();
-bool setWarehouseOwner(int warehouseId, int ownerId, QString *error = nullptr);
+// ИП кабинета Маркета (0 - не задан): коды к заказам кабинета берутся у этого ИП.
+int accountOwner(int accountId);
+bool setAccountOwner(int accountId, int ownerId, QString *error = nullptr);
 
 // ИП -> сколько кодов (ключ 0 - без ИП).
 QHash<int, int> codeCounts();

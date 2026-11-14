@@ -111,34 +111,25 @@ bool remove(int id, QString *error)
     return true;
 }
 
-int warehouseOwner(int warehouseId)
+int accountOwner(int accountId)
 {
     QSqlQuery q;
-    q.prepare(QStringLiteral("SELECT owner_id FROM marking_warehouse_owner WHERE warehouse_id = ?"));
-    q.addBindValue(warehouseId);
+    q.prepare(QStringLiteral("SELECT owner_id FROM marking_account_owner WHERE account_id = ?"));
+    q.addBindValue(accountId);
     return q.exec() && q.next() ? q.value(0).toInt() : 0;
 }
 
-QHash<int, int> warehouseOwners()
-{
-    QHash<int, int> out;
-    QSqlQuery q(QStringLiteral("SELECT warehouse_id, owner_id FROM marking_warehouse_owner"));
-    while (q.next())
-        out.insert(q.value(0).toInt(), q.value(1).toInt());
-    return out;
-}
-
-bool setWarehouseOwner(int warehouseId, int ownerId, QString *error)
+bool setAccountOwner(int accountId, int ownerId, QString *error)
 {
     QSqlQuery q;
     if (ownerId > 0) {
-        q.prepare(QStringLiteral("INSERT INTO marking_warehouse_owner (warehouse_id, owner_id) VALUES (?, ?) "
-                                 "ON CONFLICT (warehouse_id) DO UPDATE SET owner_id = EXCLUDED.owner_id"));
-        q.addBindValue(warehouseId);
+        q.prepare(QStringLiteral("INSERT INTO marking_account_owner (account_id, owner_id) VALUES (?, ?) "
+                                 "ON CONFLICT (account_id) DO UPDATE SET owner_id = EXCLUDED.owner_id"));
+        q.addBindValue(accountId);
         q.addBindValue(ownerId);
     } else {
-        q.prepare(QStringLiteral("DELETE FROM marking_warehouse_owner WHERE warehouse_id = ?"));
-        q.addBindValue(warehouseId);
+        q.prepare(QStringLiteral("DELETE FROM marking_account_owner WHERE account_id = ?"));
+        q.addBindValue(accountId);
     }
     if (!q.exec()) {
         if (error)

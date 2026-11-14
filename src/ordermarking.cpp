@@ -64,12 +64,14 @@ QList<int> Plan::issuedIds() const
     return out;
 }
 
-QList<int> Plan::ownersWithMissing() const
+QList<QPair<int, int>> Plan::targetsWithMissing() const
 {
-    QList<int> out;
-    for (const Line &l : lines)
-        if (l.missing() > 0 && !out.contains(l.ownerId))
-            out << l.ownerId;
+    QList<QPair<int, int>> out;
+    for (const Line &l : lines) {
+        const QPair<int, int> t(l.ownerId, l.warehouseId);
+        if (l.missing() > 0 && !out.contains(t))
+            out << t;
+    }
     return out;
 }
 
@@ -83,10 +85,16 @@ bool cancelled(const QString &status)
 Plan build(const QList<OrderInput> &orders)
 {
     Plan plan;
-    // ИП кабинета: ИП склада списания.
-    QHash<int, int> ownerByAccount;
+    // ИП и склад кабинета: ИП задан в настройках кабинета, склад - склад списания; друг с другом они не связаны.
+    QHash<int, QPair<int, int>> targetByAccount;   // кабинет -> (ИП, склад)
     for (const MarketAccount &a : MarketAccount::loadAll())
-        ownerByAccount.insert(a.id, a.writeoffWarehouseId > 0 ? MarkingOwner::warehouseOwner(a.writeoffWarehouseId) : 0);
+        targetByAccount.insert(a.id, {a.markingOwnerId, a.writeoffWarehouseId});
+    QHash<int, QString> warehouseNames;
+    {
+        QSqlQuery q(QStringLiteral("SELECT id, name FROM warehouses"));
+        while (q.next())
+            warehouseNames.insert(q.value(0).toInt(), q.value(1).toString());
+    }
 
     QStringList keys;
     for (const OrderInput &o : orders)
@@ -125,8 +133,11 @@ Plan build(const QList<OrderInput> &orders)
             l.offerId = it.offerId;
             l.name = it.name;
             l.need = it.count;
-            l.ownerId = ownerByAccount.value(o.accountId, 0);
+            const QPair<int, int> target = targetByAccount.value(o.accountId, {0, 0});
+            l.ownerId = target.first;
             l.ownerName = MarkingOwner::nameOf(l.ownerId);
+            l.warehouseId = target.second;
+            l.warehouseName = warehouseNames.value(l.warehouseId);
             const QString key = it.offerId.trimmed().toLower();
             if (ambiguousSet.contains(key)) {
                 l.problem = QStringLiteral("артикул подходит нескольким товарам");
@@ -157,20 +168,46 @@ Plan build(const QList<OrderInput> &orders)
         have = have.mid(take);   // у заказа две строки с одним товаром: выданные коды делятся между ними по очереди
     }
 
-    // Свободные коды: сколько нужно по каждой паре «товар - ИП», берутся самые старые.
-    QList<MarkingCode::PickNeed> needs;
+    // Свободные коды берутся по очереди заказов, самые старые. Для склада: сначала коды этого склада, потом коды без склада, чужого склада - никогда;
+    // если у кабинета склада нет, подходит любой код.
+    QList<QPair<int, int>> pairs;
     for (const Line &l : std::as_const(plan.lines))
         if (l.productId > 0 && l.need - l.issued > 0)
-            needs.append({l.productId, l.ownerId, l.need - l.issued});
-    QHash<QString, QList<int>> pool = MarkingCode::pickFree(needs);
+            pairs.append({l.productId, l.ownerId});
+    const QHash<QString, QList<MarkingCode::FreeCode>> pool = MarkingCode::freeCodes(pairs);
+    QSet<int> taken;
+    QHash<QString, int> anyCursor;                         // товар|ИП -> позиция в общем списке
+    QHash<QString, QHash<int, int>> whCursor;              // товар|ИП -> склад -> позиция в списке этого склада
+    QHash<QString, QHash<int, QList<int>>> byWarehouse;    // товар|ИП -> склад -> номера кодов
+    QHash<QString, QList<int>> allIds;                     // товар|ИП -> все номера (для кабинета без склада)
+    for (auto it = pool.cbegin(); it != pool.cend(); ++it)
+        for (const MarkingCode::FreeCode &c : it.value()) {
+            byWarehouse[it.key()][c.warehouseId] << c.id;
+            allIds[it.key()] << c.id;
+        }
+    auto takeFrom = [&](const QList<int> &list, int *cursor, int want, QList<int> *out) {
+        while (want > 0 && *cursor < list.size()) {
+            const int id = list.at((*cursor)++);
+            if (taken.contains(id))
+                continue;
+            taken.insert(id);
+            out->append(id);
+            --want;
+        }
+        return want;
+    };
     for (Line &l : plan.lines) {
         if (l.productId <= 0)
             continue;
-        QList<int> &p = pool[MarkingCode::pickKey(l.productId, l.ownerId)];
-        const int take = qMin(l.need - l.issued, int(p.size()));
-        if (take > 0) {
-            l.picked = p.mid(0, take);
-            p = p.mid(take);
+        int want = l.need - l.issued;
+        if (want <= 0)
+            continue;
+        const QString key = MarkingCode::pickKey(l.productId, l.ownerId);
+        if (l.warehouseId > 0) {
+            want = takeFrom(byWarehouse.value(key).value(l.warehouseId), &whCursor[key][l.warehouseId], want, &l.picked);
+            want = takeFrom(byWarehouse.value(key).value(0), &whCursor[key][0], want, &l.picked);
+        } else {
+            takeFrom(allIds.value(key), &anyCursor[key], want, &l.picked);   // у кабинета нет склада: любой код товара по порядку
         }
     }
     return plan;

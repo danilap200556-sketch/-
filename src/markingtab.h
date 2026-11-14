@@ -35,16 +35,18 @@ private slots:
     void removeSelected();
     void selectNew();
     void scanned();
-    void assignOwner();
+    void assignTarget();
     void manageOwners();
 
 private:
     QList<int> selectedIds() const;
-    // ИП в верхнем списке: -1 - все, 0 - без ИП, больше 0 - этот ИП. Для новых кодов нужен конкретный ИП (или «без ИП», если ИП не заведены).
+    // ИП и склад в верхних списках: -1 - все, 0 - без ИП (без склада), больше 0 - этот ИП (склад). ИП и склад друг с другом не связаны.
     int ownerFilter() const;
+    int warehouseFilter() const;
     void reloadOwners();
-    // ИП для новых кодов: выбранный в списке; -1 - надо спросить (ИП есть, а в списке «все») или отказаться.
-    int ownerForNewCodes(const QString &what);
+    // Куда записать новые коды (ИП и склад): диалог с выбором, подставлено выбранное в верхних списках. false - отказались. Без заведённых ИП и
+    // складов вопросов нет: коды пишутся без ИП и без склада.
+    bool targetForNewCodes(const QString &what, int *ownerId, int *warehouseId);
     void reload();
     void showNotice(const QString &text);
     void showAddResult(const MarkingCode::AddResult &result);
@@ -53,6 +55,7 @@ private:
     MarkingModel *m_model;
     QComboBox *m_status;
     QComboBox *m_owner;
+    QComboBox *m_warehouse;
     QLineEdit *m_search;
     QLineEdit *m_scan;
     QLabel *m_counts;

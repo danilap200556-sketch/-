@@ -41,7 +41,7 @@
 
 namespace {
 
-enum Column { ColStatus, ColSku, ColName, ColGtin, ColSerial, ColCode, ColOwner, ColSource, ColPrints, ColCreated, ColCount };
+enum Column { ColStatus, ColSku, ColName, ColGtin, ColSerial, ColCode, ColOwner, ColWarehouse, ColSource, ColPrints, ColCreated, ColCount };
 
 // Список товаров для выбора: «артикул - название».
 void fillProducts(QComboBox *combo, bool withBlank, const QString &blankText)
@@ -109,12 +109,82 @@ QStringList readCodesFromFile(const QString &path, QString *error)
     return out;
 }
 
+// Склады для выбора (название по алфавиту). ИП и склад - независимые признаки кода: склад не привязан к ИП.
+QList<QPair<int, QString>> warehouseList()
+{
+    QList<QPair<int, QString>> out;
+    QSqlQuery q(QStringLiteral("SELECT id, name FROM warehouses ORDER BY lower(name)"));
+    while (q.next())
+        out.append({q.value(0).toInt(), q.value(1).toString()});
+    return out;
+}
+
+QString warehouseName(int id)
+{
+    for (const QPair<int, QString> &w : warehouseList())
+        if (w.first == id)
+            return w.second;
+    return {};
+}
+
+// «ИП и склад»: куда записать коды (keepOption - первым пунктом «не менять»: для «Назначить ИП / склад»). Любой из двух можно не задавать:
+// без ИП и без склада.
+class TargetDialog : public QDialog
+{
+public:
+    TargetDialog(QWidget *parent, const QString &title, const QString &text, bool keepOption, int defaultOwner, int defaultWarehouse)
+        : QDialog(parent)
+    {
+        setWindowTitle(title);
+        auto *l = new QVBoxLayout(this);
+        auto *label = new QLabel(text, this);
+        label->setWordWrap(true);
+        l->addWidget(label);
+        auto *form = new QFormLayout();
+        m_owner = new QComboBox(this);
+        if (keepOption)
+            m_owner->addItem(tr("не менять"), -1);
+        m_owner->addItem(keepOption ? tr("без ИП (снять)") : tr("без ИП"), 0);
+        const QList<MarkingOwner::Owner> owners = MarkingOwner::list();
+        for (const MarkingOwner::Owner &o : owners)
+            m_owner->addItem(o.name, o.id);
+        m_warehouse = new QComboBox(this);
+        if (keepOption)
+            m_warehouse->addItem(tr("не менять"), -1);
+        m_warehouse->addItem(keepOption ? tr("без склада (снять)") : tr("без склада"), 0);
+        const QList<QPair<int, QString>> warehouses = warehouseList();
+        for (const QPair<int, QString> &w : warehouses)
+            m_warehouse->addItem(w.second, w.first);
+        if (const int oi = m_owner->findData(defaultOwner); oi >= 0)
+            m_owner->setCurrentIndex(oi);
+        if (const int wi = m_warehouse->findData(defaultWarehouse); wi >= 0)
+            m_warehouse->setCurrentIndex(wi);
+        if (!owners.isEmpty())
+            form->addRow(tr("ИП:"), m_owner);
+        if (!warehouses.isEmpty())
+            form->addRow(tr("Склад:"), m_warehouse);
+        l->addLayout(form);
+        auto *buttons = new QDialogButtonBox(this);
+        buttons->addButton(keepOption ? tr("Назначить") : tr("Записать"), QDialogButtonBox::AcceptRole);
+        buttons->addButton(tr("Отмена"), QDialogButtonBox::RejectRole);
+        l->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    }
+    int ownerId() const { return m_owner->currentData().toInt(); }
+    int warehouseId() const { return m_warehouse->currentData().toInt(); }
+
+private:
+    QComboBox *m_owner;
+    QComboBox *m_warehouse;
+};
+
 // ---------------------------------------------------------------- добавление кодов вставкой
 
 class AddCodesDialog : public QDialog
 {
 public:
-    explicit AddCodesDialog(QWidget *parent, int defaultOwner = 0)
+    explicit AddCodesDialog(QWidget *parent, int defaultOwner = 0, int defaultWarehouse = 0)
         : QDialog(parent)
     {
         setWindowTitle(tr("Добавить коды маркировки"));
@@ -142,12 +212,24 @@ public:
             m_owner->addItem(o.name, o.id);
         if (const int oi = m_owner->findData(defaultOwner); oi >= 0)
             m_owner->setCurrentIndex(oi);
+        // Склад, под остаток которого заказаны коды (необязательно; к ИП не привязан).
+        m_warehouse = new QComboBox(this);
+        m_warehouse->addItem(tr("без склада"), 0);
+        for (const QPair<int, QString> &w : warehouseList())
+            m_warehouse->addItem(w.second, w.first);
+        if (const int wi = m_warehouse->findData(defaultWarehouse); wi >= 0)
+            m_warehouse->setCurrentIndex(wi);
+        auto *ownerRow = new QHBoxLayout();
         if (!owners.isEmpty()) {
-            auto *ownerRow = new QHBoxLayout();
             ownerRow->addWidget(new QLabel(tr("ИП:"), this));
             ownerRow->addWidget(m_owner, 1);
-            l->addLayout(ownerRow);
         }
+        if (m_warehouse->count() > 1) {
+            ownerRow->addWidget(new QLabel(tr("Склад:"), this));
+            ownerRow->addWidget(m_warehouse, 1);
+        }
+        if (ownerRow->count() > 0)
+            l->addLayout(ownerRow);
         m_info = new QLabel(this);
         l->addWidget(m_info);
         auto *buttons = new QDialogButtonBox(this);
@@ -162,6 +244,7 @@ public:
     QStringList codes() const { return MarkingCode::splitText(m_text->toPlainText()); }
     int productId() const { return comboProductId(m_product); }
     int ownerId() const { return m_owner->currentData().toInt(); }
+    int warehouseId() const { return m_warehouse->currentData().toInt(); }
 
 private:
     void updateInfo()
@@ -174,6 +257,7 @@ private:
     QPlainTextEdit *m_text;
     QComboBox *m_product;
     QComboBox *m_owner;
+    QComboBox *m_warehouse;
     QLabel *m_info;
 };
 
@@ -431,7 +515,7 @@ class MarkingModel : public QAbstractTableModel
 public:
     explicit MarkingModel(QObject *parent) : QAbstractTableModel(parent)
     {
-        m_headers = {tr("Статус"), tr("Артикул"), tr("Название"), tr("GTIN"), tr("Серийный номер"), tr("Код"), tr("ИП"), tr("Источник"), tr("Печатей"), tr("Создан")};
+        m_headers = {tr("Статус"), tr("Артикул"), tr("Название"), tr("GTIN"), tr("Серийный номер"), tr("Код"), tr("ИП"), tr("Склад"), tr("Источник"), tr("Печатей"), tr("Создан")};
         m_new = tr("новый");
         m_printed = tr("напечатан");
         m_kiNew = tr("КИ, без криптохвоста");
@@ -510,6 +594,10 @@ public:
             if (role == Qt::DisplayRole)
                 return r.ownerName;
             break;
+        case ColWarehouse:
+            if (role == Qt::DisplayRole)
+                return r.warehouseName;
+            break;
         case ColSource:
             if (role == Qt::DisplayRole)
                 return r.source == QLatin1String("suz") ? tr("СУЗ %1").arg(r.orderId)
@@ -555,7 +643,9 @@ MarkingTab::MarkingTab(QWidget *parent)
     m_status->addItem(tr("Напечатанные"), QStringLiteral("printed"));
     m_status->addItem(tr("Без товара"), QStringLiteral("unlinked"));
     m_owner = new QComboBox(this);
-    m_owner->setToolTip(tr("ИП, чьи коды показаны. Новые коды (сканер, файл, вставка) записываются на выбранного ИП."));
+    m_owner->setToolTip(tr("ИП, чьи коды показаны. Сканер записывает коды на выбранного ИП."));
+    m_warehouse = new QComboBox(this);
+    m_warehouse->setToolTip(tr("Склад, под остаток которого заказаны коды (с ИП он не связан). Сканер записывает коды на выбранный склад."));
     m_search = new QLineEdit(this);
     m_search->setPlaceholderText(tr("Поиск: артикул, название, GTIN, серийный номер"));
     m_search->setClearButtonEnabled(true);
@@ -564,6 +654,7 @@ MarkingTab::MarkingTab(QWidget *parent)
     m_scan->setMinimumWidth(260);
     filters->addWidget(m_status);
     filters->addWidget(m_owner);
+    filters->addWidget(m_warehouse);
     filters->addWidget(m_search, 1);
     filters->addWidget(m_scan, 1);
     layout->addLayout(filters);
@@ -579,10 +670,10 @@ MarkingTab::MarkingTab(QWidget *parent)
     auto *linkBtn = new QPushButton(tr("Привязать к товару..."), this);
     auto *delBtn = new QPushButton(tr("Удалить"), this);
     auto *setBtn = new QPushButton(tr("Настройки СУЗ..."), this);
-    auto *assignBtn = new QPushButton(tr("Назначить ИП..."), this);
-    assignBtn->setToolTip(tr("Записать выделенные коды на ИП (или снять ИП): так разделяют коды, добавленные до появления ИП"));
+    auto *assignBtn = new QPushButton(tr("Назначить ИП / склад..."), this);
+    assignBtn->setToolTip(tr("Записать выделенные коды на ИП и/или склад (или снять): так разделяют коды, добавленные раньше. ИП и склад задаются независимо."));
     auto *ownersBtn = new QPushButton(tr("ИП..."), this);
-    ownersBtn->setToolTip(tr("Справочник ИП: название, ИНН, настройки СУЗ каждого. На каком ИП склад - на вкладке «Склады»."));
+    ownersBtn->setToolTip(tr("Справочник ИП: название, ИНН, настройки СУЗ каждого. Склады к ИП не привязаны: ИП кабинета Маркета - в настройках кабинета."));
     selNewBtn->setToolTip(tr("Выделить в списке все коды, которые ещё не печатались"));
     linkBtn->setToolTip(tr("Выделенным кодам без товара назначить товар: его штрихкод станет GTIN этих кодов"));
     delBtn->setToolTip(tr("Удалить выделенные коды, которые ещё не печатались (напечатанные могут быть уже наклеены - их не трогаем)"));
@@ -613,7 +704,7 @@ MarkingTab::MarkingTab(QWidget *parent)
     h->setResizeContentsPrecision(40);   // ширина «по содержимому» считается по первым строкам, а не по всем двум тысячам
     h->setSectionResizeMode(ColName, QHeaderView::Stretch);
     h->setSectionResizeMode(ColCode, QHeaderView::Stretch);
-    for (int c : {ColStatus, ColSku, ColGtin, ColSerial, ColOwner, ColSource, ColPrints, ColCreated})
+    for (int c : {ColStatus, ColSku, ColGtin, ColSerial, ColOwner, ColWarehouse, ColSource, ColPrints, ColCreated})
         h->setSectionResizeMode(c, QHeaderView::ResizeToContents);
     layout->addWidget(m_table, 1);
 
@@ -630,11 +721,12 @@ MarkingTab::MarkingTab(QWidget *parent)
     connect(linkBtn, &QPushButton::clicked, this, &MarkingTab::linkSelected);
     connect(delBtn, &QPushButton::clicked, this, &MarkingTab::removeSelected);
     connect(setBtn, &QPushButton::clicked, this, &MarkingTab::settings);
-    connect(assignBtn, &QPushButton::clicked, this, &MarkingTab::assignOwner);
+    connect(assignBtn, &QPushButton::clicked, this, &MarkingTab::assignTarget);
     connect(ownersBtn, &QPushButton::clicked, this, &MarkingTab::manageOwners);
     reloadOwners();
     connect(m_status, &QComboBox::currentIndexChanged, this, [this]() { reload(); });
     connect(m_owner, &QComboBox::currentIndexChanged, this, [this]() { reload(); });
+    connect(m_warehouse, &QComboBox::currentIndexChanged, this, [this]() { reload(); });
     connect(m_search, &QLineEdit::textChanged, m_searchTimer, qOverload<>(&QTimer::start));
     connect(m_searchTimer, &QTimer::timeout, this, [this]() { reload(); });
     connect(m_scan, &QLineEdit::returnPressed, this, &MarkingTab::scanned);
@@ -651,55 +743,63 @@ int MarkingTab::ownerFilter() const
     return m_owner->currentData().toInt();
 }
 
-// Список ИП в верхнем выпадающем списке (выбор сохраняется, если такой ИП ещё есть).
-void MarkingTab::reloadOwners()
+int MarkingTab::warehouseFilter() const
 {
-    const int keep = m_owner->count() > 0 ? m_owner->currentData().toInt() : -1;
-    const QList<MarkingOwner::Owner> owners = MarkingOwner::list();
-    QSignalBlocker block(m_owner);
-    m_owner->clear();
-    m_owner->addItem(tr("Все ИП"), -1);
-    m_owner->addItem(tr("Без ИП"), 0);
-    for (const MarkingOwner::Owner &o : owners)
-        m_owner->addItem(o.name, o.id);
-    const int i = m_owner->findData(keep);
-    m_owner->setCurrentIndex(i >= 0 ? i : 0);
-    m_owner->setVisible(!owners.isEmpty());   // пока ИП не заведены, список не нужен
-    m_table->setColumnHidden(ColOwner, owners.isEmpty());
+    return m_warehouse->currentData().toInt();
 }
 
-// Куда записать новые коды. Без заведённых ИП - «без ИП», как раньше. С ИП нужен конкретный: из верхнего списка, а если там «все» - спрашиваем.
-int MarkingTab::ownerForNewCodes(const QString &what)
+// Выпадающие списки ИП и складов сверху (выбор сохраняется, если такой ИП/склад ещё есть).
+void MarkingTab::reloadOwners()
 {
     const QList<MarkingOwner::Owner> owners = MarkingOwner::list();
-    if (owners.isEmpty())
-        return 0;
-    const int chosen = ownerFilter();
-    if (chosen > 0)
-        return chosen;
-    QDialog dlg(this);
-    dlg.setWindowTitle(tr("На какого ИП записать коды"));
-    auto *l = new QVBoxLayout(&dlg);
-    l->addWidget(new QLabel(tr("%1: на какого ИП записать коды?").arg(what), &dlg));
-    auto *combo = new QComboBox(&dlg);
-    combo->addItem(tr("без ИП"), 0);
-    for (const MarkingOwner::Owner &o : owners)
-        combo->addItem(o.name, o.id);
-    const int last = AppSettings::get(QStringLiteral("cz_last_owner")).toInt();
-    if (const int li = combo->findData(last); li >= 0)
-        combo->setCurrentIndex(li);
-    l->addWidget(combo);
-    auto *buttons = new QDialogButtonBox(&dlg);
-    buttons->addButton(tr("Записать"), QDialogButtonBox::AcceptRole);
-    buttons->addButton(tr("Отмена"), QDialogButtonBox::RejectRole);
-    l->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    {
+        const int keep = m_owner->count() > 0 ? m_owner->currentData().toInt() : -1;
+        QSignalBlocker block(m_owner);
+        m_owner->clear();
+        m_owner->addItem(tr("Все ИП"), -1);
+        m_owner->addItem(tr("Без ИП"), 0);
+        for (const MarkingOwner::Owner &o : owners)
+            m_owner->addItem(o.name, o.id);
+        const int i = m_owner->findData(keep);
+        m_owner->setCurrentIndex(i >= 0 ? i : 0);
+        m_owner->setVisible(!owners.isEmpty());   // пока ИП не заведены, список не нужен
+    }
+    const QList<QPair<int, QString>> warehouses = warehouseList();
+    {
+        const int keep = m_warehouse->count() > 0 ? m_warehouse->currentData().toInt() : -1;
+        QSignalBlocker block(m_warehouse);
+        m_warehouse->clear();
+        m_warehouse->addItem(tr("Все склады"), -1);
+        m_warehouse->addItem(tr("Без склада"), 0);
+        for (const QPair<int, QString> &w : warehouses)
+            m_warehouse->addItem(w.second, w.first);
+        const int i = m_warehouse->findData(keep);
+        m_warehouse->setCurrentIndex(i >= 0 ? i : 0);
+        m_warehouse->setVisible(!warehouses.isEmpty());
+    }
+    m_table->setColumnHidden(ColOwner, owners.isEmpty());
+    m_table->setColumnHidden(ColWarehouse, warehouses.isEmpty());
+}
+
+// Куда записать новые коды. Без заведённых ИП и складов - «без ИП, без склада», как раньше. Иначе спрашиваем: ИП обязателен, если они есть (для
+// каждого свой кабинет и свои заказы), склад необязателен. По умолчанию - что выбрано в верхних списках, а если там «все» - как в прошлый раз.
+bool MarkingTab::targetForNewCodes(const QString &what, int *ownerId, int *warehouseId)
+{
+    *ownerId = 0;
+    *warehouseId = 0;
+    if (MarkingOwner::list().isEmpty() && warehouseList().isEmpty())
+        return true;
+    int defOwner = ownerFilter() > 0 ? ownerFilter() : AppSettings::get(QStringLiteral("cz_last_owner")).toInt();
+    int defWarehouse = warehouseFilter() > 0 ? warehouseFilter() : AppSettings::get(QStringLiteral("cz_last_warehouse")).toInt();
+    TargetDialog dlg(this, tr("Куда записать коды"), tr("%1: на какого ИП и под какой склад записать коды? ИП и склад независимы; любой из них можно не задавать.").arg(what),
+                     false, defOwner, defWarehouse);
     if (dlg.exec() != QDialog::Accepted)
-        return -1;
-    const int id = combo->currentData().toInt();
-    AppSettings::set(QStringLiteral("cz_last_owner"), QString::number(id));
-    return id;
+        return false;
+    *ownerId = dlg.ownerId();
+    *warehouseId = dlg.warehouseId();
+    AppSettings::set(QStringLiteral("cz_last_owner"), QString::number(*ownerId));
+    AppSettings::set(QStringLiteral("cz_last_warehouse"), QString::number(*warehouseId));
+    return true;
 }
 
 QList<int> MarkingTab::selectedIds() const
@@ -723,6 +823,7 @@ void MarkingTab::reload()
         f.status = st;
     f.text = m_search->text();
     f.ownerId = ownerFilter();
+    f.warehouseId = warehouseFilter();
     f.limit = 5000;   // таблица на модели держит тысячи строк без задержек (на QTableWidget было 2000)
     MarkingCode::Counts c;
     QList<MarkingCode::Row> rows = MarkingCode::listWithCounts(f, &c);   // список и счётчики - один запрос
@@ -747,10 +848,10 @@ void MarkingTab::showAddResult(const MarkingCode::AddResult &r)
 
 void MarkingTab::addCodes()
 {
-    AddCodesDialog dlg(this, ownerFilter() > 0 ? ownerFilter() : 0);
+    AddCodesDialog dlg(this, ownerFilter() > 0 ? ownerFilter() : 0, warehouseFilter() > 0 ? warehouseFilter() : 0);
     if (dlg.exec() != QDialog::Accepted)
         return;
-    const MarkingCode::AddResult r = MarkingCode::add(dlg.codes(), QStringLiteral("import"), QString(), dlg.productId(), QStringLiteral("new"), dlg.ownerId());
+    const MarkingCode::AddResult r = MarkingCode::add(dlg.codes(), QStringLiteral("import"), QString(), dlg.productId(), QStringLiteral("new"), dlg.ownerId(), dlg.warehouseId());
     reload();
     emit codesChanged();
     showAddResult(r);
@@ -761,8 +862,8 @@ void MarkingTab::addFromFile()
     const QString path = QFileDialog::getOpenFileName(this, tr("Файл с кодами маркировки"), QString(), tr("Коды (*.txt *.csv *.xlsx);;Все файлы (*)"));
     if (path.isEmpty())
         return;
-    const int owner = ownerForNewCodes(tr("Файл «%1»").arg(QFileInfo(path).fileName()));
-    if (owner < 0)
+    int owner = 0, warehouse = 0;
+    if (!targetForNewCodes(tr("Файл «%1»").arg(QFileInfo(path).fileName()), &owner, &warehouse))
         return;
     QString err;
     // Выгрузка «Реестр кодов» из личного кабинета (CSV с колонками «Код», «GTIN», «Статус кода»...) - коды идентификации с их статусами.
@@ -777,7 +878,7 @@ void MarkingTab::addFromFile()
             noTail += !MarkingCode::hasCryptoTail(MarkingCode::parse(r.code).code);
             applied += r.status != QLatin1String("EMITTED");
         }
-        const MarkingCode::AddResult r = MarkingCode::addRegistry(registry, owner);
+        const MarkingCode::AddResult r = MarkingCode::addRegistry(registry, owner, warehouse);
         reload();
         emit codesChanged();
         showAddResult(r);
@@ -801,7 +902,7 @@ void MarkingTab::addFromFile()
         QMessageBox::information(this, tr("Файл"), tr("В файле не найдено кодов маркировки (строки вида 01…21…)."));
         return;
     }
-    const MarkingCode::AddResult r = MarkingCode::add(codes, QStringLiteral("import"), QString(), 0, QStringLiteral("new"), owner);
+    const MarkingCode::AddResult r = MarkingCode::add(codes, QStringLiteral("import"), QString(), 0, QStringLiteral("new"), owner, warehouse);
     reload();
     emit codesChanged();
     showAddResult(r);
@@ -813,12 +914,12 @@ void MarkingTab::scanned()
     m_scan->clear();
     if (text.trimmed().isEmpty())
         return;
-    // С заведёнными ИП код записывается на того, кто выбран в списке сверху; без выбора код ушёл бы не туда.
+    // С заведёнными ИП код записывается на того, кто выбран в списке сверху; без выбора код ушёл бы не туда. Склад необязателен: «все склады» - без склада.
     if (ownerFilter() <= 0 && !MarkingOwner::list().isEmpty()) {
         m_hint->setText(tr("Выберите ИП в списке сверху: отсканированный код нужно записать на конкретного ИП (код не добавлен, отсканируйте его снова)."));
         return;
     }
-    const MarkingCode::AddResult r = MarkingCode::add({text}, QStringLiteral("scan"), QString(), 0, QStringLiteral("new"), qMax(0, ownerFilter()));
+    const MarkingCode::AddResult r = MarkingCode::add({text}, QStringLiteral("scan"), QString(), 0, QStringLiteral("new"), qMax(0, ownerFilter()), qMax(0, warehouseFilter()));
     reload();
     emit codesChanged();
     if (r.added == 1) {
@@ -832,7 +933,7 @@ void MarkingTab::scanned()
 
 void MarkingTab::orderCodes()
 {
-    MarkingOrderDialog dlg(this, ownerFilter() > 0 ? ownerFilter() : 0);
+    MarkingOrderDialog dlg(this, ownerFilter() > 0 ? ownerFilter() : 0, warehouseFilter() > 0 ? warehouseFilter() : 0);
     dlg.exec();
     reload();
     emit codesChanged();
@@ -844,43 +945,35 @@ void MarkingTab::settings()
     dlg.exec();
 }
 
-// Выделенные коды записываются на выбранного ИП (или ИП снимается).
-void MarkingTab::assignOwner()
+// Выделенные коды записываются на выбранные ИП и/или склад (или они снимаются). Каждое из двух можно не менять.
+void MarkingTab::assignTarget()
 {
     const QList<int> ids = selectedIds();
     if (ids.isEmpty()) {
-        QMessageBox::information(this, tr("Назначить ИП"), tr("Выделите коды в таблице (Ctrl или Shift + клик)."));
+        QMessageBox::information(this, tr("Назначить ИП / склад"), tr("Выделите коды в таблице (Ctrl или Shift + клик)."));
         return;
     }
-    const QList<MarkingOwner::Owner> owners = MarkingOwner::list();
-    if (owners.isEmpty()) {
-        QMessageBox::information(this, tr("Назначить ИП"), tr("ИП ещё не заведены: нажмите «ИП…» и добавьте их."));
+    if (MarkingOwner::list().isEmpty() && warehouseList().isEmpty()) {
+        QMessageBox::information(this, tr("Назначить ИП / склад"), tr("ИП ещё не заведены (кнопка «ИП…»), а складов нет."));
         return;
     }
-    QDialog dlg(this);
-    dlg.setWindowTitle(tr("Назначить ИП"));
-    auto *l = new QVBoxLayout(&dlg);
-    l->addWidget(new QLabel(tr("Записать выделенные коды (%1) на ИП:").arg(ids.size()), &dlg));
-    auto *combo = new QComboBox(&dlg);
-    combo->addItem(tr("без ИП (снять)"), 0);
-    for (const MarkingOwner::Owner &o : owners)
-        combo->addItem(o.name, o.id);
-    if (const int ci = combo->findData(ownerFilter()); ci >= 0 && ownerFilter() > 0)
-        combo->setCurrentIndex(ci);
-    l->addWidget(combo);
-    auto *buttons = new QDialogButtonBox(&dlg);
-    buttons->addButton(tr("Назначить"), QDialogButtonBox::AcceptRole);
-    buttons->addButton(tr("Отмена"), QDialogButtonBox::RejectRole);
-    l->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    TargetDialog dlg(this, tr("Назначить ИП / склад"), tr("Записать выделенные коды (%1) на ИП и склад. «Не менять» оставляет прежнее значение.").arg(ids.size()), true, -1, -1);
     if (dlg.exec() != QDialog::Accepted)
         return;
-    const int owner = combo->currentData().toInt();
-    const int changed = MarkingCode::assignOwner(ids, owner);
+    const int owner = dlg.ownerId(), warehouse = dlg.warehouseId();
+    int changedOwner = 0, changedWarehouse = 0;
+    if (owner >= 0)
+        changedOwner = MarkingCode::assignOwner(ids, owner);
+    if (warehouse >= 0)
+        changedWarehouse = MarkingCode::assignWarehouse(ids, warehouse);
     reload();
     emit codesChanged();
-    showNotice(tr("ИП «%1»: изменено кодов - %2.").arg(owner > 0 ? MarkingOwner::nameOf(owner) : tr("без ИП")).arg(changed));
+    QStringList parts;
+    if (owner >= 0)
+        parts << tr("ИП «%1»: изменено кодов - %2").arg(owner > 0 ? MarkingOwner::nameOf(owner) : tr("без ИП")).arg(changedOwner);
+    if (warehouse >= 0)
+        parts << tr("склад «%1»: изменено кодов - %2").arg(warehouse > 0 ? warehouseName(warehouse) : tr("без склада")).arg(changedWarehouse);
+    showNotice(parts.isEmpty() ? tr("Ничего не изменено.") : parts.join(QStringLiteral("; ")) + QLatin1Char('.'));
 }
 
 void MarkingTab::manageOwners()

@@ -1,5 +1,7 @@
 #include "marketaccountdialog.h"
 
+#include "markingowner.h"
+
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -109,6 +111,19 @@ MarketAccountDialog::MarketAccountDialog(const MarketAccount &account, QWidget *
     writeoffHint->setWordWrap(true);
     writeoffHint->setStyleSheet("color: gray;");
     form->addRow(QString(), writeoffHint);
+    // ИП кабинета: коды «Честного знака» к заказам этого кабинета берутся у него.
+    m_markingOwner = new QComboBox(this);
+    m_markingOwner->addItem(tr("Не выбран (коды без ИП)"), 0);
+    for (const MarkingOwner::Owner &o : MarkingOwner::list())
+        m_markingOwner->addItem(o.name, o.id);
+    const int oi = m_markingOwner->findData(account.markingOwnerId);
+    m_markingOwner->setCurrentIndex(oi < 0 ? 0 : oi);
+    form->addRow(tr("ИП (для кодов «Честного знака»)"), m_markingOwner);
+    auto *ownerHint = new QLabel(tr("ИП-продавец этого кабинета. К заказам кабинета печатаются коды этого ИП (кнопка «ЧЗ на эти пары...» во вкладке «Заказы Маркета»), "
+                                    "со склада списания, выбранного выше. Список ИП - кнопка «ИП...» на странице «Честный знак»."), this);
+    ownerHint->setWordWrap(true);
+    ownerHint->setStyleSheet("color: gray;");
+    form->addRow(QString(), ownerHint);
 
     m_status = new QLabel(this);
     m_status->setWordWrap(true);
@@ -247,6 +262,7 @@ void MarketAccountDialog::validateAndAccept()
     m_account.warehouseGroups = m_groups->isChecked();
     m_account.marketWarehouseId = m_account.warehouseGroups ? 0 : m_warehouse->currentData().toLongLong();
     m_account.writeoffWarehouseId = m_writeoffWarehouse->currentData().toInt();
+    m_account.markingOwnerId = m_markingOwner->currentData().toInt();
     m_account.localWarehouseIds.clear();
     for (int i = 0; i < m_localWarehouses->count(); ++i) {
         const auto *item = m_localWarehouses->item(i);

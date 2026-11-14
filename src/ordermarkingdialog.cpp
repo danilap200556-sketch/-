@@ -12,7 +12,7 @@
 #include <QVBoxLayout>
 
 namespace {
-enum Col { ColOrder, ColSku, ColName, ColOwner, ColNeed, ColIssued, ColPicked, ColMissing, ColNote, ColCount };
+enum Col { ColOrder, ColSku, ColName, ColOwner, ColWarehouse, ColNeed, ColIssued, ColPicked, ColMissing, ColNote, ColCount };
 }
 
 OrderMarkingDialog::OrderMarkingDialog(const QList<OrderMarking::OrderInput> &orders, QWidget *parent)
@@ -22,9 +22,10 @@ OrderMarkingDialog::OrderMarkingDialog(const QList<OrderMarking::OrderInput> &or
     setWindowTitle(tr("Коды «Честного знака» к заказам Маркета"));
     resize(1100, 640);
     auto *l = new QVBoxLayout(this);
-    auto *hint = new QLabel(tr("На каждую пару в заказе подбирается один свободный код этого товара того ИП, которому принадлежит склад списания кабинета "
-                               "(склад - на вкладке «Склады», склад списания - в настройках кабинета). Подобранные коды печатаются на термоэтикетках и "
-                               "записываются на свой заказ: повторно для того же заказа новые коды не берутся."),
+    auto *hint = new QLabel(tr("На каждую пару в заказе подбирается один свободный код этого товара. ИП берётся из настроек кабинета Маркета («ИП (для кодов «Честного знака»)»), "
+                               "склад - склад списания кабинета; друг с другом они не связаны. Сначала берутся коды этого склада, затем коды без склада, "
+                               "коды другого склада - никогда. Подобранные коды печатаются на термоэтикетках и записываются на свой заказ: повторно для "
+                               "того же заказа новые коды не берутся."),
                             this);
     hint->setWordWrap(true);
     hint->setStyleSheet(QStringLiteral("color: gray;"));
@@ -34,7 +35,7 @@ OrderMarkingDialog::OrderMarkingDialog(const QList<OrderMarking::OrderInput> &or
     l->addWidget(m_summary);
 
     m_table = new QTableWidget(0, ColCount, this);
-    m_table->setHorizontalHeaderLabels({tr("Заказ"), tr("Артикул"), tr("Название"), tr("ИП"), tr("Нужно"), tr("Уже выдано"), tr("Подобрано"), tr("Не хватает"), tr("Примечание")});
+    m_table->setHorizontalHeaderLabels({tr("Заказ"), tr("Артикул"), tr("Название"), tr("ИП"), tr("Склад"), tr("Нужно"), tr("Уже выдано"), tr("Подобрано"), tr("Не хватает"), tr("Примечание")});
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->verticalHeader()->setVisible(false);
@@ -42,7 +43,7 @@ OrderMarkingDialog::OrderMarkingDialog(const QList<OrderMarking::OrderInput> &or
     h->setResizeContentsPrecision(40);
     h->setSectionResizeMode(ColName, QHeaderView::Stretch);
     h->setSectionResizeMode(ColNote, QHeaderView::Stretch);
-    for (int c : {ColOrder, ColSku, ColOwner, ColNeed, ColIssued, ColPicked, ColMissing})
+    for (int c : {ColOrder, ColSku, ColOwner, ColWarehouse, ColNeed, ColIssued, ColPicked, ColMissing})
         h->setSectionResizeMode(c, QHeaderView::ResizeToContents);
     l->addWidget(m_table, 1);
 
@@ -58,7 +59,7 @@ OrderMarkingDialog::OrderMarkingDialog(const QList<OrderMarking::OrderInput> &or
     m_reprintBtn = new QPushButton(this);
     m_reprintBtn->setToolTip(tr("Напечатать ещё раз коды, которые уже выданы под эти заказы (например, после замятия этикетки)"));
     m_orderBtn = new QPushButton(tr("Заказать недостающие…"), this);
-    m_orderBtn->setToolTip(tr("Открыть заказ кодов в СУЗ с недостающими позициями (под кабинетом нужного ИП)"));
+    m_orderBtn->setToolTip(tr("Открыть заказ кодов в СУЗ с недостающими позициями (под кабинетом нужного ИП, коды запишутся на склад кабинета)"));
     auto *close = new QPushButton(tr("Закрыть"), this);
     for (QPushButton *b : {m_printBtn, m_reprintBtn, m_orderBtn})
         row->addWidget(b);
@@ -93,6 +94,7 @@ void OrderMarkingDialog::rebuild()
         put(ColSku, ln.sku.isEmpty() ? ln.offerId : ln.sku);
         put(ColName, ln.name);
         put(ColOwner, ln.ownerName.isEmpty() ? tr("без ИП") : ln.ownerName);
+        put(ColWarehouse, ln.warehouseName.isEmpty() ? tr("любой") : ln.warehouseName);
         put(ColNeed, QString::number(ln.need));
         put(ColIssued, QString::number(ln.issued));
         put(ColPicked, QString::number(ln.picked.size()));
@@ -146,16 +148,18 @@ void OrderMarkingDialog::printIssued()
     }
 }
 
-// Недостающее заказывается по ИП: под кабинетом каждого ИП - свой заказ в СУЗ.
+// Недостающее заказывается по парам «ИП - склад»: под кабинетом каждого ИП свой заказ в СУЗ, полученные коды записываются на склад кабинета.
 void OrderMarkingDialog::orderMissing()
 {
-    const QList<int> owners = m_plan.ownersWithMissing();
-    for (int owner : owners) {
+    const QList<QPair<int, int>> targets = m_plan.targetsWithMissing();
+    for (const QPair<int, int> &t : targets) {
         QHash<int, int> byProduct;
         for (const OrderMarking::Line &ln : m_plan.lines)
-            if (ln.ownerId == owner && ln.missing() > 0)
+            if (ln.ownerId == t.first && ln.warehouseId == t.second && ln.missing() > 0)
                 byProduct[ln.productId] += ln.missing();
-        MarkingOrderDialog dlg(this, owner);
+        MarkingOrderDialog dlg(this, t.first, t.second);
+        dlg.setOwner(t.first);   // ИП 0 - «без ИП»: конструктор в этом случае берёт последнего выбранного
+        dlg.setWarehouse(t.second);
         for (auto it = byProduct.cbegin(); it != byProduct.cend(); ++it)
             dlg.addProduct(it.key(), it.value());
         dlg.exec();

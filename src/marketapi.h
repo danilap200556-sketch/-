@@ -27,6 +27,7 @@ struct MarketAccount
     qint64 marketWarehouseId = 0; // partnerWarehouseId, нужен без групп складов
     QList<int> localWarehouseIds; // наши склады; пусто - все
     int writeoffWarehouseId = 0;  // наш склад, с которого списываются заказы кабинета; 0 - не выбран
+    int markingOwnerId = 0;       // ИП (продавец) кабинета для кодов «Честного знака»; 0 - не задан
 
     static QList<MarketAccount> loadAll();
     bool save(QString *error);

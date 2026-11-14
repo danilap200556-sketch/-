@@ -169,19 +169,24 @@ const QStringList &schemaDdl()
         "CREATE INDEX IF NOT EXISTS marking_codes_unlinked_idx ON marking_codes (id DESC) WHERE product_id IS NULL",
         "CREATE INDEX IF NOT EXISTS marking_codes_order_idx ON marking_codes (order_id, gtin) WHERE order_id <> ''",
         // ИП (юридические лица), на которых числятся коды маркировки: у каждого свой кабинет «Честного знака», свои коды и свои настройки СУЗ.
-        // Склад принадлежит одному ИП (чьи там товары, см. marking_warehouse_owner), коды хранятся по ИП. Пустое значение (NULL) - «без ИП»: так лежат прежние коды.
+        // Коды хранятся по ИП и (независимо от этого) по складу. Пустое значение (NULL) - «без ИП»: так лежат прежние коды.
         R"(CREATE TABLE IF NOT EXISTS marking_owners (
             id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
             inn TEXT NOT NULL DEFAULT ''
         ))",
-        // Какому ИП принадлежит склад - отдельной таблицей, а не столбцом склада: таблицу складов читают и сайт, и прежние версии программы.
-        R"(CREATE TABLE IF NOT EXISTS marking_warehouse_owner (
-            warehouse_id INTEGER PRIMARY KEY REFERENCES warehouses(id) ON DELETE CASCADE,
+        // Склад и ИП друг с другом не связаны: код хранится и с ИП (чей кабинет его выпустил), и со складом (под остаток какого склада заказан).
+        // Привязка склад-ИП, которая на короткое время была в программе, снята.
+        "DROP TABLE IF EXISTS marking_warehouse_owner",
+        // ИП кабинета Маркета (продавец): коды к заказам кабинета берутся у этого ИП. Отдельной таблицей, а не столбцом кабинета.
+        R"(CREATE TABLE IF NOT EXISTS marking_account_owner (
+            account_id INTEGER PRIMARY KEY REFERENCES market_accounts(id) ON DELETE CASCADE,
             owner_id INTEGER NOT NULL REFERENCES marking_owners(id) ON DELETE CASCADE
         ))",
         "ALTER TABLE marking_codes ADD COLUMN IF NOT EXISTS owner_id INTEGER REFERENCES marking_owners(id) ON DELETE SET NULL",
         "CREATE INDEX IF NOT EXISTS marking_codes_owner_idx ON marking_codes (owner_id, status, id DESC)",
+        "ALTER TABLE marking_codes ADD COLUMN IF NOT EXISTS warehouse_id INTEGER REFERENCES warehouses(id) ON DELETE SET NULL",
+        "CREATE INDEX IF NOT EXISTS marking_codes_warehouse_idx ON marking_codes (warehouse_id, owner_id, status, id DESC)",
         // Под какой заказ выдан код («market:<кабинет>:<номер заказа>»): печать ЧЗ к заказам Маркета не берёт новый код повторно для того же заказа.
         "ALTER TABLE marking_codes ADD COLUMN IF NOT EXISTS sale_ref TEXT",
         "CREATE INDEX IF NOT EXISTS marking_codes_sale_idx ON marking_codes (sale_ref) WHERE sale_ref IS NOT NULL",

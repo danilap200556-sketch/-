@@ -53,9 +53,9 @@ struct AddResult {
 };
 // Добавляет коды (строки в любом виде, см. parse). forceProductId > 0 - все коды привязываются к этому товару, а его штрихкод
 // становится GTIN кодов (если он свободен). source: «import», «scan», «suz». orderId - заказ в СУЗ.
-// ownerId - ИП, на которого записываются коды (0 - без ИП).
+// ownerId - ИП, на которого записываются коды (0 - без ИП); warehouseId - склад, под который они (0 - без склада). ИП и склад не зависят друг от друга.
 AddResult add(const QStringList &rawCodes, const QString &source, const QString &orderId = QString(), int forceProductId = 0,
-              const QString &status = QStringLiteral("new"), int ownerId = 0);
+              const QString &status = QStringLiteral("new"), int ownerId = 0, int warehouseId = 0);
 
 // Есть ли у кода криптохвост (группа 91 / 92 или 93 после GS). Без него это КОД ИДЕНТИФИКАЦИИ (КИ): им подают сведения в Систему маркировки
 // (ввод в оборот, вывод из оборота), но Data Matrix для нанесения на товар из него не получится - такой код печатать нельзя.
@@ -77,7 +77,7 @@ struct RegistryRow {
 // реестр (rows заполнены); false - это не реестр (*error пуст) или файл не прочитался (*error - причина).
 bool readRegistryCsv(const QString &path, QList<RegistryRow> *rows, QString *error = nullptr);
 // Добавляет строки реестра: источник «registry», статус по статусу кода в системе (EMITTED - новый, остальное: нанесён, в обороте... - напечатан).
-AddResult addRegistry(const QList<RegistryRow> &rows, int ownerId = 0);
+AddResult addRegistry(const QList<RegistryRow> &rows, int ownerId = 0, int warehouseId = 0);
 // Достаёт коды из текста: по одному в строке, либо вставленные вплотную; пустые строки и заголовки пропускаются.
 QStringList splitText(const QString &text);
 
@@ -95,6 +95,8 @@ struct Row {
     QDateTime createdAt, printedAt;
     int ownerId = 0;         // ИП, на которого числится код; 0 - без ИП
     QString ownerName;
+    int warehouseId = 0;     // склад, под остаток которого заказан код; 0 - без склада. С ИП не связан
+    QString warehouseName;
 };
 struct Filter {
     QString status;          // пусто - все; new, printed
@@ -102,6 +104,7 @@ struct Filter {
     QString text;            // артикул, название, GTIN или часть кода
     int productId = 0;
     int ownerId = -1;        // -1 - любой ИП, 0 - только без ИП, больше 0 - коды этого ИП
+    int warehouseId = -1;    // то же для склада
     int limit = 2000;
 };
 QList<Row> list(const Filter &filter = Filter());
@@ -118,23 +121,25 @@ QList<Row> getMany(const QList<int> &ids);
 int countForOrder(const QString &orderId, const QString &gtin);
 // Коды (как в базе, с разделителями групп) по номерам строк: пачками по одному запросу, в порядке номеров.
 QStringList codesByIds(const QList<int> &ids);
-// ownerId: -1 - по всем кодам, 0 - только без ИП, больше 0 - коды этого ИП.
-Counts counts(int ownerId = -1);
+// ownerId и warehouseId: -1 - по всем кодам, 0 - только без ИП (без склада), больше 0 - коды этого ИП (склада).
+Counts counts(int ownerId = -1, int warehouseId = -1);
 
 bool markPrinted(const QList<int> &ids, QString *error = nullptr);
 // Записывает выделенные коды на ИП (0 - снять ИП). Возвращает, у скольких кодов ИП изменился.
 int assignOwner(const QList<int> &ids, int ownerId);
+// То же для склада (0 - снять склад).
+int assignWarehouse(const QList<int> &ids, int warehouseId);
 
 // Сколько свободных (новых и пригодных для печати, то есть с криптохвостом) кодов есть у ИП по каждому товару: товар -> число.
-// ownerId 0 - свободные коды без ИП.
-QHash<int, int> freeCountsByProduct(int ownerId);
-// Подбирает коды для печати: для каждой пары «товар - ИП» нужное число самых старых свободных кодов этого ИП. Ключ - «товар|ИП».
-struct PickNeed {
-    int productId = 0;
-    int ownerId = 0;
-    int qty = 0;
+// ownerId 0 - свободные коды без ИП. warehouseId: -1 - с любого склада, 0 - только без склада, больше 0 - только этого склада.
+QHash<int, int> freeCountsByProduct(int ownerId, int warehouseId = -1);
+// Все свободные коды по парам «товар - ИП» (по возрастанию номера): из них заказы Маркета берут себе нужные (с учётом склада).
+struct FreeCode {
+    int id = 0;
+    int warehouseId = 0;
 };
-QHash<QString, QList<int>> pickFree(const QList<PickNeed> &needs);
+QHash<QString, QList<FreeCode>> freeCodes(const QList<QPair<int, int>> &productOwnerPairs);
+
 // Выданные под заказы коды: «заказ -> коды» (ref вида «market:<кабинет>:<номер>»). Выдан - значит напечатан под этот заказ.
 struct SaleCode {
     int id = 0;

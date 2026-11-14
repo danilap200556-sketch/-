@@ -1,30 +1,22 @@
 #include "warehousestab.h"
 #include "formdialog.h"
 #include "stockbar.h"
-#include "markingowner.h"
-#include "markingownersdialog.h"
 
-#include <QComboBox>
-#include <QDialogButtonBox>
-#include <QFormLayout>
 #include <QGroupBox>
-#include <QLabel>
-#include <QLineEdit>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSplitter>
 #include <QSqlError>
-#include <QSqlQuery>
 #include <QSqlRecord>
 #include <QSqlTableModel>
 #include <QTableView>
 #include <QVBoxLayout>
 
 namespace {
-// Колонки справа считаются запросом: ИП склада (для кодов «Честного знака»),, а не хранятся: сколько пар лежит на складе и по скольким артикулам (размерам) есть остаток.
-enum WCol { WColId = 0, WColName, WColAddress, WColOwner, WColPairs, WColPositions };
+// Две колонки справа считаются запросом, а не хранятся: сколько пар лежит на складе и по скольким артикулам (размерам) есть остаток.
+enum WCol { WColId = 0, WColName, WColAddress, WColPairs, WColPositions };
 enum LCol { LColId = 0, LColWarehouseId, LColCode, LColDescription };
 
 class WarehousesModel : public QSqlTableModel
@@ -34,10 +26,6 @@ public:
 
     QVariant data(const QModelIndex &idx, int role) const override
     {
-        if (idx.isValid() && idx.column() == WColOwner && role == Qt::DisplayRole) {
-            const QString name = QSqlTableModel::data(idx, Qt::DisplayRole).toString();
-            return name.isEmpty() ? QStringLiteral("-") : name;
-        }
         if (idx.isValid() && (idx.column() == WColPairs || idx.column() == WColPositions)) {
             if (role == Qt::TextAlignmentRole)
                 return int(Qt::AlignRight | Qt::AlignVCenter);
@@ -59,51 +47,11 @@ protected:
         const int from = s.indexOf(QLatin1String(" FROM "));
         if (from > 0)
             s = s.left(from)
-                + QLatin1String(", (SELECT o.name FROM marking_warehouse_owner w JOIN marking_owners o ON o.id = w.owner_id WHERE w.warehouse_id = \"warehouses\".\"id\") AS \"owner_name\""
-                                ", (SELECT COALESCE(SUM(quantity), 0)::bigint FROM stock WHERE warehouse_id = \"warehouses\".\"id\") AS \"pairs\""
+                + QLatin1String(", (SELECT COALESCE(SUM(quantity), 0)::bigint FROM stock WHERE warehouse_id = \"warehouses\".\"id\") AS \"pairs\""
                                 ", (SELECT COUNT(*)::bigint FROM stock WHERE warehouse_id = \"warehouses\".\"id\" AND quantity > 0) AS \"positions\"")
                 + s.mid(from);
         return s;
     }
-};
-
-// Склад: название, адрес и ИП, которому он принадлежит (чьи коды «Честного знака» нужны под его остатки).
-class WarehouseDialog : public QDialog
-{
-public:
-    WarehouseDialog(const QString &title, const QString &name, const QString &address, int ownerId, QWidget *parent)
-        : QDialog(parent)
-    {
-        setWindowTitle(title);
-        auto *l = new QVBoxLayout(this);
-        auto *form = new QFormLayout();
-        m_name = new QLineEdit(name, this);
-        m_address = new QLineEdit(address, this);
-        m_owner = new QComboBox(this);
-        m_owner->addItem(tr("не задан"), 0);
-        for (const MarkingOwner::Owner &o : MarkingOwner::list())
-            m_owner->addItem(o.name, o.id);
-        if (const int i = m_owner->findData(ownerId); i >= 0)
-            m_owner->setCurrentIndex(i);
-        m_owner->setToolTip(tr("ИП, которому принадлежат товары на этом складе. Заказ кодов по остаткам склада и печать к заказам Маркета берут коды этого ИП. "
-                               "Список ИП - кнопка «ИП…» на этой вкладке или на вкладке «Честный знак»."));
-        form->addRow(tr("Название"), m_name);
-        form->addRow(tr("Адрес"), m_address);
-        form->addRow(tr("ИП (Честный знак)"), m_owner);
-        l->addLayout(form);
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-        l->addWidget(buttons);
-        connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
-        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-        resize(440, 170);
-    }
-    QString name() const { return m_name->text(); }
-    QString address() const { return m_address->text(); }
-    int ownerId() const { return m_owner->currentData().toInt(); }
-
-private:
-    QLineEdit *m_name, *m_address;
-    QComboBox *m_owner;
 };
 }
 
@@ -124,11 +72,8 @@ WarehousesTab::WarehousesTab(QWidget *parent)
     warehouseToolbar->addWidget(addWhBtn);
     warehouseToolbar->addWidget(editWhBtn);
     warehouseToolbar->addWidget(delWhBtn);
-    auto *ownersBtn = new QPushButton(tr("ИП…"), warehouseBox);
-    ownersBtn->setToolTip(tr("Справочник ИП для кодов «Честного знака»: название и ИНН. Какому ИП принадлежит склад - в окне «Изменить»."));
-    warehouseToolbar->addWidget(ownersBtn);
     warehouseToolbar->addStretch();
-    m_editWidgets << addWhBtn << editWhBtn << delWhBtn << ownersBtn;
+    m_editWidgets << addWhBtn << editWhBtn << delWhBtn;
     warehouseLayout->addLayout(warehouseToolbar);
 
     m_warehouseModel = new WarehousesModel(this);
@@ -172,11 +117,6 @@ WarehousesTab::WarehousesTab(QWidget *parent)
     splitter->addWidget(locationBox);
 
 
-    connect(ownersBtn, &QPushButton::clicked, this, [this]() {
-        MarkingOwnersDialog dlg(this, false);
-        dlg.exec();
-        refresh();
-    });
     connect(addWhBtn, &QPushButton::clicked, this, &WarehousesTab::addWarehouse);
     connect(editWhBtn, &QPushButton::clicked, this, &WarehousesTab::editWarehouse);
     connect(delWhBtn, &QPushButton::clicked, this, &WarehousesTab::deleteWarehouse);
@@ -204,7 +144,6 @@ void WarehousesTab::refresh()
     m_warehouseModel->select();
     m_warehouseModel->setHeaderData(WColName, Qt::Horizontal, tr("Название"));
     m_warehouseModel->setHeaderData(WColAddress, Qt::Horizontal, tr("Адрес"));
-    m_warehouseModel->setHeaderData(WColOwner, Qt::Horizontal, tr("ИП (Честный знак)"));
     m_warehouseModel->setHeaderData(WColPairs, Qt::Horizontal, tr("Пар на складе"));
     m_warehouseModel->setHeaderData(WColPositions, Qt::Horizontal, tr("Артикулов в наличии"));
     m_warehouseTable->setColumnHidden(WColId, true);
@@ -213,7 +152,6 @@ void WarehousesTab::refresh()
     wh->setStretchLastSection(false);
     wh->setSectionResizeMode(WColName, QHeaderView::Stretch);
     wh->setSectionResizeMode(WColAddress, QHeaderView::Stretch);
-    wh->setSectionResizeMode(WColOwner, QHeaderView::ResizeToContents);
     wh->setSectionResizeMode(WColPairs, QHeaderView::ResizeToContents);
     wh->setSectionResizeMode(WColPositions, QHeaderView::ResizeToContents);
     refreshLocations();
@@ -249,31 +187,23 @@ void WarehousesTab::onWarehouseSelectionChanged()
 
 void WarehousesTab::addWarehouse()
 {
-    WarehouseDialog dlg(tr("Новый склад"), QString(), QString(), 0, this);
+    FormDialog dlg(tr("Новый склад"), {{tr("Название"), "", false}, {tr("Адрес"), "", false}}, this);
     if (dlg.exec() != QDialog::Accepted)
         return;
-    const QString name = dlg.name().trimmed();
-    if (name.isEmpty()) {
+    const auto v = dlg.values();
+    if (v[0].trimmed().isEmpty()) {
         QMessageBox::warning(this, tr("Ошибка"), tr("Название склада обязательно."));
         return;
     }
 
     QSqlRecord rec = m_warehouseModel->record();
-    rec.setValue("name", name);
-    rec.setValue("address", dlg.address());
+    rec.setValue("name", v[0].trimmed());
+    rec.setValue("address", v[1]);
     rec.remove(rec.indexOf("id"));
     if (!m_warehouseModel->insertRecord(-1, rec) || !m_warehouseModel->submitAll()) {
         QMessageBox::warning(this, tr("Ошибка"), m_warehouseModel->lastError().text());
         m_warehouseModel->revertAll();
         return;
-    }
-    if (dlg.ownerId() > 0) {
-        QSqlQuery q;
-        q.prepare(QStringLiteral("SELECT id FROM warehouses WHERE name = ?"));
-        q.addBindValue(name);
-        QString err;
-        if (q.exec() && q.next() && !MarkingOwner::setWarehouseOwner(q.value(0).toInt(), dlg.ownerId(), &err))
-            QMessageBox::warning(this, tr("ИП склада"), tr("Склад добавлен, но ИП не записан: %1").arg(err));
     }
     refresh();
     emit warehousesChanged();
@@ -286,22 +216,22 @@ void WarehousesTab::editWarehouse()
         return;
     const int row = sel.first().row();
     const QSqlRecord rec = m_warehouseModel->record(row);
-    const int whId = rec.value("id").toInt();
 
-    WarehouseDialog dlg(tr("Изменить склад"), rec.value("name").toString(), rec.value("address").toString(), MarkingOwner::warehouseOwner(whId), this);
+    FormDialog dlg(tr("Изменить склад"),
+                    {{tr("Название"), rec.value("name").toString(), false},
+                     {tr("Адрес"), rec.value("address").toString(), false}},
+                    this);
     if (dlg.exec() != QDialog::Accepted)
         return;
+    const auto v = dlg.values();
 
-    m_warehouseModel->setData(m_warehouseModel->index(row, WColName), dlg.name().trimmed());
-    m_warehouseModel->setData(m_warehouseModel->index(row, WColAddress), dlg.address());
+    m_warehouseModel->setData(m_warehouseModel->index(row, WColName), v[0].trimmed());
+    m_warehouseModel->setData(m_warehouseModel->index(row, WColAddress), v[1]);
     if (!m_warehouseModel->submitAll()) {
         QMessageBox::warning(this, tr("Ошибка"), m_warehouseModel->lastError().text());
         m_warehouseModel->revertAll();
         return;
     }
-    QString err;
-    if (!MarkingOwner::setWarehouseOwner(whId, dlg.ownerId(), &err))
-        QMessageBox::warning(this, tr("ИП склада"), tr("ИП не записан: %1").arg(err));
     refresh();
     emit warehousesChanged();
 }

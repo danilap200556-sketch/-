@@ -81,8 +81,14 @@ QList<MarketAccount> MarketAccount::loadAll()
     QHash<int, QList<int>> byAccount;
     while (w.next())
         byAccount[w.value(0).toInt()].append(w.value(1).toInt());
-    for (auto &a : result)
+    QSqlQuery o("SELECT account_id, owner_id FROM marking_account_owner");
+    QHash<int, int> ownerByAccount;
+    while (o.next())
+        ownerByAccount.insert(o.value(0).toInt(), o.value(1).toInt());
+    for (auto &a : result) {
         a.localWarehouseIds = byAccount.value(a.id);
+        a.markingOwnerId = ownerByAccount.value(a.id, 0);
+    }
     return result;
 }
 
@@ -138,6 +144,19 @@ bool MarketAccount::save(QString *error)
         ins.addBindValue(whId);
         if (!ins.exec())
             return fail(ins);
+    }
+    QSqlQuery delOwner;
+    delOwner.prepare("DELETE FROM marking_account_owner WHERE account_id = ?");
+    delOwner.addBindValue(id);
+    if (!delOwner.exec())
+        return fail(delOwner);
+    if (markingOwnerId > 0) {
+        QSqlQuery insOwner;
+        insOwner.prepare("INSERT INTO marking_account_owner (account_id, owner_id) VALUES (?, ?)");
+        insOwner.addBindValue(id);
+        insOwner.addBindValue(markingOwnerId);
+        if (!insOwner.exec())
+            return fail(insOwner);
     }
     if (!db.commit()) {
         if (error)

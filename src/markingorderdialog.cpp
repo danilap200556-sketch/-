@@ -66,25 +66,25 @@ MarkingOrderDialog::MarkingOrderDialog(QWidget *parent, int ownerId, int warehou
     hint->setStyleSheet(QStringLiteral("color: gray;"));
     l->addWidget(hint);
 
-    // ИП и склад: заказ идёт под кабинетом выбранного ИП, а «Товары с остатком» считает остаток выбранного склада и свободные коды этого ИП.
+    // ИП и склад - два независимых выбора: заказ идёт под кабинетом выбранного ИП, а «Товары с остатком» считает остаток выбранного склада и
+    // свободные коды этого ИП на этом складе. Склад к ИП не привязан.
     auto *ownerRow = new QHBoxLayout();
     m_ownerCombo = new QComboBox(this);
     m_ownerCombo->addItem(tr("без ИП (общие настройки СУЗ)"), 0);
     for (const MarkingOwner::Owner &o : MarkingOwner::list())
         m_ownerCombo->addItem(o.name, o.id);
     m_warehouseCombo = new QComboBox(this);
+    m_warehouseCombo->setToolTip(tr("Склад, под остаток которого заказываются коды: «Товары с остатком» берёт остаток этого склада, а полученные коды "
+                                    "записываются на него. «Все склады» - остаток всех складов, коды без склада."));
     {
-        const QHash<int, int> whOwner = MarkingOwner::warehouseOwners();
         m_warehouseCombo->addItem(tr("все склады"), 0);
         QSqlQuery wq(QStringLiteral("SELECT id, name FROM warehouses ORDER BY lower(name)"));
-        while (wq.next()) {
-            const QString ownerName = MarkingOwner::nameOf(whOwner.value(wq.value(0).toInt()));
-            m_warehouseCombo->addItem(ownerName.isEmpty() ? wq.value(1).toString() : tr("%1 (ИП: %2)").arg(wq.value(1).toString(), ownerName), wq.value(0).toInt());
-        }
+        while (wq.next())
+            m_warehouseCombo->addItem(wq.value(1).toString(), wq.value(0).toInt());
     }
     ownerRow->addWidget(new QLabel(tr("ИП:"), this));
     ownerRow->addWidget(m_ownerCombo, 1);
-    ownerRow->addWidget(new QLabel(tr("Остатки склада:"), this));
+    ownerRow->addWidget(new QLabel(tr("Склад:"), this));
     ownerRow->addWidget(m_warehouseCombo, 1);
     l->addLayout(ownerRow);
     const bool haveOwners = m_ownerCombo->count() > 1;
@@ -98,8 +98,8 @@ MarkingOrderDialog::MarkingOrderDialog(QWidget *parent, int ownerId, int warehou
     addRow->addWidget(m_scan, 1);
     auto *pasteBtn = new QPushButton(tr("Вставить список из буфера"), this);
     auto *stockBtn = new QPushButton(tr("Товары с остатком"), this);
-    stockBtn->setToolTip(tr("Добавить товары, у которых остаток на выбранном складе (или на всех складах ИП) больше числа свободных (не напечатанных) кодов "
-                            "этого ИП: заказать недостающие"));
+    stockBtn->setToolTip(tr("Добавить товары, у которых остаток на выбранном складе (или на всех складах) больше числа свободных (не напечатанных) кодов "
+                            "выбранного ИП на этом складе: заказать недостающие"));
     auto *removeBtn = new QPushButton(tr("Убрать выбранные"), this);
     auto *clearBtn = new QPushButton(tr("Очистить"), this);
     for (QPushButton *b : {pasteBtn, stockBtn, removeBtn, clearBtn})
@@ -205,54 +205,47 @@ MarkingOrderDialog::MarkingOrderDialog(QWidget *parent, int ownerId, int warehou
     del->setContext(Qt::WidgetShortcut);
     connect(del, &QShortcut::activated, this, &MarkingOrderDialog::removeSelected);
 
-    // Начальный ИП: заданный, иначе последний, с которым работали (а если ИП один - он).
+    // Начальный ИП: заданный, иначе последний, с которым работали (а если ИП один - он). Склад от ИП не зависит.
     int startOwner = ownerId;
-    if (startOwner <= 0 && warehouseId > 0)
-        startOwner = MarkingOwner::warehouseOwner(warehouseId);
     if (startOwner <= 0)
         startOwner = AppSettings::get(QStringLiteral("cz_order_owner")).toInt();
     if (m_ownerCombo->findData(startOwner) < 0)
         startOwner = m_ownerCombo->count() == 2 ? m_ownerCombo->itemData(1).toInt() : 0;
     m_owner = startOwner;
     m_ownerCombo->setCurrentIndex(qMax(0, m_ownerCombo->findData(m_owner)));
-    if (warehouseId > 0)
-        setWarehouse(warehouseId);
+    if (warehouseId > 0 && m_warehouseCombo->findData(warehouseId) >= 0) {
+        m_warehouse = warehouseId;
+        m_warehouseCombo->setCurrentIndex(m_warehouseCombo->findData(warehouseId));
+    }
     connect(m_ownerCombo, &QComboBox::currentIndexChanged, this, [this]() {
-        const int want = m_ownerCombo->currentData().toInt();
-        if (want != m_owner && !setOwner(want, true))
+        if (!switchTarget(m_ownerCombo->currentData().toInt(), m_warehouse, true))
             m_ownerCombo->setCurrentIndex(qMax(0, m_ownerCombo->findData(m_owner)));
     });
     connect(m_warehouseCombo, &QComboBox::currentIndexChanged, this, [this]() {
-        // Склад ИП - сам выбирает ИП (ИП склада и кабинет, под которым надо заказывать, - одно и то же).
-        const int owner = MarkingOwner::warehouseOwner(m_warehouseCombo->currentData().toInt());
-        if (owner > 0 && owner != m_owner)
-            m_ownerCombo->setCurrentIndex(qMax(0, m_ownerCombo->findData(owner)));
+        if (!switchTarget(m_owner, m_warehouseCombo->currentData().toInt(), true))
+            m_warehouseCombo->setCurrentIndex(qMax(0, m_warehouseCombo->findData(m_warehouse)));
     });
     restore();
     refreshSummary();
     m_scan->setFocus();
 }
 
-int MarkingOrderDialog::warehouseId() const { return m_warehouseCombo->currentData().toInt(); }
+bool MarkingOrderDialog::setOwner(int ownerId, bool ask) { return switchTarget(ownerId, m_warehouse, ask); }
 
-void MarkingOrderDialog::setWarehouse(int warehouseId)
-{
-    const int i = m_warehouseCombo->findData(warehouseId);
-    if (i >= 0)
-        m_warehouseCombo->setCurrentIndex(i);
-}
+bool MarkingOrderDialog::setWarehouse(int warehouseId, bool ask) { return switchTarget(m_owner, warehouseId, ask); }
 
-// Смена ИП: у каждого ИП свои кабинет, токен и заказы в работе, поэтому список позиций очищается (незавершённые заказы прежнего ИП
-// сохраняются отдельно и вернутся, когда этот ИП будет выбран снова).
-bool MarkingOrderDialog::setOwner(int ownerId, bool ask)
+// Смена ИП или склада: у каждого ИП свои кабинет, токен и заказы в работе, а полученные коды записываются на выбранный склад, поэтому список
+// позиций очищается (незавершённые заказы сохраняются отдельно для каждой пары «ИП - склад» и вернутся, когда она будет выбрана снова).
+bool MarkingOrderDialog::switchTarget(int ownerId, int warehouseId, bool ask)
 {
-    if (ownerId == m_owner)
+    if (ownerId == m_owner && warehouseId == m_warehouse)
         return true;
-    if (m_ownerCombo->findData(ownerId) < 0)
+    if (m_ownerCombo->findData(ownerId) < 0 || m_warehouseCombo->findData(warehouseId) < 0)
         return false;
     if (m_table->rowCount() > 0 && ask) {
         if (QMessageBox::question(this, windowTitle(),
-                                  tr("Сменить ИП? Список позиций будет очищен: у каждого ИП свой список (заказы, ещё не получившие коды, сохраняются и вернутся при выборе этого ИП).")) != QMessageBox::Yes)
+                                  tr("Сменить ИП или склад? Список позиций будет очищен: у каждой пары «ИП - склад» свой список (заказы, ещё не получившие коды, "
+                                     "сохраняются и вернутся при выборе этой пары).")) != QMessageBox::Yes)
             return false;
     }
     save();
@@ -260,11 +253,12 @@ bool MarkingOrderDialog::setOwner(int ownerId, bool ask)
     m_table->setRowCount(0);
     m_updating = false;
     m_owner = ownerId;
+    m_warehouse = warehouseId;
     AppSettings::set(QStringLiteral("cz_order_owner"), QString::number(ownerId));
-    const int i = m_ownerCombo->findData(ownerId);
-    if (i >= 0 && m_ownerCombo->currentIndex() != i) {
-        QSignalBlocker block(m_ownerCombo);
-        m_ownerCombo->setCurrentIndex(i);
+    {
+        QSignalBlocker b1(m_ownerCombo), b2(m_warehouseCombo);
+        m_ownerCombo->setCurrentIndex(qMax(0, m_ownerCombo->findData(ownerId)));
+        m_warehouseCombo->setCurrentIndex(qMax(0, m_warehouseCombo->findData(warehouseId)));
     }
     restore();
     refreshSummary();
@@ -273,7 +267,12 @@ bool MarkingOrderDialog::setOwner(int ownerId, bool ask)
 
 QString MarkingOrderDialog::pendingKey() const
 {
-    return m_owner > 0 ? QStringLiteral("%1_o%2").arg(QString::fromLatin1(kPendingKey)).arg(m_owner) : QString::fromLatin1(kPendingKey);
+    QString key = QString::fromLatin1(kPendingKey);
+    if (m_owner > 0)
+        key += QStringLiteral("_o%1").arg(m_owner);
+    if (m_warehouse > 0)
+        key += QStringLiteral("_w%1").arg(m_warehouse);
+    return key;
 }
 
 // Настройки СУЗ с актуальным токеном: если токен получен программой и заканчивается, а на этом компьютере есть чем подписать - обновляется сам.
@@ -498,25 +497,21 @@ int MarkingOrderDialog::addText(const QString &text)
 
 int MarkingOrderDialog::addByStock()
 {
-    const int wh = warehouseId();
-    // Остаток выбранного склада; «все склады» при выбранном ИП - склады этого ИП, без ИП - вообще все. Из остатка вычитаются свободные
-    // (новые, пригодные для печати) коды этого же ИП: заказать надо разницу.
+    // Остаток выбранного склада (или всех складов); из него вычитаются свободные (новые, пригодные для печати) коды выбранного ИП на этом же
+    // складе (при «все склады» - любого склада): заказать надо разницу. ИП и склад друг с другом не связаны.
+    const int wh = m_warehouse;
     QSqlQuery q;
     q.prepare(QStringLiteral(
         "SELECT s.product_id, SUM(s.quantity)::int FROM stock s JOIN products p ON p.id = s.product_id "
-        "WHERE CASE WHEN ?::int > 0 THEN s.warehouse_id = ?::int "
-        "           WHEN ?::int > 0 THEN s.warehouse_id IN (SELECT warehouse_id FROM marking_warehouse_owner WHERE owner_id = ?::int) "
-        "           ELSE TRUE END "
+        "WHERE (?::int <= 0 OR s.warehouse_id = ?::int) "
         "GROUP BY s.product_id HAVING SUM(s.quantity) > 0 ORDER BY min(p.sku)"));
     q.addBindValue(wh);
     q.addBindValue(wh);
-    q.addBindValue(m_owner);
-    q.addBindValue(m_owner);
     if (!q.exec()) {
         appendLog(tr("Не удалось прочитать остатки: %1").arg(q.lastError().text()));
         return 0;
     }
-    const QHash<int, int> freeCodes = MarkingCode::freeCountsByProduct(m_owner);
+    const QHash<int, int> freeCodes = MarkingCode::freeCountsByProduct(m_owner, wh > 0 ? wh : -1);
     QList<QPair<int, int>> items;
     while (q.next()) {
         const int pid = q.value(0).toInt();
@@ -524,10 +519,6 @@ int MarkingOrderDialog::addByStock()
         if (need > 0)
             items.append({pid, qMin(need, kMaxQty)});
     }
-    if (m_owner > 0 && wh <= 0 && MarkingOwner::warehouseOwners().key(m_owner, 0) == 0)
-        appendLog(tr("Ни один склад не привязан к этому ИП (вкладка «Склады» → «Изменить» → ИП): остатки взять неоткуда."));
-    else if (wh > 0 && MarkingOwner::warehouseOwner(wh) == 0 && !MarkingOwner::list().isEmpty())
-        appendLog(tr("У выбранного склада не указан ИП: считаю свободные коды ИП «%1» (вкладка «Склады» → «Изменить»).").arg(m_owner > 0 ? MarkingOwner::nameOf(m_owner) : tr("без ИП")));
     const int before = lineCount();
     if (!items.isEmpty())
         addProducts(items);
@@ -809,7 +800,7 @@ int MarkingOrderDialog::fetchCodes()
             appendLog(QStringLiteral("  ") + t);
         if (!codes.isEmpty()) {
             // Коды привязываются к товару по GTIN (он взят из штрихкода товара); повторно скачанные считаются как «уже были».
-            const MarkingCode::AddResult res = MarkingCode::add(codes, QStringLiteral("suz"), order, 0, QStringLiteral("new"), m_owner);
+            const MarkingCode::AddResult res = MarkingCode::add(codes, QStringLiteral("suz"), order, 0, QStringLiteral("new"), m_owner, m_warehouse);
             received = qMin(l.qty, received + res.added + res.duplicates);
             addedNow += res.added;
             m_added += res.added;

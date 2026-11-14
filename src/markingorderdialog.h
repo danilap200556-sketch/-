@@ -24,7 +24,7 @@ class MarkingOrderDialog : public QDialog
 {
     Q_OBJECT
 public:
-    // ownerId / warehouseId - с какого ИП и склада начать (0 - не задано; склад сам подставляет своего ИП).
+    // ownerId / warehouseId - с какого ИП и склада начать (ИП и склад независимы: склад ИП не выбирает). ownerId 0 - последний ИП, с которым работали.
     explicit MarkingOrderDialog(QWidget *parent = nullptr, int ownerId = 0, int warehouseId = 0);
 
     // Позиций (кодов товара GTIN) в одном заказе СУЗ: так задано в кабинете для заказа файлом (не больше 10 для всех групп, кроме лекарств);
@@ -52,14 +52,15 @@ public:
     int addText(const QString &text);
     // false - у товара нет подходящего штрихкода (позиция всё равно добавлена, с пометкой, GTIN можно вписать вручную).
     bool addProduct(int productId, int qty);
-    // Товары, у которых остаток больше, чем свободных (не напечатанных) кодов выбранного ИП: заказать недостающее. Остаток берётся со склада,
-    // выбранного в окне; «все склады» при выбранном ИП - это все склады этого ИП. Возвращает число добавленных позиций.
+    // Товары, у которых остаток больше, чем свободных (не напечатанных) кодов выбранного ИП: заказать недостающее. ИП и склад выбираются в окне
+    // независимо: остаток берётся со склада (при «все склады» - со всех), свободные коды считаются у выбранного ИП на этом же складе
+    // (при «все склады» - любого склада). Полученные коды записываются на выбранные ИП и склад. Возвращает число добавленных позиций.
     int addByStock();
     int ownerId() const { return m_owner; }
-    int warehouseId() const;
-    // Выбор ИП и склада; ask - спросить, если список позиций не пуст (он очищается: у каждого ИП свой список заказов).
+    int warehouseId() const { return m_warehouse; }
+    // Выбор ИП и склада; ask - спросить, если список позиций не пуст (он очищается: у каждой пары «ИП - склад» свой список заказов).
     bool setOwner(int ownerId, bool ask = false);
-    void setWarehouse(int warehouseId);
+    bool setWarehouse(int warehouseId, bool ask = false);
     void setOrderNumber(const QString &orderId);
 
     // Действия кнопок без вопросов (для проверок). createOrders - сколько заказов создано; fetchCodes - сколько НОВЫХ кодов добавлено.
@@ -75,6 +76,7 @@ private slots:
     void createClicked();
 
 private:
+    bool switchTarget(int ownerId, int warehouseId, bool ask);
     void exportXml();
     QString pendingKey() const;
     ChestnyZnak::Settings freshSettings();
@@ -90,6 +92,7 @@ private:
     QComboBox *m_ownerCombo = nullptr;
     QComboBox *m_warehouseCombo = nullptr;
     int m_owner = 0;
+    int m_warehouse = 0;
     QLineEdit *m_scan = nullptr;
     QLineEdit *m_order = nullptr;
     QTableWidget *m_table = nullptr;
