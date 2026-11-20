@@ -107,6 +107,12 @@ MoySkladTab::MoySkladTab(MoySkladAutoSync *autoSync, QWidget *parent)
         m_stockType->addItem(tr("Остаток (физический)"), false);
         m_stockType->addItem(tr("Доступный остаток (за вычетом резерва)"), true);
         optForm->addRow(tr("Переносить:"), m_stockType);
+        m_matchBy = new QComboBox(page);
+        for (const QString &v : MoySklad::matchByValues())
+            m_matchBy->addItem(MoySklad::matchByTitle(v) + tr(" = артикул в программе"), v);
+        m_matchBy->setToolTip(tr("Что в МойСклад считать артикулом товара: оно сравнивается с артикулом товара в программе (или артикулом на Маркете). "
+                                 "У вас артикул вписан в «Наименование», поэтому выбрано оно."));
+        optForm->addRow(tr("Сопоставлять товары по:"), m_matchBy);
         l->addLayout(optForm);
         m_zeroUnknown = new QCheckBox(tr("обнулять в программе товары, которых нет в отчёте МойСклад"), page);
         m_zeroUnknown->setToolTip(tr("По умолчанию товары программы, неизвестные МойСклад (или с другим артикулом), остаются как есть"));
@@ -130,8 +136,8 @@ MoySkladTab::MoySkladTab(MoySkladAutoSync *autoSync, QWidget *parent)
     {
         auto *page = new QWidget(m_pages);
         auto *l = new QVBoxLayout(page);
-        auto *note = new QLabel(tr("Артикул товара в МойСклад (если его нет - код) сравнивается с артикулом товара в программе (или артикулом на Маркете). "
-                                   "«Показать расхождения» ничего не меняет; «Загрузить остатки сейчас» записывает их."),
+        auto *note = new QLabel(tr("То, что в МойСклад считается артикулом (по умолчанию - «Наименование», выбирается на вкладке «Подключение»), сравнивается с артикулом "
+                                   "товара в программе (или артикулом на Маркете). «Показать расхождения» ничего не меняет; «Загрузить остатки сейчас» записывает их."),
                                 page);
         note->setWordWrap(true);
         note->setObjectName(QStringLiteral("muted"));
@@ -242,6 +248,7 @@ MoySkladTab::MoySkladTab(MoySkladAutoSync *autoSync, QWidget *parent)
     m_token->setText(s.token);
     m_stockType->setCurrentIndex(s.freeStock ? 1 : 0);
     m_zeroUnknown->setChecked(s.zeroUnknown);
+    m_matchBy->setCurrentIndex(qMax(0, m_matchBy->findData(s.matchBy)));
     m_storeList = MoySklad::cachedStores();
     rebuildStores(s.storeMap);
 }
@@ -314,6 +321,7 @@ MoySklad::Settings MoySkladTab::settingsFromUi() const
     s.token = m_token->text().trimmed();
     s.freeStock = m_stockType->currentData().toBool();
     s.zeroUnknown = m_zeroUnknown->isChecked();
+    s.matchBy = m_matchBy->currentData().toString();
     s.storeMap = mapFromTable();
     return s;
 }

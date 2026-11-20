@@ -62,6 +62,7 @@ private:
     QTableWidget *m_stores = nullptr;
     QComboBox *m_stockType = nullptr;
     QCheckBox *m_zeroUnknown = nullptr;
+    QComboBox *m_matchBy = nullptr;
     QTableWidget *m_changes = nullptr;
     QLabel *m_summary = nullptr;
     QPushButton *m_previewBtn = nullptr;

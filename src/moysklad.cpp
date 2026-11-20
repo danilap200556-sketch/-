@@ -91,6 +91,20 @@ QString normKey(const QString &s) { return s.trimmed().toLower(); }
 // ---------------------------------------------------------------------------
 // Настройки
 
+QStringList matchByValues()
+{
+    return {QStringLiteral("name"), QStringLiteral("article"), QStringLiteral("code")};
+}
+
+QString matchByTitle(const QString &value)
+{
+    if (value == QLatin1String("article"))
+        return QStringLiteral("Артикул в МойСклад (если его нет - код)");
+    if (value == QLatin1String("code"))
+        return QStringLiteral("Код в МойСклад");
+    return QStringLiteral("Наименование в МойСклад");
+}
+
 int Settings::mappedStores() const
 {
     int n = 0;
@@ -107,6 +121,9 @@ Settings loadSettings()
     s.token = o.value(QStringLiteral("token")).toString();
     s.freeStock = o.value(QStringLiteral("free")).toBool();
     s.zeroUnknown = o.value(QStringLiteral("zeroUnknown")).toBool();
+    s.matchBy = o.value(QStringLiteral("matchBy")).toString();
+    if (!matchByValues().contains(s.matchBy))
+        s.matchBy = QStringLiteral("name");
     const QJsonObject map = o.value(QStringLiteral("storeMap")).toObject();
     for (auto it = map.constBegin(); it != map.constEnd(); ++it)
         if (it.value().toInt() > 0)
@@ -123,6 +140,7 @@ bool saveSettings(const Settings &s)
     const QJsonObject o{{QStringLiteral("token"), s.token.trimmed()},
                         {QStringLiteral("free"), s.freeStock},
                         {QStringLiteral("zeroUnknown"), s.zeroUnknown},
+                        {QStringLiteral("matchBy"), matchByValues().contains(s.matchBy) ? s.matchBy : QStringLiteral("name")},
                         {QStringLiteral("storeMap"), map}};
     return AppSettings::set(QString::fromLatin1(kConfigKey), QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
 }
@@ -355,13 +373,20 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
     if (report.isEmpty())
         return fail(error, QStringLiteral("МойСклад вернул пустой отчёт «Остатки»: в нём нет ни одного товара. Ничего не меняю."));
 
-    // Товары программы по артикулу (затем по коду) МоегоСклада.
+    // Что в МоемСкладе считается артикулом товара: наименование, артикул (если пуст - код) или код.
+    const QString by = matchByValues().contains(settings.matchBy) ? settings.matchBy : QStringLiteral("name");
+    auto keyOf = [&](const Position &p) -> QString {
+        if (by == QLatin1String("name"))
+            return p.name.trimmed();
+        if (by == QLatin1String("code"))
+            return p.code;
+        return p.article.isEmpty() ? p.code : p.article;
+    };
     QStringList keys;
     for (const Position &p : std::as_const(report)) {
-        if (!p.article.isEmpty())
-            keys << p.article;
-        if (!p.code.isEmpty())
-            keys << p.code;
+        const QString k = keyOf(p);
+        if (!k.isEmpty())
+            keys << k;
     }
     QStringList ambiguousKeys;
     const QHash<QString, int> products = OrderWriteoff::productsForKeys(keys, &ambiguousKeys);
@@ -382,18 +407,12 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
     for (const Position &p : std::as_const(report)) {
         int pid = 0;
         bool amb = false;
-        for (const QString &k : {p.article, p.code}) {
-            const QString n = normKey(k);
-            if (n.isEmpty())
-                continue;
-            if (ambiguousSet.contains(n)) {
+        const QString key = normKey(keyOf(p));
+        if (!key.isEmpty()) {
+            if (ambiguousSet.contains(key))
                 amb = true;
-                continue;
-            }
-            if (products.contains(n)) {
-                pid = products.value(n);
-                break;
-            }
+            else if (products.contains(key))
+                pid = products.value(key);
         }
         // Остаток этого товара на сопоставленных складах.
         double onMapped = 0;
@@ -407,7 +426,7 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
             else if (onMapped > 0) {
                 ++plan->unknown;
                 if (plan->unknownSamples.size() < 8)
-                    plan->unknownSamples << (p.article.isEmpty() ? p.code : p.article);
+                    plan->unknownSamples << keyOf(p);
             }
             continue;
         }
@@ -420,8 +439,9 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
         }
     }
     if (plan->matched == 0)
-        return fail(error, QStringLiteral("Ни один из %1 товаров МойСклад не найден в программе: артикулы не совпали (сравниваются артикул МойСклад и "
-                                          "артикул товара в программе или артикул на Маркете). Ничего не меняю.").arg(plan->positions));
+        return fail(error, QStringLiteral("Ни один из %1 товаров МойСклад не найден в программе: «%2» не совпало с артикулами товаров в программе "
+                                          "(или артикулом на Маркете). Проверьте, что в МойСклад считается артикулом (вкладка «Подключение» → «Сопоставлять "
+                                          "товары по»). Ничего не меняю.").arg(plan->positions).arg(matchByTitle(by)));
     if (negative > 0)
         plan->notes << QStringLiteral("отрицательных остатков в МойСклад: %1 (приняты за 0)").arg(negative);
     if (fractional > 0)
