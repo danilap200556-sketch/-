@@ -53,6 +53,7 @@ void cacheStores(const QList<Store> &stores);
 
 // Строка отчёта «Остатки по складам»: товар и его остатки по складам (номер склада -> остаток, резерв).
 struct Position {
+    QString id;          // номер товара в МойСклад (из ссылки на него в строке отчёта)
     QString article;
     QString code;
     QString name;
@@ -74,14 +75,21 @@ public:
 
     bool stores(QList<Store> *out, QString *error);
     // Весь отчёт «Остатки по складам» (страницами по 1000 товаров).
+    // Если строки отчёта пришли без названий (так отвечает часть аккаунтов), название, код и артикул берутся из ассортимента
+    // (GET /entity/assortment) по номеру товара.
     bool stockReport(QList<Position> *out, QString *error);
+    // Какие поля были в первой строке отчёта (для диагностики).
+    QStringList lastRowKeys() const { return m_rowKeys; }
 
 private:
     struct Reply;
     Reply get(const QString &path, const QUrlQuery &query);
     QByteArray authHeader() const;
 
+    bool fillFromAssortment(QList<Position> *positions, QString *error);
+
     QString m_token;
+    QStringList m_rowKeys;
     Log m_log;
     QNetworkAccessManager *m_nam;
 };

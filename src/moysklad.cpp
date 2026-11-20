@@ -296,7 +296,10 @@ bool Api::stockReport(QList<Position> *out, QString *error)
         const QJsonArray rows = r.json.object().value(QStringLiteral("rows")).toArray();
         for (const QJsonValue &v : rows) {
             const QJsonObject o = v.toObject();
+            if (out->isEmpty() && m_rowKeys.isEmpty())
+                m_rowKeys = o.keys();
             Position p;
+            p.id = idFromHref(o.value(QStringLiteral("meta")).toObject().value(QStringLiteral("href")).toString());
             p.article = o.value(QStringLiteral("article")).toString().trimmed();
             p.code = o.value(QStringLiteral("code")).toString().trimmed();
             p.name = o.value(QStringLiteral("name")).toString();
@@ -313,6 +316,67 @@ bool Api::stockReport(QList<Position> *out, QString *error)
         if (rows.isEmpty() || offset >= size)
             break;
     }
+    // Часть аккаунтов отдаёт строки отчёта без названия, кода и артикула (только ссылка на товар): берём их из ассортимента.
+    int named = 0;
+    for (const Position &p : std::as_const(*out))
+        named += (p.name.trimmed().isEmpty() && p.article.isEmpty() && p.code.isEmpty()) ? 0 : 1;
+    if (!out->isEmpty() && named * 2 < out->size()) {
+        if (m_log)
+            m_log(QStringLiteral("В строках отчёта нет названий товаров (поля: %1): читаю их из ассортимента").arg(m_rowKeys.join(QStringLiteral(", "))));
+        QString err;
+        if (!fillFromAssortment(out, &err) && m_log)
+            m_log(QStringLiteral("Не удалось прочитать ассортимент: %1").arg(err));
+    }
+    return true;
+}
+
+bool Api::fillFromAssortment(QList<Position> *positions, QString *error)
+{
+    QHash<QString, int> byId;
+    for (int i = 0; i < positions->size(); ++i)
+        if (!positions->at(i).id.isEmpty())
+            byId.insert(positions->at(i).id, i);
+    if (byId.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("в строках отчёта нет ссылок на товары");
+        return false;
+    }
+    int filled = 0;
+    for (int page = 0, offset = 0; page < kMaxPages; ++page) {
+        QUrlQuery q;
+        q.addQueryItem(QStringLiteral("limit"), QString::number(kPageSize));
+        q.addQueryItem(QStringLiteral("offset"), QString::number(offset));
+        const Reply r = get(QStringLiteral("/entity/assortment"), q);
+        if (!r.error.isEmpty()) {
+            if (error)
+                *error = r.error;
+            return false;
+        }
+        const QJsonArray rows = r.json.object().value(QStringLiteral("rows")).toArray();
+        for (const QJsonValue &v : rows) {
+            const QJsonObject o = v.toObject();
+            QString id = o.value(QStringLiteral("id")).toString();
+            if (id.isEmpty())
+                id = idFromHref(o.value(QStringLiteral("meta")).toObject().value(QStringLiteral("href")).toString());
+            const auto it = byId.constFind(id);
+            if (it == byId.constEnd())
+                continue;
+            Position &p = (*positions)[it.value()];
+            if (p.name.trimmed().isEmpty())
+                p.name = o.value(QStringLiteral("name")).toString();
+            if (p.code.isEmpty())
+                p.code = o.value(QStringLiteral("code")).toString().trimmed();
+            if (p.article.isEmpty())
+                p.article = o.value(QStringLiteral("article")).toString().trimmed();
+            ++filled;
+        }
+        offset += int(rows.size());
+        const int size = r.json.object().value(QStringLiteral("meta")).toObject().value(QStringLiteral("size")).toInt();
+        if (rows.isEmpty() || offset >= size)
+            break;
+    }
+    if (m_log)
+        m_log(QStringLiteral("Из ассортимента получены названия для %1 из %2 товаров").arg(filled).arg(positions->size()));
     return true;
 }
 
@@ -344,6 +408,46 @@ bool fail(QString *error, const QString &text)
     return false;
 }
 
+// Связь с базой после долгого ожидания ответа МойСклад: сервер мог закрыть неактивное соединение. Проверяем простым запросом и, если он не
+// проходит, открываем соединение заново (параметры подключения у него сохранились). *reopened - соединение пришлось восстановить.
+bool ensureDb(QString *why, bool *reopened)
+{
+    if (reopened)
+        *reopened = false;
+    QSqlDatabase db = QSqlDatabase::database();
+    QString first;
+    {
+        QSqlQuery q(db);
+        if (q.exec(QStringLiteral("SELECT 1")))
+            return true;
+        first = q.lastError().text();
+    }
+    db.close();
+    if (db.open()) {
+        QSqlQuery q(db);
+        if (q.exec(QStringLiteral("SELECT 1"))) {
+            if (reopened)
+                *reopened = true;
+            return true;
+        }
+    }
+    if (why)
+        *why = QStringLiteral("%1 (повторное подключение: %2)").arg(first, db.lastError().text());
+    return false;
+}
+
+// Сколько товаров в программе; -1 и текст ошибки базы, если прочитать не удалось.
+int countProducts(QString *dbError)
+{
+    QSqlQuery c;
+    if (!c.exec(QStringLiteral("SELECT count(*) FROM products")) || !c.next()) {
+        if (dbError)
+            *dbError = c.lastError().text();
+        return -1;
+    }
+    return c.value(0).toInt();
+}
+
 } // namespace
 
 bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
@@ -355,7 +459,9 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
     // Склады: только существующие склады программы.
     QHash<int, QString> whNames;
     {
-        QSqlQuery q(QStringLiteral("SELECT id, name FROM warehouses"));
+        QSqlQuery q;
+        if (!q.exec(QStringLiteral("SELECT id, name FROM warehouses")))
+            return fail(error, QStringLiteral("Не удалось прочитать склады программы: %1").arg(q.lastError().text()));
         while (q.next())
             whNames.insert(q.value(0).toInt(), q.value(1).toString());
     }
@@ -366,12 +472,29 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
     if (storeMap.isEmpty())
         return fail(error, QStringLiteral("Не сопоставлен ни один склад: укажите, какой склад МойСклад - какой склад программы."));
     plan->mappedWarehouses = int(QSet<int>(storeMap.begin(), storeMap.end()).size());
+    // Без товаров в программе считать нечего: узнаём это сразу, не ожидая ответа МойСклад.
+    {
+        QString dbErr;
+        const int total = countProducts(&dbErr);
+        if (total < 0)
+            return fail(error, QStringLiteral("Не удалось прочитать товары программы: %1").arg(dbErr));
+        if (total == 0)
+            return fail(error, QStringLiteral("В программе нет ни одного товара (таблица товаров пуста или к ней нет доступа): сопоставлять нечего."));
+    }
 
     QList<Position> report;
     QString err;
     if (!api.stockReport(&report, &err))
         return fail(error, err);
     plan->positions = int(report.size());
+    {
+        QString why;
+        bool reopened = false;
+        if (!ensureDb(&why, &reopened))
+            return fail(error, QStringLiteral("Связь с базой потеряна, пока шло ожидание ответа МойСклад, и восстановить её не удалось: %1").arg(why));
+        if (reopened)
+            plan->notes << QStringLiteral("связь с базой оборвалась за время ожидания МойСклад и была восстановлена");
+    }
     if (report.isEmpty())
         return fail(error, QStringLiteral("МойСклад вернул пустой отчёт «Остатки»: в нём нет ни одного товара. Ничего не меняю."));
 
@@ -470,20 +593,24 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
                 theirs << QStringLiteral("«%1»").arg(k);
         }
         QStringList ours;
+        QString dbProblem;
         int productsTotal = 0;
         {
-            QSqlQuery q(QStringLiteral("SELECT sku FROM products ORDER BY id LIMIT 4"));
-            while (q.next())
-                ours << QStringLiteral("«%1»").arg(q.value(0).toString());
-            QSqlQuery c(QStringLiteral("SELECT count(*) FROM products"));
-            if (c.next())
-                productsTotal = c.value(0).toInt();
+            QSqlQuery q;
+            if (q.exec(QStringLiteral("SELECT sku FROM products ORDER BY id LIMIT 4")))
+                while (q.next())
+                    ours << QStringLiteral("«%1»").arg(q.value(0).toString());
+            else
+                dbProblem = q.lastError().text();
+            productsTotal = qMax(0, countProducts(&dbProblem));
         }
         return fail(error, QStringLiteral("Ни один из %1 товаров МойСклад не найден в программе. Выбрано: «%2». Совпало бы на первых %3 товарах: %4.%5 "
                                           "В МойСклад (%2): %6. В программе (артикулы, всего товаров %7): %8. Ничего не меняю.")
                                .arg(plan->positions).arg(matchByTitle(by)).arg(sample).arg(parts.join(QStringLiteral("; "))).arg(hint)
                                .arg(theirs.isEmpty() ? QStringLiteral("это поле пустое (МойСклад не вернул его в отчёте?)") : theirs.join(QStringLiteral(", ")))
-                               .arg(productsTotal).arg(ours.isEmpty() ? QStringLiteral("товаров нет") : ours.join(QStringLiteral(", "))));
+                               .arg(productsTotal).arg(ours.isEmpty() ? QStringLiteral("товаров нет") : ours.join(QStringLiteral(", ")))
+                               + QStringLiteral(" Поля строки отчёта МойСклад: %1.").arg(api.lastRowKeys().isEmpty() ? QStringLiteral("(нет)") : api.lastRowKeys().join(QStringLiteral(", ")))
+                               + (dbProblem.isEmpty() ? QString() : QStringLiteral(" Ошибка базы: %1.").arg(dbProblem)));
     }
     if (negative > 0)
         plan->notes << QStringLiteral("отрицательных остатков в МойСклад: %1 (приняты за 0)").arg(negative);
@@ -587,6 +714,12 @@ bool apply(const Plan &plan, const QString &comment, ApplyResult *result, QStrin
         *result = ApplyResult();
     if (plan.warehouses.isEmpty())
         return true;
+    {
+        // Между расчётом и записью человек читает вопрос (иногда долго): соединение с базой могло закрыться.
+        QString why;
+        if (!ensureDb(&why, nullptr))
+            return fail(error, QStringLiteral("нет связи с базой: %1").arg(why));
+    }
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.transaction())
         return fail(error, db.lastError().text());
