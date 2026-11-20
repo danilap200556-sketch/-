@@ -93,11 +93,13 @@ QString normKey(const QString &s) { return s.trimmed().toLower(); }
 
 QStringList matchByValues()
 {
-    return {QStringLiteral("name"), QStringLiteral("article"), QStringLiteral("code")};
+    return {QStringLiteral("name"), QStringLiteral("base"), QStringLiteral("article"), QStringLiteral("code")};
 }
 
 QString matchByTitle(const QString &value)
 {
+    if (value == QLatin1String("base"))
+        return QStringLiteral("Наименование без размера (часть до «_») в МойСклад");
     if (value == QLatin1String("article"))
         return QStringLiteral("Артикул в МойСклад (если его нет - код)");
     if (value == QLatin1String("code"))
@@ -375,13 +377,16 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
 
     // Что в МоемСкладе считается артикулом товара: наименование, артикул (если пуст - код) или код.
     const QString by = matchByValues().contains(settings.matchBy) ? settings.matchBy : QStringLiteral("name");
-    auto keyOf = [&](const Position &p) -> QString {
-        if (by == QLatin1String("name"))
+    auto keyFor = [](const QString &mode, const Position &p) -> QString {
+        if (mode == QLatin1String("name"))
             return p.name.trimmed();
-        if (by == QLatin1String("code"))
+        if (mode == QLatin1String("base"))
+            return p.name.trimmed().section(QLatin1Char('_'), 0, 0).trimmed();   // размеры одной модели складываются в один товар
+        if (mode == QLatin1String("code"))
             return p.code;
         return p.article.isEmpty() ? p.code : p.article;
     };
+    auto keyOf = [&](const Position &p) { return keyFor(by, p); };
     QStringList keys;
     for (const Position &p : std::as_const(report)) {
         const QString k = keyOf(p);
@@ -438,10 +443,48 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
             desired[it.value()][pid] += qty;    // два склада МоегоСклада на один склад программы складываются; два товара МоегоСклада на один товар - тоже
         }
     }
-    if (plan->matched == 0)
-        return fail(error, QStringLiteral("Ни один из %1 товаров МойСклад не найден в программе: «%2» не совпало с артикулами товаров в программе "
-                                          "(или артикулом на Маркете). Проверьте, что в МойСклад считается артикулом (вкладка «Подключение» → «Сопоставлять "
-                                          "товары по»). Ничего не меняю.").arg(plan->positions).arg(matchByTitle(by)));
+    if (plan->matched == 0) {
+        // Почему не нашлось: сколько совпало бы по каждому полю и как выглядят значения с обеих сторон (чтобы было видно, чем они различаются).
+        const int sample = int(qMin<qsizetype>(report.size(), 400));
+        QStringList parts;
+        QString hint;
+        int best = 0;
+        for (const QString &mode : matchByValues()) {
+            QStringList ks;
+            for (int i = 0; i < sample; ++i) {
+                const QString k = keyFor(mode, report.at(i));
+                if (!k.isEmpty())
+                    ks << k;
+            }
+            const int n = ks.isEmpty() ? 0 : int(OrderWriteoff::productsForKeys(ks).size());
+            parts << QStringLiteral("%1 - %2").arg(matchByTitle(mode), QString::number(n));
+            if (n > best) {
+                best = n;
+                hint = QStringLiteral(" Совпадения есть по полю «%1»: выберите его в «Сопоставлять товары по».").arg(matchByTitle(mode));
+            }
+        }
+        QStringList theirs;
+        for (int i = 0; i < report.size() && theirs.size() < 4; ++i) {
+            const QString k = keyOf(report.at(i));
+            if (!k.isEmpty())
+                theirs << QStringLiteral("«%1»").arg(k);
+        }
+        QStringList ours;
+        int productsTotal = 0;
+        {
+            QSqlQuery q(QStringLiteral("SELECT sku FROM products ORDER BY id LIMIT 4"));
+            while (q.next())
+                ours << QStringLiteral("«%1»").arg(q.value(0).toString());
+            QSqlQuery c(QStringLiteral("SELECT count(*) FROM products"));
+            if (c.next())
+                productsTotal = c.value(0).toInt();
+        }
+        return fail(error, QStringLiteral("Ни один из %1 товаров МойСклад не найден в программе. Выбрано: «%2». Совпало бы на первых %3 товарах: %4.%5 "
+                                          "В МойСклад (%2): %6. В программе (артикулы, всего товаров %7): %8. Ничего не меняю.")
+                               .arg(plan->positions).arg(matchByTitle(by)).arg(sample).arg(parts.join(QStringLiteral("; "))).arg(hint)
+                               .arg(theirs.isEmpty() ? QStringLiteral("это поле пустое (МойСклад не вернул его в отчёте?)") : theirs.join(QStringLiteral(", ")))
+                               .arg(productsTotal).arg(ours.isEmpty() ? QStringLiteral("товаров нет") : ours.join(QStringLiteral(", "))));
+    }
     if (negative > 0)
         plan->notes << QStringLiteral("отрицательных остатков в МойСклад: %1 (приняты за 0)").arg(negative);
     if (fractional > 0)

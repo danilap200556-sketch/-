@@ -30,7 +30,7 @@ struct Settings {
     QString token;                  // токен или «логин:пароль»
     bool freeStock = false;         // переносить доступный остаток (за вычетом резерва), а не физический
     bool zeroUnknown = false;       // обнулять товары программы, которых в отчёте МоегоСклада нет
-    QString matchBy = QStringLiteral("name");   // что в МоемСкладе - артикул товара: name (наименование) | article (артикул, иначе код) | code (код)
+    QString matchBy = QStringLiteral("name");   // что в МоемСкладе - артикул товара: name (наименование) | base (наименование до «_», без размера) | article (артикул, иначе код) | code (код)
     QHash<QString, int> storeMap;   // номер склада МоегоСклада -> номер склада программы
     bool isConfigured() const { return !token.trimmed().isEmpty(); }
     int mappedStores() const;
