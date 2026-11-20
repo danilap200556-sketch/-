@@ -31,6 +31,8 @@ class StockBar;
 class TopNav;
 class QSystemTrayIcon;
 class MarketAutoSync;
+class MoySkladAutoSync;
+class MoySkladTab;
 
 class MainWindow : public QMainWindow
 {
@@ -81,6 +83,8 @@ private:
     QHash<QWidget *, qint64> m_loadedAt;
     QElapsedTimer m_clock;
     MarketAutoSync *m_autoSync = nullptr;
+    MoySkladAutoSync *m_moyskladAuto = nullptr;
+    MoySkladTab *m_moyskladTab = nullptr;
     QSystemTrayIcon *m_tray = nullptr;
     bool m_quitting = false;
     bool m_trayHintShown = false;

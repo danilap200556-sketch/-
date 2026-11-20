@@ -130,6 +130,9 @@ add_executable(inventory_manager
     src/markettab.cpp
     src/marketsync.cpp
     src/marketautosync.cpp
+    src/moysklad.cpp
+    src/moyskladautosync.cpp
+    src/moyskladtab.cpp
     src/marketcategories.cpp
     src/marketcards.cpp
     src/productmarketbox.cpp

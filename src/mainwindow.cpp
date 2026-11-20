@@ -13,6 +13,8 @@
 #include "documentstab.h"
 #include "documents.h"
 #include "marketautosync.h"
+#include "moyskladautosync.h"
+#include "moyskladtab.h"
 #include "ordertab.h"
 #include "sitepricestab.h"
 #include "userstab.h"
@@ -201,6 +203,10 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
     addPage(tr("Этикетки"), Theme::Icon::Labels, m_labelsTab);
     addPage(canEdit ? tr("Импорт") : tr("Экспорт"), Theme::Icon::Import, m_importTab);
     if (canEdit) {
+        // Остатки из МойСклад (МойСклад главный) - загрузка по кнопке и по расписанию.
+        m_moyskladAuto = new MoySkladAutoSync(this);
+        m_moyskladTab = new MoySkladTab(m_moyskladAuto, this);
+        addPage(tr("МойСклад"), Theme::Icon::Import, m_moyskladTab);
         // Яндекс Маркет (ключи кабинетов, отправка остатков) и заказы - только для тех, кто может редактировать.
         addPage(tr("Яндекс Маркет"), Theme::Icon::Market, m_marketTab, tr("МАРКЕТПЛЕЙС"));
         addPage(tr("Карточки Маркета"), Theme::Icon::Cards, m_cardsTab);
@@ -257,7 +263,33 @@ MainWindow::MainWindow(const QString &username, QWidget *parent)
         markDirty(m_labelsTab);
         markDirty(m_importTab);
         markDirty(m_marketTab);
+        if (m_moyskladTab)
+            markDirty(m_moyskladTab);
     });
+    if (m_moyskladTab) {
+        connect(m_moyskladTab, &MoySkladTab::warehousesChanged, this, [this]() {
+            markDirty(m_warehousesTab);
+            markDirty(m_stockTab);
+            markDirty(m_labelsTab);
+            markDirty(m_importTab);
+            markDirty(m_marketTab);
+        });
+        // Остатки пришли из МойСклад (по кнопке или по расписанию): страницы, где они видны, перечитываются.
+        connect(m_moyskladTab, &MoySkladTab::stockChanged, this, [this]() {
+            markDirty(m_stockTab);
+            markDirty(m_productsTab);
+            markDirty(m_labelsTab);
+            markDirty(m_importTab);
+            markDirty(m_documentsTab);
+        });
+        connect(m_moyskladTab, &MoySkladTab::documentCreated, this, [this](int id) {
+            if (id <= 0)
+                return;
+            const Documents::Info d = Documents::get(id);
+            statusBar()->showMessage(tr("Остатки загружены из МойСклад: %1. Открыть и при необходимости отменить целиком - раздел «Документы».")
+                                         .arg(Documents::title(d)), 15000);
+        });
+    }
     connect(m_importTab, &ImportTab::dataImported, this, [this]() {
         markDirty(m_stockTab);
         markDirty(m_productsTab);
@@ -362,6 +394,8 @@ void MainWindow::refreshPage(QWidget *w)
         m_cardsTab->refresh();
     else if (w == m_ordersTab)
         m_ordersTab->refresh();
+    else if (w == m_moyskladTab && m_moyskladTab)
+        m_moyskladTab->refresh();
     else if (w == m_sitePricesTab && m_sitePricesTab)
         m_sitePricesTab->refresh();
     else if (w == m_markingTab && m_markingTab)
@@ -418,6 +452,8 @@ void MainWindow::setupTray()
     auto *menu = new QMenu(this);
     menu->addAction(tr("Открыть окно"), this, &MainWindow::restoreFromTray);
     menu->addAction(tr("Обновить остатки на Маркете сейчас"), m_autoSync, &MarketAutoSync::runNow);
+    if (m_moyskladAuto)
+        menu->addAction(tr("Загрузить остатки из МойСклад сейчас"), m_moyskladAuto, &MoySkladAutoSync::runNow);
     menu->addSeparator();
     menu->addAction(tr("Выход"), this, &MainWindow::quitApp);
     m_tray->setContextMenu(menu);
@@ -429,14 +465,26 @@ void MainWindow::setupTray()
         if (m_tray->isVisible() && !isActiveWindow())
             m_tray->showMessage(tr("Маркет: остатки не обновились"), text, QSystemTrayIcon::Warning, 10000);
     });
+    if (m_moyskladAuto) {
+        connect(m_moyskladAuto, &MoySkladAutoSync::problem, this, [this](const QString &text) {
+            if (m_tray->isVisible() && !isActiveWindow())
+                m_tray->showMessage(tr("МойСклад: остатки не загрузились"), text, QSystemTrayIcon::Warning, 10000);
+        });
+    }
     auto update = [this]() {
-        // Значок в трее виден, пока включено автообновление.
-        const bool on = m_autoSync->settings().enabled;
-        m_tray->setToolTip(tr("Склад. %1").arg(m_autoSync->statusText()).left(250));
+        // Значок в трее виден, пока включено автообновление (Маркета или МойСклад).
+        const bool msOn = m_moyskladAuto && m_moyskladAuto->settings().enabled;
+        const bool on = m_autoSync->settings().enabled || msOn;
+        QString tip = tr("Склад. %1").arg(m_autoSync->statusText());
+        if (msOn)
+            tip += QLatin1Char(' ') + m_moyskladAuto->statusText();
+        m_tray->setToolTip(tip.left(250));
         if (m_tray->isVisible() != on)
             m_tray->setVisible(on);
     };
     connect(m_autoSync, &MarketAutoSync::statusChanged, this, update);
+    if (m_moyskladAuto)
+        connect(m_moyskladAuto, &MoySkladAutoSync::statusChanged, this, update);
     update();
 }
 
@@ -566,13 +614,14 @@ void MainWindow::closeEvent(QCloseEvent *event)
         event->ignore(); // карточка не сохранилась - окно не закрываем, чтобы не потерять правки
         return;
     }
-    if (!m_quitting && m_tray && m_tray->isVisible() && m_autoSync && m_autoSync->settings().enabled) {
+    if (!m_quitting && m_tray && m_tray->isVisible() && m_autoSync &&
+        (m_autoSync->settings().enabled || (m_moyskladAuto && m_moyskladAuto->settings().enabled))) {
         event->ignore();
         hide();
         if (!m_trayHintShown) {
             m_trayHintShown = true;
             m_tray->showMessage(tr("Склад работает в фоне"),
-                                tr("Остатки на Маркете обновляются по расписанию. Открыть окно - значок здесь, "
+                                tr("Остатки обновляются по расписанию (Маркет, МойСклад). Открыть окно - значок здесь, "
                                    "выйти совсем - правый щелчок → «Выход»."),
                                 QSystemTrayIcon::Information, 8000);
         }
