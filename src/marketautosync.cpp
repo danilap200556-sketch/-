@@ -10,6 +10,7 @@
 namespace {
 const char kGroup[] = "marketAuto/";
 constexpr int kFirstRunDelayMs = 45 * 1000; // после запуска приложения: дать окну открыться
+constexpr int kRetryAfterLostMs = 5 * 60 * 1000; // связь с Маркетом оборвалась: повторить запуск раньше обычного
 
 // Для автоматических тестов: переменные окружения ускоряют расписание (в обычной работе не задаются).
 int firstRunDelayMs()
@@ -68,7 +69,9 @@ void MarketAutoSync::schedule()
 {
     m_timer.stop();
     if (m_settings.enabled && !m_running) {
-        const qint64 ms = intervalMs(m_settings.intervalMinutes);
+        qint64 ms = intervalMs(m_settings.intervalMinutes);
+        if (m_retrySoon)
+            ms = qMin<qint64>(ms, kRetryAfterLostMs);
         m_timer.start(int(qMin<qint64>(ms, std::numeric_limits<int>::max())));
         m_nextRun = QDateTime::currentDateTime().addMSecs(ms);
     } else if (!m_settings.enabled) {
@@ -115,6 +118,7 @@ void MarketAutoSync::run(bool manual)
             accounts << a;
 
     int pushed = 0, failed = 0, inSync = 0;
+    bool connectionLost = false;
     QStringList errors;
     if (accounts.isEmpty()) {
         errors << tr("нет кабинетов Маркета");
@@ -127,6 +131,7 @@ void MarketAutoSync::run(bool manual)
         QString err;
         if (!MarketSync::compareStocks(acc, api, &rows, &err)) {
             ++failed;
+            connectionLost = connectionLost || MarketApi::isConnectionError(err);
             errors << QStringLiteral("«%1»: %2").arg(acc.name, err);
             emit message(tr("[авто] «%1»: ошибка - %2").arg(acc.name, err));
             continue;
@@ -139,6 +144,7 @@ void MarketAutoSync::run(bool manual)
         }
         if (!api.updateStocks(acc, items, &err)) {
             ++failed;
+            connectionLost = connectionLost || MarketApi::isConnectionError(err);
             errors << QStringLiteral("«%1»: %2").arg(acc.name, err);
             emit message(tr("[авто] «%1»: не удалось отправить - %2").arg(acc.name, err));
             continue;
@@ -152,6 +158,9 @@ void MarketAutoSync::run(bool manual)
         result = pushed > 0 ? tr("отправлено позиций: %1").arg(pushed) : tr("остатки совпадают");
     else
         result = tr("ошибка: %1").arg(errors.join(QStringLiteral("; ")));
+    m_retrySoon = connectionLost;
+    if (connectionLost)
+        result += tr(" Повторю через %1 мин.").arg(kRetryAfterLostMs / 60000);
     m_lastRun = QDateTime::currentDateTime();
     m_lastResult = result;
     QSettings st;

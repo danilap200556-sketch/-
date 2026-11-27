@@ -52,6 +52,7 @@ private:
     Settings m_settings;
     QTimer m_timer;
     bool m_running = false;
+    bool m_retrySoon = false; // последний запуск оборвался из-за связи с Маркетом: следующий - раньше обычного
     QDateTime m_lastRun;
     QDateTime m_nextRun;
     QString m_lastResult;

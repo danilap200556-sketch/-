@@ -140,6 +140,8 @@ public:
 
     // Для тестов адрес можно подменить переменной окружения MARKET_API_BASE_URL.
     static QString baseUrl();
+    // Ошибка - обрыв связи с Маркетом (а не ответ Маркета с отказом): стоит повторить позже.
+    static bool isConnectionError(const QString &error);
 
     bool campaigns(QList<MarketCampaign> *out, QString *error);
     bool partnerWarehouses(qint64 businessId, QList<MarketWarehouse> *out, QString *error);
@@ -203,4 +205,5 @@ private:
     QString m_apiKey;
     Log m_log;
     QNetworkAccessManager *m_nam;
+    bool m_http1Only = false; // после обрыва соединения дальше работаем по HTTP/1.1 (без HTTP/2)
 };

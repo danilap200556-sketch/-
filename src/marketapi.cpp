@@ -17,8 +17,30 @@ namespace {
 
 constexpr int kTimeoutMs = 60000;
 constexpr int kMaxPages = 2000;          // страховка от бесконечной пагинации
+constexpr int kAttempts = 4;             // попыток на запрос при обрыве связи и временных ошибках Маркета
 constexpr int kStocksBatch = 2000;       // maxItems в UpdateStocks*Request
 constexpr int kPricesBatch = 500;        // maxItems в UpdateBusinessPricesRequest
+
+const char kConnectionLost[] = "нет связи с Маркетом";
+
+// Повторять можно только то, что Маркет не обработал или обработал временно неудачно: обрыв связи, лимит запросов, сбои на его стороне.
+// Все запросы программы к Маркету безопасно повторять (читают данные или задают значения целиком, как остатки и цены).
+bool retryableStatus(int status)
+{
+    return status == 0 || status == 420 || status == 429 || status == 500 || status == 502 || status == 503 || status == 504;
+}
+
+// Пауза перед повтором после неудачной попытки номер failed (для тестов задаётся переменной окружения MARKET_RETRY_MS).
+int retryDelayMs(int failed, int status)
+{
+    const int fromEnv = qEnvironmentVariableIntValue("MARKET_RETRY_MS");
+    if (fromEnv > 0)
+        return fromEnv;
+    static const int kConnection[] = {2000, 5000, 10000};
+    static const int kLimit[] = {10000, 20000, 40000};
+    const int i = qBound(1, failed, 3) - 1;
+    return (status == 420 || status == 429) ? kLimit[i] : kConnection[i];
+}
 
 QString describeHttpStatus(int status)
 {
@@ -199,49 +221,82 @@ QString MarketApi::baseUrl()
     return env.isEmpty() ? QStringLiteral("https://api.partner.market.yandex.ru") : QString::fromUtf8(env);
 }
 
+bool MarketApi::isConnectionError(const QString &error)
+{
+    return error.startsWith(QString::fromUtf8(kConnectionLost));
+}
+
 MarketApi::Reply MarketApi::request(const QByteArray &method, const QString &path, const QUrlQuery &query,
                                     const QJsonDocument &body)
 {
     QUrl url(baseUrl() + path);
     url.setQuery(query);
-    QNetworkRequest req(url);
-    req.setRawHeader("Api-Key", m_apiKey.toUtf8());
-    req.setRawHeader("Accept", "application/json");
-    req.setTransferTimeout(kTimeoutMs);
-
-    QNetworkReply *reply;
-    if (body.isNull()) {
-        reply = m_nam->sendCustomRequest(req, method);
-    } else {
-        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-        reply = m_nam->sendCustomRequest(req, method, body.toJson(QJsonDocument::Compact));
-    }
-
-    QEventLoop loop;
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
 
     Reply r;
-    r.httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    const QByteArray data = reply->readAll();
-    r.json = QJsonDocument::fromJson(data);
+    for (int attempt = 1;; ++attempt) {
+        QNetworkRequest req(url);
+        req.setRawHeader("Api-Key", m_apiKey.toUtf8());
+        req.setRawHeader("Accept", "application/json");
+        req.setTransferTimeout(kTimeoutMs);
+        if (m_http1Only)
+            req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
 
-    if (r.httpStatus == 0) {
-        r.error = QStringLiteral("нет связи с Маркетом: %1").arg(reply->errorString());
-    } else if (r.httpStatus >= 400 || r.json.object().value("status").toString() == QLatin1String("ERROR")) {
-        QStringList parts;
-        parts << QStringLiteral("HTTP %1").arg(r.httpStatus);
-        const QString human = describeHttpStatus(r.httpStatus);
-        if (!human.isEmpty())
-            parts << human;
-        const QString details = errorsFromBody(r.json);
-        if (!details.isEmpty())
-            parts << details;
-        else if (r.json.isNull() && !data.isEmpty())
-            parts << QString::fromUtf8(data.left(300));
-        r.error = parts.join(" - ");
+        QNetworkReply *reply;
+        if (body.isNull()) {
+            reply = m_nam->sendCustomRequest(req, method);
+        } else {
+            req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+            reply = m_nam->sendCustomRequest(req, method, body.toJson(QJsonDocument::Compact));
+        }
+
+        QEventLoop loop;
+        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        loop.exec();
+
+        r = Reply();
+        r.httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray data = reply->readAll();
+        r.json = QJsonDocument::fromJson(data);
+        const bool timedOut = reply->error() == QNetworkReply::TimeoutError || reply->error() == QNetworkReply::OperationCanceledError;
+
+        if (r.httpStatus == 0) {
+            r.error = QStringLiteral("%1: %2").arg(QString::fromUtf8(kConnectionLost), reply->errorString());
+        } else if (r.httpStatus >= 400 || r.json.object().value("status").toString() == QLatin1String("ERROR")) {
+            QStringList parts;
+            parts << QStringLiteral("HTTP %1").arg(r.httpStatus);
+            const QString human = describeHttpStatus(r.httpStatus);
+            if (!human.isEmpty())
+                parts << human;
+            const QString details = errorsFromBody(r.json);
+            if (!details.isEmpty())
+                parts << details;
+            else if (r.json.isNull() && !data.isEmpty())
+                parts << QString::fromUtf8(data.left(300));
+            r.error = parts.join(" - ");
+        }
+        reply->deleteLater();
+
+        // Долгое молчание Маркета повторяем один раз: иначе один запрос блокирует работу на минуты.
+        const int maxAttempts = timedOut ? 2 : kAttempts;
+        if (r.error.isEmpty() || !retryableStatus(r.httpStatus) || attempt >= maxAttempts) {
+            if (!r.error.isEmpty() && attempt > 1 && r.httpStatus == 0)
+                r.error += QStringLiteral(" (попыток: %1)").arg(attempt);
+            break;
+        }
+        const int delay = retryDelayMs(attempt, r.httpStatus);
+        if (m_log)
+            m_log(QStringLiteral("%1 %2: %3 - повторю через %4 с (попытка %5 из %6)")
+                      .arg(QString::fromLatin1(method), path, r.error)
+                      .arg(delay / 1000.0, 0, 'f', delay % 1000 == 0 ? 0 : 1)
+                      .arg(attempt + 1)
+                      .arg(maxAttempts));
+        if (r.httpStatus == 0) {
+            // Соединение, скорее всего, устарело или его рвёт посредник: следующая попытка - новое соединение по HTTP/1.1.
+            m_http1Only = true;
+            m_nam->clearConnectionCache();
+        }
+        wait(delay);
     }
-    reply->deleteLater();
 
     if (m_log && !r.error.isEmpty())
         m_log(QStringLiteral("%1 %2: %3").arg(QString::fromLatin1(method), path, r.error));
