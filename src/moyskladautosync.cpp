@@ -125,7 +125,9 @@ void MoySkladAutoSync::run(bool manual)
                 failed = true;
             } else {
                 result = tr("изменено позиций: %1").arg(applied.changed);
-                changed = applied.changed > 0;
+                if (applied.created > 0)
+                    result += tr(", создано карточек: %1").arg(applied.created);
+                changed = applied.changed > 0 || applied.created > 0;
                 documentId = applied.documentId;
             }
         }

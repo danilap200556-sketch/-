@@ -10,6 +10,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSqlDatabase>
 #include <QSqlError>
@@ -123,6 +124,7 @@ Settings loadSettings()
     s.token = o.value(QStringLiteral("token")).toString();
     s.freeStock = o.value(QStringLiteral("free")).toBool();
     s.zeroUnknown = o.value(QStringLiteral("zeroUnknown")).toBool();
+    s.createMissing = o.value(QStringLiteral("createMissing")).toBool(true);
     s.matchBy = o.value(QStringLiteral("matchBy")).toString();
     if (!matchByValues().contains(s.matchBy))
         s.matchBy = QStringLiteral("name");
@@ -142,6 +144,7 @@ bool saveSettings(const Settings &s)
     const QJsonObject o{{QStringLiteral("token"), s.token.trimmed()},
                         {QStringLiteral("free"), s.freeStock},
                         {QStringLiteral("zeroUnknown"), s.zeroUnknown},
+                        {QStringLiteral("createMissing"), s.createMissing},
                         {QStringLiteral("matchBy"), matchByValues().contains(s.matchBy) ? s.matchBy : QStringLiteral("name")},
                         {QStringLiteral("storeMap"), map}};
     return AppSettings::set(QString::fromLatin1(kConfigKey), QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
@@ -330,6 +333,13 @@ bool Api::stockReport(QList<Position> *out, QString *error)
     return true;
 }
 
+bool Api::enrich(QList<Position> *positions, QString *error)
+{
+    if (m_assortmentLoaded)
+        return true;
+    return fillFromAssortment(positions, error);
+}
+
 bool Api::fillFromAssortment(QList<Position> *positions, QString *error)
 {
     QHash<QString, int> byId;
@@ -368,6 +378,15 @@ bool Api::fillFromAssortment(QList<Position> *positions, QString *error)
                 p.code = o.value(QStringLiteral("code")).toString().trimmed();
             if (p.article.isEmpty())
                 p.article = o.value(QStringLiteral("article")).toString().trimmed();
+            // Штрихкоды: «barcodes»: [{«ean13»: «...»}, {«code128»: «...»}, ...] - значение в объекте под ключом вида штрихкода.
+            for (const QJsonValue &bv : o.value(QStringLiteral("barcodes")).toArray()) {
+                const QJsonObject bo = bv.toObject();
+                for (auto bit = bo.constBegin(); bit != bo.constEnd(); ++bit) {
+                    const QString code = bit.value().toString().trimmed();
+                    if (!code.isEmpty() && !p.barcodes.contains(code))
+                        p.barcodes << code;
+                }
+            }
             ++filled;
         }
         offset += int(rows.size());
@@ -375,8 +394,9 @@ bool Api::fillFromAssortment(QList<Position> *positions, QString *error)
         if (rows.isEmpty() || offset >= size)
             break;
     }
+    m_assortmentLoaded = true;
     if (m_log)
-        m_log(QStringLiteral("Из ассортимента получены названия для %1 из %2 товаров").arg(filled).arg(positions->size()));
+        m_log(QStringLiteral("Из ассортимента получены названия и штрихкоды для %1 из %2 товаров").arg(filled).arg(positions->size()));
     return true;
 }
 
@@ -472,13 +492,15 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
     if (storeMap.isEmpty())
         return fail(error, QStringLiteral("Не сопоставлен ни один склад: укажите, какой склад МойСклад - какой склад программы."));
     plan->mappedWarehouses = int(QSet<int>(storeMap.begin(), storeMap.end()).size());
-    // Без товаров в программе считать нечего: узнаём это сразу, не ожидая ответа МойСклад.
+    // Без товаров в программе сопоставлять нечего (если не включено создание карточек: тогда они создаются все): узнаём это сразу, не ожидая МойСклад.
+    bool emptyApp = false;
     {
         QString dbErr;
         const int total = countProducts(&dbErr);
         if (total < 0)
             return fail(error, QStringLiteral("Не удалось прочитать товары программы: %1").arg(dbErr));
-        if (total == 0)
+        emptyApp = total == 0;
+        if (emptyApp && !settings.createMissing)
             return fail(error, QStringLiteral("В программе нет ни одного товара (таблица товаров пуста или к ней нет доступа): сопоставлять нечего."));
     }
 
@@ -532,10 +554,18 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
             ++fractional;
         return int(qMin<qint64>(r, kMaxQty));
     };
-    for (const Position &p : std::as_const(report)) {
+    // Каждый склад программы, на который идёт загрузка, участвует, даже если ни один товар на нём не сопоставился (нужно для создания карточек).
+    for (auto it = storeMap.cbegin(); it != storeMap.cend(); ++it)
+        desired[it.value()];
+    QHash<QString, int> newByKey;           // ключ товара (в нижнем регистре) -> номер в plan->newProducts
+    QList<QList<int>> newPositions;         // строки отчёта, из которых собрана новая карточка (для штрихкодов)
+    int unnamed = 0;
+    for (int posIndex = 0; posIndex < report.size(); ++posIndex) {
+        const Position &p = report.at(posIndex);
         int pid = 0;
         bool amb = false;
-        const QString key = normKey(keyOf(p));
+        const QString rawKey = keyOf(p);
+        const QString key = normKey(rawKey);
         if (!key.isEmpty()) {
             if (ambiguousSet.contains(key))
                 amb = true;
@@ -549,9 +579,30 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
             onMapped += settings.freeStock ? s.first - s.second : s.first;
         }
         if (pid == 0) {
-            if (amb)
+            if (amb) {
                 ++plan->ambiguous;
-            else if (onMapped > 0) {
+            } else if (settings.createMissing) {
+                // Товара нет в программе: будет создана карточка с остатком из МойСклад (одинаковые ключи склеиваются: размеры одной модели).
+                if (key.isEmpty()) {
+                    ++unnamed;
+                } else {
+                    int ni = newByKey.value(key, -1);
+                    if (ni < 0) {
+                        NewProduct np;
+                        np.sku = rawKey;
+                        np.name = (by == QLatin1String("base") || p.name.trimmed().isEmpty()) ? rawKey : p.name.trimmed();
+                        ni = int(plan->newProducts.size());
+                        newByKey.insert(key, ni);
+                        plan->newProducts.append(np);
+                        newPositions.append(QList<int>());
+                    }
+                    newPositions[ni].append(posIndex);
+                    for (auto it = storeMap.cbegin(); it != storeMap.cend(); ++it) {
+                        const auto s = p.byStore.value(it.key());
+                        plan->newProducts[ni].qty[it.value()] += toQty(settings.freeStock ? s.first - s.second : s.first);
+                    }
+                }
+            } else if (onMapped > 0) {
                 ++plan->unknown;
                 if (plan->unknownSamples.size() < 8)
                     plan->unknownSamples << keyOf(p);
@@ -566,7 +617,7 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
             desired[it.value()][pid] += qty;    // два склада МоегоСклада на один склад программы складываются; два товара МоегоСклада на один товар - тоже
         }
     }
-    if (plan->matched == 0) {
+    if (plan->matched == 0 && !(emptyApp && settings.createMissing)) {
         // Почему не нашлось: сколько совпало бы по каждому полю и как выглядят значения с обеих сторон (чтобы было видно, чем они различаются).
         const int sample = int(qMin<qsizetype>(report.size(), 400));
         QStringList parts;
@@ -618,6 +669,31 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
         plan->notes << QStringLiteral("дробных остатков: %1 (округлены до целых)").arg(fractional);
     if (plan->ambiguous > 0)
         plan->notes << QStringLiteral("артикул подходит нескольким товарам программы, пропущено: %1").arg(plan->ambiguous);
+    if (unnamed > 0)
+        plan->notes << QStringLiteral("товаров МойСклад без наименования (артикула), для которых нельзя создать карточку: %1").arg(unnamed);
+
+    // Новые карточки: штрихкоды берём из ассортимента МойСклад (в строках отчёта их нет).
+    if (!plan->newProducts.isEmpty()) {
+        if (!api.assortmentLoaded()) {
+            QString eerr;
+            if (!api.enrich(&report, &eerr))
+                plan->notes << QStringLiteral("штрихкоды новых товаров не получены: %1").arg(eerr);
+            QString why;
+            bool reopened = false;
+            if (!ensureDb(&why, &reopened))
+                return fail(error, QStringLiteral("Связь с базой потеряна, пока шло ожидание ответа МойСклад, и восстановить её не удалось: %1").arg(why));
+            if (reopened)
+                plan->notes << QStringLiteral("связь с базой оборвалась за время ожидания МойСклад и была восстановлена");
+        }
+        static const QRegularExpression barcodeRe(QStringLiteral("^[0-9]{8,14}$"));
+        for (int i = 0; i < plan->newProducts.size(); ++i) {
+            NewProduct &np = plan->newProducts[i];
+            for (int posIndex : std::as_const(newPositions[i]))
+                for (const QString &b : report.at(posIndex).barcodes)
+                    if (barcodeRe.match(b).hasMatch() && !np.barcodes.contains(b))
+                        np.barcodes << b;
+        }
+    }
 
     // Текущие остатки программы на сопоставленных складах.
     QSet<int> changedProducts;
@@ -673,6 +749,35 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
         plan->warehouses.append(wl);
     }
 
+    // Новые карточки в таблице расхождений: по строке на каждый склад с остатком (или одна, если остатка нет).
+    plan->created = int(plan->newProducts.size());
+    for (const NewProduct &np : std::as_const(plan->newProducts)) {
+        bool any = false;
+        QList<int> whs = np.qty.keys();
+        std::sort(whs.begin(), whs.end());
+        for (int wh : std::as_const(whs)) {
+            if (np.qty.value(wh) <= 0)
+                continue;
+            any = true;
+            Change c;
+            c.isNew = true;
+            c.sku = np.sku;
+            c.name = np.name;
+            c.warehouseId = wh;
+            c.warehouse = whNames.value(wh);
+            c.was = 0;
+            c.will = np.qty.value(wh);
+            plan->changes.append(c);
+        }
+        if (!any) {
+            Change c;
+            c.isNew = true;
+            c.sku = np.sku;
+            c.name = np.name;
+            plan->changes.append(c);
+        }
+    }
+
     // Артикулы и названия для показа.
     {
         QHash<int, QPair<QString, QString>> info;
@@ -691,6 +796,8 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
                     info.insert(q.value(0).toInt(), {q.value(1).toString(), q.value(2).toString()});
         }
         for (Change &c : plan->changes) {
+            if (c.isNew)
+                continue;
             c.sku = info.value(c.productId).first;
             c.name = info.value(c.productId).second;
         }
@@ -704,6 +811,11 @@ bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error)
     if (plan->zeroed >= 20 && plan->zeroed * 2 > plan->positiveNow) {
         plan->suspicious = true;
         plan->suspicion = QStringLiteral("обнуляется %1 из %2 позиций с остатком - это больше половины").arg(plan->zeroed).arg(plan->positiveNow);
+    }
+    // Новых карточек слишком много по сравнению с найденными товарами: скорее всего, артикулы не совпали, а не появились сотни новых товаров.
+    if (!plan->suspicious && plan->created >= 50 && (plan->matched == 0 || plan->created * 2 > plan->matched)) {
+        plan->suspicious = true;
+        plan->suspicion = QStringLiteral("создаётся %1 новых карточек при %2 найденных товарах - похоже, артикулы не совпали").arg(plan->created).arg(plan->matched);
     }
     return true;
 }
@@ -723,17 +835,94 @@ bool apply(const Plan &plan, const QString &comment, ApplyResult *result, QStrin
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.transaction())
         return fail(error, db.lastError().text());
+    auto abort = [&](const QString &text) {
+        db.rollback();
+        return fail(error, text);
+    };
+
+    // 1. Карточки товаров, которых в программе нет: пачками по 100 (база удалённая, по запросу на товар вышло бы очень долго).
+    QHash<QString, int> idBySku;
+    int created = 0;
+    for (int i = 0; i < plan.newProducts.size(); i += 100) {
+        const QList<NewProduct> part = plan.newProducts.mid(i, 100);
+        QStringList marks;
+        for (int k = 0; k < part.size(); ++k)
+            marks << QStringLiteral("(?, ?)");
+        QSqlQuery q;
+        q.prepare(QStringLiteral("INSERT INTO products (sku, name) VALUES %1 ON CONFLICT (sku) DO NOTHING RETURNING id, sku").arg(marks.join(QLatin1Char(','))));
+        for (const NewProduct &np : part) {
+            q.addBindValue(np.sku);
+            q.addBindValue(np.name);
+        }
+        if (!q.exec())
+            return abort(QStringLiteral("не удалось создать карточки товаров: %1").arg(q.lastError().text()));
+        while (q.next()) {
+            idBySku.insert(q.value(1).toString(), q.value(0).toInt());
+            ++created;
+        }
+        QStringList exist;   // такой артикул уже есть (появился между расчётом и записью): берём этот товар
+        for (const NewProduct &np : part)
+            if (!idBySku.contains(np.sku))
+                exist << np.sku;
+        if (!exist.isEmpty()) {
+            QStringList em;
+            for (int k = 0; k < exist.size(); ++k)
+                em << QStringLiteral("?");
+            QSqlQuery sq;
+            sq.prepare(QStringLiteral("SELECT id, sku FROM products WHERE sku IN (%1)").arg(em.join(QLatin1Char(','))));
+            for (const QString &sku : exist)
+                sq.addBindValue(sku);
+            if (!sq.exec())
+                return abort(QStringLiteral("не удалось прочитать существующие товары: %1").arg(sq.lastError().text()));
+            while (sq.next())
+                idBySku.insert(sq.value(1).toString(), sq.value(0).toInt());
+        }
+    }
+    // Штрихкоды новых карточек: чужой (уже привязанный) штрихкод пропускается, а не останавливает загрузку.
+    QList<QPair<QString, int>> codes;
+    for (const NewProduct &np : plan.newProducts)
+        for (const QString &b : np.barcodes)
+            if (idBySku.value(np.sku) > 0)
+                codes.append({b, idBySku.value(np.sku)});
+    for (int i = 0; i < codes.size(); i += 200) {
+        const QList<QPair<QString, int>> part = codes.mid(i, 200);
+        QStringList marks;
+        for (int k = 0; k < part.size(); ++k)
+            marks << QStringLiteral("(?, ?)");
+        QSqlQuery q;
+        q.prepare(QStringLiteral("INSERT INTO product_barcodes (barcode, product_id) VALUES %1 ON CONFLICT (barcode) DO NOTHING").arg(marks.join(QLatin1Char(','))));
+        for (const auto &c : part) {
+            q.addBindValue(c.first);
+            q.addBindValue(c.second);
+        }
+        if (!q.exec())
+            return abort(QStringLiteral("не удалось привязать штрихкоды: %1").arg(q.lastError().text()));
+    }
+
+    // 2. Остатки: и у найденных товаров, и у только что созданных.
+    QList<WarehouseLevels> whs = plan.warehouses;
+    for (const NewProduct &np : plan.newProducts) {
+        const int pid = idBySku.value(np.sku);
+        if (pid <= 0)
+            continue;
+        for (auto it = np.qty.cbegin(); it != np.qty.cend(); ++it)
+            if (it.value() > 0)
+                for (WarehouseLevels &wl : whs)
+                    if (wl.warehouseId == it.key())
+                        wl.levels.append({pid, it.value()});
+    }
+    QString docComment = comment;
+    if (created > 0)
+        docComment += QStringLiteral(" (создано карточек: %1)").arg(created);
     int changed = 0;
     {
         // Один документ на все склады: открыть в разделе «Документы» и отменить можно целиком.
-        Database::Document doc(QStringLiteral("inventory"), comment);
-        for (const WarehouseLevels &wl : plan.warehouses) {
+        Database::Document doc(QStringLiteral("inventory"), docComment);
+        for (const WarehouseLevels &wl : std::as_const(whs)) {
             int c = 0;
             QString err;
-            if (!Database::setStockLevelsInTransaction(wl.warehouseId, wl.levels, plan.zeroUnknown, comment, &c, &err)) {
-                db.rollback();
-                return fail(error, QStringLiteral("склад «%1»: %2").arg(wl.warehouse, err));
-            }
+            if (!Database::setStockLevelsInTransaction(wl.warehouseId, wl.levels, plan.zeroUnknown, docComment, &c, &err))
+                return abort(QStringLiteral("склад «%1»: %2").arg(wl.warehouse, err));
             changed += c;
         }
     }
@@ -743,6 +932,7 @@ bool apply(const Plan &plan, const QString &comment, ApplyResult *result, QStrin
         return fail(error, db.lastError().text());
     }
     if (result) {
+        result->created = created;
         result->changed = changed;
         result->documentId = documentId;
     }
@@ -754,6 +944,8 @@ QString summary(const Plan &plan)
     QString s = QStringLiteral("МойСклад: товаров %1, найдено в программе %2, расхождений %3").arg(plan.positions).arg(plan.matched).arg(plan.changes.size());
     if (plan.unknown > 0)
         s += QStringLiteral(", с остатком, но не найдено в программе %1").arg(plan.unknown);
+    if (plan.created > 0)
+        s += QStringLiteral(", будет создано карточек %1").arg(plan.created);
     return s;
 }
 

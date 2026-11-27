@@ -28,7 +28,7 @@ public:
     void refresh();
 
     // Действия кнопок (для проверок). checkConnection: токен рабочий, склады получены. preview: расхождения без записи.
-    // loadNow: расхождения и запись; ask - спросить перед записью. Возвращает, сколько записей журнала изменено (-1 - не удалось или отказались).
+    // loadNow: расхождения и запись; ask - спросить перед записью. Возвращает, сколько записей журнала изменено и карточек товаров создано (-1 - не удалось или отказались).
     bool checkConnection();
     bool preview();
     int loadNow(bool ask = true);
@@ -62,6 +62,7 @@ private:
     QTableWidget *m_stores = nullptr;
     QComboBox *m_stockType = nullptr;
     QCheckBox *m_zeroUnknown = nullptr;
+    QCheckBox *m_createMissing = nullptr;
     QComboBox *m_matchBy = nullptr;
     QTableWidget *m_changes = nullptr;
     QLabel *m_summary = nullptr;

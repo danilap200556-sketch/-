@@ -30,6 +30,7 @@ struct Settings {
     QString token;                  // токен или «логин:пароль»
     bool freeStock = false;         // переносить доступный остаток (за вычетом резерва), а не физический
     bool zeroUnknown = false;       // обнулять товары программы, которых в отчёте МоегоСклада нет
+    bool createMissing = true;      // создавать в программе карточки товаров, которые есть в МоёмСкладе, а в программе нет («1 в 1»)
     QString matchBy = QStringLiteral("name");   // что в МоемСкладе - артикул товара: name (наименование) | base (наименование до «_», без размера) | article (артикул, иначе код) | code (код)
     QHash<QString, int> storeMap;   // номер склада МоегоСклада -> номер склада программы
     bool isConfigured() const { return !token.trimmed().isEmpty(); }
@@ -54,6 +55,7 @@ void cacheStores(const QList<Store> &stores);
 // Строка отчёта «Остатки по складам»: товар и его остатки по складам (номер склада -> остаток, резерв).
 struct Position {
     QString id;          // номер товара в МойСклад (из ссылки на него в строке отчёта)
+    QStringList barcodes; // штрихкоды из ассортимента (заполняются, когда нужны для создания карточек)
     QString article;
     QString code;
     QString name;
@@ -80,6 +82,9 @@ public:
     bool stockReport(QList<Position> *out, QString *error);
     // Какие поля были в первой строке отчёта (для диагностики).
     QStringList lastRowKeys() const { return m_rowKeys; }
+    // Дополняет товары названием, кодом, артикулом и штрихкодами из ассортимента (GET /entity/assortment), если это ещё не сделано.
+    bool enrich(QList<Position> *positions, QString *error);
+    bool assortmentLoaded() const { return m_assortmentLoaded; }
 
 private:
     struct Reply;
@@ -89,6 +94,7 @@ private:
     bool fillFromAssortment(QList<Position> *positions, QString *error);
 
     QString m_token;
+    bool m_assortmentLoaded = false;
     QStringList m_rowKeys;
     Log m_log;
     QNetworkAccessManager *m_nam;
@@ -102,6 +108,7 @@ struct Change {
     QString warehouse;
     int was = 0;
     int will = 0;
+    bool isNew = false;     // карточки товара ещё нет: она будет создана
 };
 
 struct WarehouseLevels {
@@ -110,8 +117,18 @@ struct WarehouseLevels {
     QList<Database::StockLevel> levels;
 };
 
+// Товар, которого в программе нет: карточка создаётся (артикул, название, штрихкоды), остаток ставится по складам.
+struct NewProduct {
+    QString sku;
+    QString name;
+    QStringList barcodes;
+    QHash<int, int> qty;                    // склад программы -> остаток
+};
+
 struct Plan {
     QList<Change> changes;                  // расхождения: что изменится
+    QList<NewProduct> newProducts;          // карточки, которые будут созданы
+    int created = 0;                        // их число
     QList<WarehouseLevels> warehouses;      // что записать (по складам программы)
     bool zeroUnknown = false;
     int positions = 0;                      // товаров в отчёте МоегоСклада
@@ -133,6 +150,7 @@ struct Plan {
 bool buildPlan(const Settings &settings, Api &api, Plan *plan, QString *error);
 
 struct ApplyResult {
+    int created = 0;        // создано карточек товаров
     int changed = 0;        // записей в журнале
     int documentId = 0;     // документ, 0 - расхождений не было
 };

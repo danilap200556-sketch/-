@@ -114,6 +114,10 @@ MoySkladTab::MoySkladTab(MoySkladAutoSync *autoSync, QWidget *parent)
                                  "У вас артикул вписан в «Наименование», поэтому выбрано оно."));
         optForm->addRow(tr("Сопоставлять товары по:"), m_matchBy);
         l->addLayout(optForm);
+        m_createMissing = new QCheckBox(tr("создавать в программе карточки товаров, которых там нет, но есть в МойСклад"), page);
+        m_createMissing->setToolTip(tr("Артикул карточки - то, что выбрано в «Сопоставлять товары по», название - из МойСклад, штрихкоды - из МойСклад (чужие, уже привязанные, "
+                                       "пропускаются); остаток ставится по сопоставленным складам. Так в программе будет столько же товаров, сколько в МойСклад."));
+        l->addWidget(m_createMissing);
         m_zeroUnknown = new QCheckBox(tr("обнулять в программе товары, которых нет в отчёте МойСклад"), page);
         m_zeroUnknown->setToolTip(tr("По умолчанию товары программы, неизвестные МойСклад (или с другим артикулом), остаются как есть"));
         l->addWidget(m_zeroUnknown);
@@ -248,6 +252,7 @@ MoySkladTab::MoySkladTab(MoySkladAutoSync *autoSync, QWidget *parent)
     m_token->setText(s.token);
     m_stockType->setCurrentIndex(s.freeStock ? 1 : 0);
     m_zeroUnknown->setChecked(s.zeroUnknown);
+    m_createMissing->setChecked(s.createMissing);
     m_matchBy->setCurrentIndex(qMax(0, m_matchBy->findData(s.matchBy)));
     m_storeList = MoySklad::cachedStores();
     rebuildStores(s.storeMap);
@@ -321,6 +326,7 @@ MoySklad::Settings MoySkladTab::settingsFromUi() const
     s.token = m_token->text().trimmed();
     s.freeStock = m_stockType->currentData().toBool();
     s.zeroUnknown = m_zeroUnknown->isChecked();
+    s.createMissing = m_createMissing->isChecked();
     s.matchBy = m_matchBy->currentData().toString();
     s.storeMap = mapFromTable();
     return s;
@@ -450,7 +456,7 @@ void MoySkladTab::showPlan(const MoySklad::Plan &plan)
             m_changes->setItem(r, col, it);
         };
         put(CColSku, c.sku);
-        put(CColName, c.name);
+        put(CColName, c.isNew ? tr("+ новая карточка: %1").arg(c.name) : c.name);
         put(CColWarehouse, c.warehouse);
         put(CColWas, QString::number(c.was), true);
         put(CColWill, QString::number(c.will), true);
@@ -459,6 +465,8 @@ void MoySkladTab::showPlan(const MoySklad::Plan &plan)
     if (!plan.changes.isEmpty())
         text += tr(" (было %1 шт., станет %2 шт. по этим позициям)").arg(num(plan.unitsBefore()), num(plan.unitsAfter()));
     text += QLatin1Char('.');
+    if (plan.created > 0)
+        text += tr(" Будет создано карточек: <b>%1</b>.").arg(plan.created);
     if (plan.unknown > 0)
         text += tr(" Есть остаток в МойСклад, но товара нет в программе: %1 (например: %2).").arg(plan.unknown).arg(plan.unknownSamples.join(QStringLiteral(", ")));
     for (const QString &n : plan.notes)
@@ -511,8 +519,10 @@ int MoySkladTab::loadNow(bool ask)
     }
     if (ask) {
         QString text = tr("Привести остатки в программе к МойСклад?\n\nПозиций будет изменено: %1 (на складах: %2). Было %3 шт., станет %4 шт. по этим позициям.\n"
-                          "Всё запишется одним документом, его можно отменить в разделе «Документы».")
+                          "Остатки запишутся одним документом, его можно отменить в разделе «Документы».")
                            .arg(plan.changes.size()).arg(plan.mappedWarehouses).arg(num(plan.unitsBefore()), num(plan.unitsAfter()));
+        if (plan.created > 0)
+            text += tr("\n\nБудет создано новых карточек товаров: %1 (их нужно удалять вручную, документ отменяет только остатки).").arg(plan.created);
         if (plan.suspicious)
             text += tr("\n\nВНИМАНИЕ: %1. Это похоже на ошибку сопоставления складов или артикулов. Лучше сначала проверить таблицу расхождений.").arg(plan.suspicion);
         if (QMessageBox::question(this, tr("МойСклад"), text) != QMessageBox::Yes)
@@ -532,13 +542,14 @@ int MoySkladTab::loadNow(bool ask)
             QMessageBox::warning(this, tr("МойСклад"), tr("Остатки не записаны: %1").arg(err));
         return -1;
     }
-    log(tr("Загружено: изменено позиций - %1%2.").arg(res.changed).arg(res.documentId > 0 ? tr(", документ №%1").arg(res.documentId) : QString()));
+    const QString createdText = res.created > 0 ? tr(", создано карточек - %1").arg(res.created) : QString();
+    log(tr("Загружено: изменено позиций - %1%2%3.").arg(res.changed).arg(createdText, res.documentId > 0 ? tr(", документ №%1").arg(res.documentId) : QString()));
     m_changes->setRowCount(0);
-    m_summary->setText(tr("Загружено: изменено позиций - <b>%1</b>%2.").arg(res.changed).arg(res.documentId > 0 ? tr(", создан документ №%1").arg(res.documentId) : QString()));
+    m_summary->setText(tr("Загружено: изменено позиций - <b>%1</b>%2%3.").arg(res.changed).arg(createdText, res.documentId > 0 ? tr(", создан документ №%1").arg(res.documentId) : QString()));
     emit stockChanged();
     if (res.documentId > 0)
         emit documentCreated(res.documentId);
-    return res.changed;
+    return res.changed + res.created;
 }
 
 void MoySkladTab::saveSchedule()
